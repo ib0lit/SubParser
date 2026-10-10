@@ -9,19 +9,19 @@ OUT_DIR="./dist"
 mkdir -p "$OUT_DIR"
 APK_FILE="${PKG_NAME}-${PKG_VER}-r${PKG_REL}.apk"
 
-echo "[*] Сборка нативного пакета OpenWrt 25 через abuild..."
+echo "[*] Сборка пакета через abuild..."
 
 docker run --rm -v "$(pwd)":/work -w /work alpine:edge sh -e -c '
   apk update && apk add abuild apk-tools sudo
 
-  # 1. Генерация ключей и добавление в доверенные для apk index
   mkdir -p /root/.abuild /etc/apk/keys
   abuild-keygen -a -n
   cp /root/.abuild/*.pub /etc/apk/keys/
 
   BUILDDIR="/tmp/subparser_apk_build"
-  rm -rf "$BUILDDIR"
-  mkdir -p "$BUILDDIR"
+  OUTDIR="/tmp/out"
+  rm -rf "$BUILDDIR" "$OUTDIR"
+  mkdir -p "$BUILDDIR" "$OUTDIR"
 
   cat << "EOF" > "$BUILDDIR/'"$PKG_NAME"'.post-install"
 #!/bin/sh
@@ -74,11 +74,18 @@ package() {
 EOF
 
   cd "$BUILDDIR"
+  export REPODEST="$OUTDIR"
   abuild -F -d
 
-  # Копируем готовый валидный apk в dist
-  find /root/packages -name "*.apk" -not -name "APKINDEX*" -exec cp {} /work/'"$OUT_DIR/$APK_FILE"' \;
-  rm -rf "$BUILDDIR"
+  # Копируем найденный файл пакета в dist
+  BUILT_APK=$(find "$OUTDIR" -name "*.apk" -not -name "APKINDEX*" | head -n 1)
+  if [ -z "$BUILT_APK" ]; then
+    echo "ERROR: APK не найден в $OUTDIR"
+    exit 1
+  fi
+
+  cp "$BUILT_APK" /work/'"$OUT_DIR/$APK_FILE"'
+  rm -rf "$BUILDDIR" "$OUTDIR"
 '
 
 ls -lh "$OUT_DIR/$APK_FILE"
