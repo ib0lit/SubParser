@@ -9,21 +9,12 @@ OUT_DIR="./dist"
 mkdir -p "$OUT_DIR"
 APK_FILE="${PKG_NAME}-${PKG_VER}-r${PKG_REL}.apk"
 
-echo "[*] Сборка нативного пакета OpenWrt 25 через abuild..."
+# Подготовка локального сборочного каталога
+BUILD_DIR="./.build_apk_tmp"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
 
-docker run --rm -v "$(pwd)":/work -w /work alpine:edge sh -e -c '
-  apk update && apk add abuild apk-tools sudo
-
-  mkdir -p /root/.abuild /etc/apk/keys
-  abuild-keygen -a -n
-  cp /root/.abuild/*.pub /etc/apk/keys/
-
-  BUILDDIR="/tmp/subparser_apk_build"
-  OUTDIR="/tmp/out"
-  rm -rf "$BUILDDIR" "$OUTDIR"
-  mkdir -p "$BUILDDIR" "$OUTDIR"
-
-  cat << "EOF" > "$BUILDDIR/'"$PKG_NAME"'.post-install"
+cat << 'EOF' > "$BUILD_DIR/post-install"
 #!/bin/sh
 /etc/init.d/subparser enable >/dev/null 2>&1 || true
 /etc/init.d/subparser-bot enable >/dev/null 2>&1 || true
@@ -38,7 +29,7 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 exit 0
 EOF
 
-  cat << "EOF" > "$BUILDDIR/'"$PKG_NAME"'.pre-deinstall"
+cat << 'EOF' > "$BUILD_DIR/pre-deinstall"
 #!/bin/sh
 /etc/init.d/subparser stop >/dev/null 2>&1 || true
 /etc/init.d/subparser disable >/dev/null 2>&1 || true
@@ -53,17 +44,20 @@ rm -f "$CRON_TMP"
 exit 0
 EOF
 
-  cat << EOF > "$BUILDDIR/APKBUILD"
-pkgname="'"$PKG_NAME"'"
-pkgver="'"$PKG_VER"'"
-pkgrel="'"$PKG_REL"'"
+cp "$BUILD_DIR/post-install" "$BUILD_DIR/${PKG_NAME}.post-install"
+cp "$BUILD_DIR/pre-deinstall" "$BUILD_DIR/${PKG_NAME}.pre-deinstall"
+
+cat << EOF > "$BUILD_DIR/APKBUILD"
+pkgname="${PKG_NAME}"
+pkgver="${PKG_VER}"
+pkgrel="${PKG_REL}"
 pkgdesc="LuCI interface and proxy parser for Podkop"
 url="https://github.com/ib0lit/SubParser"
 arch="noarch"
 license="MIT"
 depends="python3 curl ca-certificates conntrack"
 provides="/bin/sh"
-install="'"$PKG_NAME"'.post-install '"$PKG_NAME"'.pre-deinstall"
+install="${PKG_NAME}.post-install ${PKG_NAME}.pre-deinstall"
 options="!check !openrc !autodeps"
 
 package() {
@@ -74,13 +68,27 @@ package() {
 }
 EOF
 
-  cd "$BUILDDIR"
-  export REPODEST="$OUTDIR"
-  abuild -F -d
+# Скрипт сборщика внутри Alpine
+cat << 'EOF' > "$BUILD_DIR/docker_build.sh"
+#!/bin/sh
+set -e
+apk update && apk add abuild apk-tools sudo
+mkdir -p /root/.abuild /etc/apk/keys
+abuild-keygen -a -n
+cp /root/.abuild/*.pub /etc/apk/keys/
+cd /work/.build_apk_tmp
+export REPODEST=/work/dist_tmp
+abuild -F -d
+EOF
+chmod +x "$BUILD_DIR/docker_build.sh"
 
-  BUILT_APK=\$(find "\$OUTDIR" -name "*.apk" -not -name "APKINDEX*" | head -n 1)
-  cp "\$BUILT_APK" /work/'"$OUT_DIR/$APK_FILE"'
-  rm -rf "$BUILDDIR" "$OUTDIR"
-'
+rm -rf "./dist_tmp"
+mkdir -p "./dist_tmp"
+
+docker run --rm -v "$(pwd)":/work -w /work alpine:edge /work/.build_apk_tmp/docker_build.sh
+
+# Перемещаем готовый apk файл
+find "./dist_tmp" -type f -name "*.apk" -not -name "APKINDEX*" -exec cp {} "$OUT_DIR/$APK_FILE" \;
+rm -rf "$BUILD_DIR" "./dist_tmp"
 
 ls -lh "$OUT_DIR/$APK_FILE"
