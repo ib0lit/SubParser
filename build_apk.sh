@@ -63,7 +63,7 @@ arch="noarch"
 license="MIT"
 depends="python3 curl ca-certificates conntrack"
 install="'"$PKG_NAME"'.post-install '"$PKG_NAME"'.pre-deinstall"
-options="!check !openrc"
+options="!check !openrc !autodeps"
 
 package() {
   mkdir -p "\$pkgdir"
