@@ -9,7 +9,7 @@ OUT_DIR="./dist"
 mkdir -p "$OUT_DIR"
 APK_FILE="${PKG_NAME}-${PKG_VER}-r${PKG_REL}.apk"
 
-echo "[*] Сборка пакета через abuild..."
+echo "[*] Сборка нативного пакета OpenWrt 25 через abuild..."
 
 docker run --rm -v "$(pwd)":/work -w /work alpine:edge sh -e -c '
   apk update && apk add abuild apk-tools sudo
@@ -62,6 +62,7 @@ url="https://github.com/ib0lit/SubParser"
 arch="noarch"
 license="MIT"
 depends="python3 curl ca-certificates conntrack"
+provides="/bin/sh"
 install="'"$PKG_NAME"'.post-install '"$PKG_NAME"'.pre-deinstall"
 options="!check !openrc !autodeps"
 
@@ -77,14 +78,8 @@ EOF
   export REPODEST="$OUTDIR"
   abuild -F -d
 
-  # Копируем найденный файл пакета в dist
-  BUILT_APK=$(find "$OUTDIR" -name "*.apk" -not -name "APKINDEX*" | head -n 1)
-  if [ -z "$BUILT_APK" ]; then
-    echo "ERROR: APK не найден в $OUTDIR"
-    exit 1
-  fi
-
-  cp "$BUILT_APK" /work/'"$OUT_DIR/$APK_FILE"'
+  BUILT_APK=\$(find "\$OUTDIR" -name "*.apk" -not -name "APKINDEX*" | head -n 1)
+  cp "\$BUILT_APK" /work/'"$OUT_DIR/$APK_FILE"'
   rm -rf "$BUILDDIR" "$OUTDIR"
 '
 
