@@ -344,7 +344,8 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     alpn_raw = query.get("alpn", [""])[0]
     alpn = [p.strip() for p in alpn_raw.split(",") if p.strip()] if alpn_raw else []
     insecure = query.get("allowInsecure", ["0"])[0] in ("1", "true")
-    fp = query.get("fp", ["chrome"])[0] or "chrome"
+    fp_raw = query.get("fp", ["chrome"])[0].lower().strip()
+    fp = fp_raw if fp_raw in ("chrome","firefox","safari","ios","android","edge","360","qq","random","randomized") else "chrome"
 
     transport_type = query.get("type", [query.get("net", ["tcp"])[0]])[0].lower()
     transport_obj = None
