@@ -20,7 +20,7 @@ else
     if [ -f "$COMMIT_FILE" ]; then
         LOCAL_SHA=$(cat "$COMMIT_FILE" 2>/dev/null || true)
         if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-            CURRENT_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "2.1.7")
+            CURRENT_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "2.1.8")
             echo ""
             echo "=========================================================="
             echo " [i] Обновлений нет. Установлена актуальная версия: ${CURRENT_VER}"
@@ -157,7 +157,7 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 
 rm -rf "$TMP_DIR"
 
-NEW_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "2.1.7")
+NEW_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "2.1.8")
 echo ""
 echo "=========================================================="
 echo " [OK] SubParser успешно обновлен до версии ${NEW_VER}!"
