@@ -193,7 +193,12 @@ def get_sub_card_screen(sub_idx):
     is_en = target["enabled"] == "1"
     st_badge = "🟢 <b>Активна (участвует в парсинге)</b>" if is_en else "🔴 <b>Отключена (пропускается)</b>"
     btn_en_txt = "⏸ Выключить подписку" if is_en else "▶️ Включить подписку"
-    ua_title = UA_CHOICES.get(target["user_agent"], target["user_agent"])
+    if target.get("user_agent") == "custom":
+        dev_m = target.get("device_model") or "Кастомное устройство"
+        hw_cut = (target.get("device_id")[:8] + "...") if target.get("device_id") else "дефолт"
+        ua_title = f"🛠 {dev_m} (HWID: {hw_cut})"
+    else:
+        ua_title = UA_CHOICES.get(target["user_agent"], target["user_agent"])
 
     if target["url"]:
         parsed = urllib.parse.urlsplit(target["url"])

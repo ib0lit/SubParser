@@ -17,7 +17,7 @@ CONFIG_NAME = "subparser"
 SINGBOX_BIN = "/usr/bin/sing-box"
 TEST_URL = "https://www.gstatic.com/generate_204"
 MAX_WORKERS = 12
-HWID_PHONE = "f4c9b1a0d8e27365"
+DEFAULT_HWID = "0123456789abcdef"
 
 UA_MAP = {
     "v2rayN": "v2rayN/6.23",
@@ -30,7 +30,7 @@ UA_MAP = {
     "NekoBox": "NekoBox/1.3.1",
     "flclash": "ClashMeta/1.18.0",
     "clash": "ClashforWindows/0.20.39",
-    "incy": "Incy/1.0.0 (Android)",
+    "incy": "Incy/3.7.0 (Android)",
     "happ": "Happ/1.0.0 (iOS)",
     "curl": "curl/7.88.1"
 }
@@ -205,25 +205,42 @@ def fetch_single_sub(sub_info: dict) -> list:
     url = sub_info.get("url", "").strip()
     if not url:
         return []
-    ua_key = sub_info.get("user_agent", "v2rayN")
-    ua = UA_MAP.get(ua_key, UA_MAP["v2rayN"])
-    name = sub_info.get("name", "Подписка")
 
-    update_live_progress("⏳ [1/4] Загрузка подписок...", f"Получение: {name}"); print(f"[{name}] Запрос подписки через {ua_key}...")
+    ua_key = sub_info.get("user_agent", "v2rayN")
+    custom_ua = sub_info.get("custom_ua", "").strip()
+    ua = custom_ua if (ua_key == "custom" and custom_ua) else UA_MAP.get(ua_key, UA_MAP["v2rayN"])
 
     headers = {
         "User-Agent": ua,
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "ru-RU,ru;q=0.9",
-        "x-hwid": HWID_PHONE,
-        "hwid": HWID_PHONE,
-        "device-id": HWID_PHONE,
-        "x-device-os": "Android",
-        "x-ver-os": "16",
-        "x-device-model": "Xiaomi 2412DPC0AG",
-        "device-model": "Xiaomi 2412DPC0AG"
+        "Accept-Language": "ru-RU,ru;q=0.9"
     }
+
+    # Если включена кастомная эмуляция конкретного устройства
+    dev_model = ""
+    if ua_key == "custom":
+        hwid = sub_info.get("device_id", "").strip()
+        dev_model = sub_info.get("device_model", "").strip()
+        dev_os = sub_info.get("device_os", "").strip() or "Android"
+        dev_ver = sub_info.get("os_version", "").strip() or "15"
+
+        if hwid:
+            headers["x-hwid"] = hwid
+            headers["hwid"] = hwid
+            headers["device-id"] = hwid
+        if dev_model:
+            headers["x-device-model"] = dev_model
+            headers["device-model"] = dev_model
+        if dev_os:
+            headers["x-device-os"] = dev_os
+        if dev_ver:
+            headers["x-ver-os"] = dev_ver
+
+    name = sub_info.get("name", "Подписка")
+    update_live_progress("⏳ [1/4] Загрузка подписок...", f"Получение: {name}")
+    ua_label = f"Свой ({dev_model})" if (ua_key == "custom" and dev_model) else (custom_ua[:15] if ua_key == "custom" else ua_key)
+    print(f"[{name}] Запрос подписки через {ua_label}...")
 
     raw_data = None
     try:
@@ -248,13 +265,14 @@ def fetch_single_sub(sub_info: dict) -> list:
         try:
             curl_cmd = [
                 "curl", "-sL", "-k", "-m", "15", "-D", "/tmp/sub_headers.tmp",
-                "-H", f"User-Agent: {ua}",
-                "-H", f"x-hwid: {HWID_PHONE}",
-                "-H", f"device-id: {HWID_PHONE}",
-                "-H", "x-device-os: Android",
-                "-H", "x-device-model: Xiaomi 2412DPC0AG",
-                "--compressed", url
+                "-H", f"User-Agent: {ua}"
             ]
+            if ua_key == "custom":
+                if sub_info.get("device_id"):
+                    curl_cmd.extend(["-H", f"device-id: {sub_info.get('device_id').strip()}"])
+                if sub_info.get("device_model"):
+                    curl_cmd.extend(["-H", f"x-device-model: {sub_info.get('device_model').strip()}"])
+            curl_cmd.extend(["--compressed", url])
             res = subprocess.run(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if res.returncode == 0 and res.stdout:
                 raw_data = res.stdout

@@ -26,11 +26,19 @@ def get_subscriptions():
             name = get_uci_opt(s_name, "name", f"Подписка #{idx+1}")
             en = get_uci_opt(s_name, "enabled", "1")
             ua = get_uci_opt(s_name, "user_agent", "v2rayN")
+            custom_ua = get_uci_opt(s_name, "custom_ua", "")
+            device_id = get_uci_opt(s_name, "device_id", "")
+            device_model = get_uci_opt(s_name, "device_model", "")
+            os_ver = get_uci_opt(s_name, "os_version", "")
             subs.append({
                 "idx": idx,
                 "sec_name": s_name,
                 "enabled": en,
                 "user_agent": ua,
+                "custom_ua": custom_ua,
+                "device_id": device_id,
+                "device_model": device_model,
+                "os_version": os_ver,
                 "name": name,
                 "url": url
             })

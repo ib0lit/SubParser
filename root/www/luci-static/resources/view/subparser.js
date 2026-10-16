@@ -118,7 +118,7 @@ return view.extend({
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
 
-                var fpHint = s.taboption('general', form.DummyValue, '_fp_hint');
+        var fpHint = s.taboption('general', form.DummyValue, '_fp_hint');
         fpHint.rawhtml = true;
         fpHint.render = function() {
             return E('details', {
@@ -276,16 +276,59 @@ return view.extend({
         sub_url.rmempty = false;
 
         var sub_ua = s_subs.option(form.ListValue, 'user_agent', _('User-Agent'));
-        sub_ua.value('flclash', 'FlClashX / ClashMeta (HWID)');
-        sub_ua.value('incy', 'Incy (Android / Xiaomi)');
         sub_ua.value('v2rayN', 'v2rayN/6.42');
-        sub_ua.value('clashmeta', 'Clash.Meta (Mihomo)');
-        sub_ua.value('clash', 'Clash for Windows');
+        sub_ua.value('flclash', 'FlClashX / ClashMeta');
+        sub_ua.value('incy', 'Incy (Android)');
         sub_ua.value('singbox', 'Sing-box');
         sub_ua.value('happ', 'Happ (iOS)');
         sub_ua.value('shadowrocket', 'Shadowrocket');
+        sub_ua.value('clashmeta', 'Clash.Meta (Mihomo)');
+        sub_ua.value('clash', 'Clash for Windows');
         sub_ua.value('curl', 'curl (Generic)');
+        sub_ua.value('custom', _('🛠 Свой (Эмуляция устройства)'));
         sub_ua.default = 'v2rayN';
+
+        var subHint = s_subs.option(form.DummyValue, '_custom_hint');
+        subHint.rawhtml = true;
+        subHint.modalonly = true;
+        subHint.depends('user_agent', 'custom');
+        subHint.render = function() {
+            return E('details', {
+                'class': 'alert-message info',
+                'style': 'margin-bottom: 12px; font-size: 13px; cursor: pointer;'
+            }, [
+                E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Эмуляция своего устройства (экономия слотов подписки)')),
+                E('div', { 'style': 'margin: 8px 0 0 10px; line-height: 1.5; cursor: default;' }, [
+                    E('p', { 'style': 'margin: 0 0 6px 0;' }, _('Многие провайдеры подписок ограничивают число одновременно подключенных устройств. Если ваш сервис отображает в личном кабинете привязанные устройства (HWID, модель, клиент), вы можете попробовать скопировать эти данные сюда.')),
+                    E('p', { 'style': 'margin: 0 0 6px 0;' }, _('В этом случае роутер будет обращаться к серверу от имени уже привязанного смартфона или ПК, возможно не расходуя отдельный слот.')),
+                    E('p', { 'style': 'margin: 0; color: #ffb300;' }, _('⚠️ <b>Обратите внимание:</b> Данный способ не дает 100% гарантии. Некоторые панели отслеживают одновременные сессии с разных IP-адресов или используют закрытые токены авторизации.'))
+                ])
+            ]);
+        };
+
+        var sub_cua = s_subs.option(form.Value, 'custom_ua', _('Custom User-Agent'));
+        sub_cua.placeholder = 'AppClient/1.0.0 (Android)';
+        sub_cua.depends('user_agent', 'custom');
+        sub_cua.modalonly = true;
+        sub_cua.rmempty = true;
+
+        var sub_hwid = s_subs.option(form.Value, 'device_id', _('Device ID / HWID'));
+        sub_hwid.placeholder = 'a1b2c3d4e5f67890';
+        sub_hwid.depends('user_agent', 'custom');
+        sub_hwid.modalonly = true;
+        sub_hwid.rmempty = true;
+
+        var sub_model = s_subs.option(form.Value, 'device_model', _('Модель устройства'));
+        sub_model.placeholder = 'Phone-Model-Name';
+        sub_model.depends('user_agent', 'custom');
+        sub_model.modalonly = true;
+        sub_model.rmempty = true;
+
+        var sub_ver = s_subs.option(form.Value, 'os_version', _('Версия ОС'));
+        sub_ver.placeholder = '14 / 15 / 16';
+        sub_ver.depends('user_agent', 'custom');
+        sub_ver.modalonly = true;
+        sub_ver.rmempty = true;
 
         var s2 = m.section(form.NamedSection, 'settings', 'subparser', _('🌐 Активные узлы в конфигурации Podkop'));
         var dashboardContainer = E('div', { 'id': 'subparser_dashboard_box' });
