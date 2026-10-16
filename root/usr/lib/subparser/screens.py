@@ -52,6 +52,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         "safari": "Safari 🍏",
         "ios": "iOS 📱",
         "edge": "Edge 🔷",
+        "qq": "QQ Browser 🐧",
         "random": "Random 🎲",
         "randomized": "Randomized 🎲"
     }
@@ -132,6 +133,7 @@ def get_fp_menu_screen():
         ("safari", "🍏 Safari"),
         ("ios", "📱 iOS"),
         ("edge", "🔷 Edge"),
+        ("qq", "🐧 QQ"),
         ("randomized", "🎲 Randomized"),
         ("as_is", "↩️ Как в подписке")
     ]
@@ -149,7 +151,8 @@ def get_fp_menu_screen():
 
     mapping = {
         "as_is": "Как в подписке", "firefox": "Firefox 🦊", "chrome": "Chrome 🌐",
-        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷", "randomized": "Randomized 🎲"
+        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷",
+        "qq": "QQ Browser 🐧", "randomized": "Randomized 🎲"
     }
     cur_label = mapping.get(cur, cur.capitalize())
     text = (
@@ -693,6 +696,7 @@ def get_fp_menu_screen():
         ("safari", "🍏 Safari"),
         ("ios", "📱 iOS"),
         ("edge", "🔷 Edge"),
+        ("qq", "🐧 QQ"),
         ("randomized", "🎲 Randomized"),
         ("as_is", "↩️ Как в подписке")
     ]
@@ -710,7 +714,8 @@ def get_fp_menu_screen():
 
     mapping = {
         "as_is": "Как в подписке", "firefox": "Firefox 🦊", "chrome": "Chrome 🌐",
-        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷", "randomized": "Randomized 🎲"
+        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷",
+        "qq": "QQ Browser 🐧", "randomized": "Randomized 🎲"
     }
     cur_label = mapping.get(cur, cur.capitalize())
     text = (

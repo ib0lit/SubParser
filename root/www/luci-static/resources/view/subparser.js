@@ -138,6 +138,7 @@ return view.extend({
         var fpOpt = s.taboption('general', form.ListValue, 'override_fp', _('uTLS Fingerprint (эмуляция браузера)'));
         fpOpt.value('as_is', _('Как в подписке (по умолчанию: edge)'));
         fpOpt.value('edge', 'Edge (Chromium / Рекомендуется)');
+        fpOpt.value('qq', 'QQ Browser (Chromium / 🐧)');
         fpOpt.value('safari', 'Safari (Apple WebKit / Рекомендуется)');
         fpOpt.value('chrome', 'Chrome (Google Chromium)');
         fpOpt.value('firefox', 'Firefox (Mozilla / РФ-маскировка)');
