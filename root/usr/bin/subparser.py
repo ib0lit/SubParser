@@ -311,88 +311,108 @@ def query_node_delay(api_port: int, tag: str, timeout_ms: int = 3500) -> int:
     except Exception:
         return -1
 
+VALID_FPS = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
+
+VALID_FPS = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
+
+def sanitize_link_fp(link: str, target_fp: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(link)
+        query = urllib.parse.parse_qs(parsed.query)
+        query["fp"] = [target_fp]
+        new_query = urllib.parse.urlencode(query, doseq=True)
+        return urllib.parse.urlunparse(parsed._replace(query=new_query))
+    except Exception:
+        return link
+
 def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
-    parsed = urllib.parse.urlsplit(link)
-    scheme = parsed.scheme.lower()
+    parsed = urllib.parse.urlparse(link)
     query = urllib.parse.parse_qs(parsed.query)
 
-    netloc = parsed.netloc
-    auth, host_port = "", netloc
-    if "@" in netloc:
-        auth, host_port = netloc.split("@", 1)
+    uuid = parsed.username or ""
+    server = parsed.hostname or ""
+    port = parsed.port or 443
 
-    if host_port.startswith("["):
-        parts = host_port.split("]")
-        server = parts[0][1:]
-        port = int(parts[1][1:]) if len(parts) > 1 and parts[1].startswith(":") else 443
-    elif ":" in host_port:
-        parts = host_port.split(":")
-        server = parts[0]
-        port = int(parts[1]) if parts[1].isdigit() else 443
-    else:
-        server = host_port
-        port = 443
-
-    outbound = {
-        "type": "vless" if scheme == "vless" else ("trojan" if scheme == "trojan" else "hysteria2"),
-        "tag": tag,
-        "server": server,
-        "server_port": port
-    }
-
-    sni = query.get("sni", [query.get("peer", [server])[0]])[0] or server
+    security = query.get("security", ["none"])[0].lower()
+    sni = query.get("sni", [""])[0]
     alpn_raw = query.get("alpn", [""])[0]
     alpn = [p.strip() for p in alpn_raw.split(",") if p.strip()] if alpn_raw else []
     insecure = query.get("allowInsecure", ["0"])[0] in ("1", "true")
-    fp_raw = query.get("fp", ["chrome"])[0].lower().strip()
-    fp = fp_raw if fp_raw in ("chrome","firefox","safari","ios","android","edge","360","qq","random","randomized") else "chrome"
+
+    try:
+        from subparser.config import get_uci_option
+        override_fp = (get_uci_option("settings", "override_fp") or "as_is").lower().strip()
+    except Exception:
+        import subprocess
+        res = subprocess.run(["uci", "-q", "get", "subparser.settings.override_fp"], capture_output=True, text=True)
+        override_fp = (res.stdout.strip() or "as_is").lower()
+
+    raw_fp = query.get("fp", ["firefox"])[0].lower().strip()
+    if override_fp in VALID_FPS:
+        fp = override_fp
+    else:
+        fp = raw_fp if raw_fp in VALID_FPS else "firefox"
 
     transport_type = query.get("type", [query.get("net", ["tcp"])[0]])[0].lower()
     transport_obj = None
 
     if transport_type == "ws":
-        transport_obj = {"type": "ws", "path": query.get("path", ["/"])[0], "headers": {"Host": query.get("host", [sni])[0]}}
+        ws_path = query.get("path", ["/"])[0]
+        ws_host = query.get("host", [""])[0]
+        transport_obj = {
+            "type": "ws",
+            "path": ws_path,
+            "headers": {"Host": ws_host} if ws_host else {}
+        }
     elif transport_type in ("grpc", "gun"):
-        transport_obj = {"type": "grpc", "service_name": query.get("serviceName", [query.get("path", [""])[0]])[0]}
-    elif transport_type in ("http", "tcp") and query.get("headerType", ["none"])[0].lower() == "http":
-        transport_obj = {"type": "http", "host": [query.get("host", [sni])[0]], "path": query.get("path", ["/"])[0]}
-    elif transport_type in ("httpupgrade", "upgrade"):
-        transport_obj = {"type": "httpupgrade", "host": query.get("host", [sni])[0], "path": query.get("path", ["/"])[0]}
-    elif transport_type in ("xhttp", "splithttp"):
-        mode = query.get("mode", ["auto"])[0]
-        transport_obj = {"type": "xhttp", "host": query.get("host", [sni])[0], "path": query.get("path", ["/"])[0], "mode": mode, "x_padding_bytes": query.get("x_padding_bytes", query.get("padding", ["100-500"]))[0]}
+        service_name = query.get("serviceName", [""])[0]
+        transport_obj = {
+            "type": "grpc",
+            "service_name": service_name
+        }
 
-    if scheme == "vless":
-        outbound["uuid"] = auth
-        flow = query.get("flow", [""])[0]
-        if flow:
-            outbound["flow"] = flow
-        sec = query.get("security", [""])[0].lower()
-        if sec == "reality":
-            outbound["tls"] = {
-                "enabled": True, "server_name": sni,
-                "reality": {"enabled": True, "public_key": query.get("pbk", [query.get("publicKey", [""])[0]])[0], "short_id": query.get("sid", [query.get("shortId", [""])[0]])[0]},
-                "utls": {"enabled": True, "fingerprint": fp}
+    tls_obj = None
+    if security == "tls":
+        tls_obj = {
+            "enabled": True,
+            "server_name": sni or server,
+            "insecure": insecure,
+            "alpn": alpn if alpn else ["h2", "http/1.1"],
+            "utls": {
+                "enabled": True,
+                "fingerprint": fp
             }
-        elif sec in ("tls", "ssl"):
-            tls_cfg = {"enabled": True, "server_name": sni, "insecure": insecure, "utls": {"enabled": True, "fingerprint": fp}}
-            if alpn: tls_cfg["alpn"] = alpn
-            outbound["tls"] = tls_cfg
-        if transport_obj: outbound["transport"] = transport_obj
+        }
+    elif security == "reality":
+        pbk = query.get("pbk", [""])[0]
+        sid = query.get("sid", [""])[0]
+        tls_obj = {
+            "enabled": True,
+            "server_name": sni or server,
+            "insecure": False,
+            "utls": {
+                "enabled": True,
+                "fingerprint": fp
+            },
+            "reality": {
+                "enabled": True,
+                "public_key": pbk,
+                "short_id": sid
+            }
+        }
 
-    elif scheme == "trojan":
-        outbound["password"] = auth
-        tls_cfg = {"enabled": True, "server_name": sni, "insecure": insecure, "utls": {"enabled": True, "fingerprint": fp}}
-        if alpn: tls_cfg["alpn"] = alpn
-        outbound["tls"] = tls_cfg
-        if transport_obj: outbound["transport"] = transport_obj
+    outbound = {
+        "type": "vless",
+        "tag": tag,
+        "server": server,
+        "server_port": port,
+        "uuid": uuid
+    }
 
-    elif scheme in ("hysteria2", "hy2"):
-        outbound["password"] = auth
-        tls_cfg = {"enabled": True, "server_name": sni, "insecure": insecure, "alpn": alpn if alpn else ["h3"]}
-        outbound["tls"] = tls_cfg
-        obfs_type = query.get("obfs", [""])[0]
-        if obfs_type: outbound["obfs"] = {"type": obfs_type, "password": query.get("obfs-password", [""])[0]}
+    if tls_obj:
+        outbound["tls"] = tls_obj
+    if transport_obj:
+        outbound["transport"] = transport_obj
 
     return outbound
 

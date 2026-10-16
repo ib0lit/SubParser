@@ -29,7 +29,7 @@ from subparser.podkop import (
 from subparser.screens import (
     get_clients_screen, get_device_action_screen, get_dmesg_screen,
     get_log_screen, get_logread_screen, get_main_screen,
-    get_parser_menu_screen, get_reboot_confirm_screen,
+    get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_sections_menu_screen, get_sections_selector_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
@@ -220,6 +220,19 @@ def main():
                         set_user_state({})
                         answer_callback(token, cb_id)
                         t, kb = get_main_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "menu_fp":
+                        set_user_state({})
+                        answer_callback(token, cb_id)
+                        t, kb = get_fp_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("set_fp:"):
+                        target_fp = data.split("set_fp:")[1].strip()
+                        set_uci_val("override_fp", target_fp)
+                        answer_callback(token, cb_id, f"Установлен: {target_fp}")
+                        t, kb = get_fp_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "parser_menu":

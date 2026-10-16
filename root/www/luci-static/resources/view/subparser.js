@@ -78,7 +78,19 @@ return view.extend({
         s.tab('telegram', _('💬 Telegram'));
         s.tab('subscriptions', _('📋 Подписки'));
 
-        var o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
+        var o = s.taboption('general', form.ListValue, 'override_fp', _('uTLS Fingerprint (эмуляция браузера)'));
+o.default = 'firefox';
+o.value('as_is', _('Как в подписке (fallback: firefox)'));
+o.value('firefox', _('firefox (рекомендуется для РФ)'));
+o.value('chrome', _('chrome'));
+o.value('safari', _('safari'));
+o.value('ios', _('ios'));
+o.value('edge', _('edge'));
+o.value('random', _('random (случайный)'));
+o.value('randomized', _('randomized'));
+o.description = _('Глобальная замена TLS фингерпринта для всех узлов во избежание блокировок по Client Hello.');
+
+		o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
         o.rmempty = false;
 
         o = s.taboption('general', form.ListValue, 'interval', _('Интервал автопроверки'));

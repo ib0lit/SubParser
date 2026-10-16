@@ -43,6 +43,20 @@ def get_parser_menu_screen(prompt_custom_ping=False):
     ru_badge = "Вкл (фильтровать)" if filter_ru == "1" else "Выкл (сохранять)"
     limit_badge = "Все (без лимита)" if max_best == "0" else f"Топ-{max_best}"
     subs_count = len(get_subscriptions())
+
+    fp_val = get_uci_val("override_fp", "firefox").lower().strip()
+    fp_map = {
+        "as_is": "Как в подписке",
+        "firefox": "Firefox 🦊",
+        "chrome": "Chrome 🌐",
+        "safari": "Safari 🍏",
+        "ios": "iOS 📱",
+        "edge": "Edge 🔷",
+        "random": "Random 🎲",
+        "randomized": "Randomized 🎲"
+    }
+    fp_badge = fp_map.get(fp_val, fp_val.capitalize())
+
     if per_sec:
         sec_parts = []
         for s in all_secs:
@@ -71,9 +85,11 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         f"🔝 <b>Лимит узлов:</b> <code>{limit_badge}</code>\n"
         f"⏰ <b>Расписание:</b> <code>{cron_badge}</code>\n"
         f"🇷🇺 <b>Фильтр RU:</b> <code>{ru_badge}</code>\n"
+        f"🎭 <b>uTLS Fingerprint:</b> <code>{fp_badge}</code>\n"
     )
     if prompt_custom_ping:
         text += "\n✏️ <b>Введите желаемый пинг (например, 280) в ответном сообщении:</b>"
+
     kb = {
         "inline_keyboard": [
             [
@@ -94,6 +110,9 @@ def get_parser_menu_screen(prompt_custom_ping=False):
                 {"text": f"RU: {'Фильтр' if filter_ru == '1' else 'Все'}", "callback_data": "toggle_ru"}
             ],
             [
+                {"text": f"🎭 Фингерпринт: {fp_badge}", "callback_data": "menu_fp"}
+            ],
+            [
                 {"text": "🚀 Запустить парсер сейчас", "callback_data": "run_parser"}
             ],
             [
@@ -102,6 +121,42 @@ def get_parser_menu_screen(prompt_custom_ping=False):
             ]
         ]
     }
+    return text, kb
+
+
+def get_fp_menu_screen():
+    cur = get_uci_val("override_fp", "firefox").lower().strip()
+    fps = [
+        ("firefox", "🦊 Firefox (РФ)"),
+        ("chrome", "🌐 Chrome"),
+        ("safari", "🍏 Safari"),
+        ("ios", "📱 iOS"),
+        ("edge", "🔷 Edge"),
+        ("randomized", "🎲 Randomized"),
+        ("as_is", "↩️ Как в подписке")
+    ]
+    kb = {"inline_keyboard": []}
+    row = []
+    for val, label in fps:
+        mark = " 🔘" if cur == val else ""
+        row.append({"text": f"{label}{mark}", "callback_data": f"set_fp:{val}"})
+        if len(row) == 2:
+            kb["inline_keyboard"].append(row)
+            row = []
+    if row:
+        kb["inline_keyboard"].append(row)
+    kb["inline_keyboard"].append([{"text": "◀ Назад в параметры", "callback_data": "parser_menu"}])
+
+    mapping = {
+        "as_is": "Как в подписке", "firefox": "Firefox 🦊", "chrome": "Chrome 🌐",
+        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷", "randomized": "Randomized 🎲"
+    }
+    cur_label = mapping.get(cur, cur.capitalize())
+    text = (
+        "🎭 <b>uTLS Fingerprint (эмуляция браузера)</b>\n\n"
+        "Глобально заменяет TLS Client Hello для всех узлов во избежание блокировок по сигнатурам браузера.\n\n"
+        f"Текущий режим: <b>{cur_label}</b>"
+    )
     return text, kb
 
 def get_subs_list_screen():
@@ -627,4 +682,40 @@ def get_reboot_confirm_screen():
             [{"text": "❌ Отмена", "callback_data": "home"}]
         ]
     }
+    return text, kb
+
+
+def get_fp_menu_screen():
+    cur = get_uci_val("override_fp", "firefox").lower().strip()
+    fps = [
+        ("firefox", "🦊 Firefox (РФ)"),
+        ("chrome", "🌐 Chrome"),
+        ("safari", "🍏 Safari"),
+        ("ios", "📱 iOS"),
+        ("edge", "🔷 Edge"),
+        ("randomized", "🎲 Randomized"),
+        ("as_is", "↩️ Как в подписке")
+    ]
+    kb = {"inline_keyboard": []}
+    row = []
+    for val, label in fps:
+        mark = " 🔘" if cur == val else ""
+        row.append({"text": f"{label}{mark}", "callback_data": f"set_fp:{val}"})
+        if len(row) == 2:
+            kb["inline_keyboard"].append(row)
+            row = []
+    if row:
+        kb["inline_keyboard"].append(row)
+    kb["inline_keyboard"].append([{"text": "◀ Назад в параметры", "callback_data": "parser_menu"}])
+
+    mapping = {
+        "as_is": "Как в подписке", "firefox": "Firefox 🦊", "chrome": "Chrome 🌐",
+        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷", "randomized": "Randomized 🎲"
+    }
+    cur_label = mapping.get(cur, cur.capitalize())
+    text = (
+        "🎭 <b>uTLS Fingerprint (эмуляция браузера)</b>\n\n"
+        "Глобально заменяет TLS Client Hello для всех узлов во избежание блокировок по сигнатурам браузера.\n\n"
+        f"Текущий режим: <b>{cur_label}</b>"
+    )
     return text, kb
