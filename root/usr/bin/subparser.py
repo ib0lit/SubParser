@@ -366,9 +366,9 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     if override_fp in valid_fps:
         fp = override_fp
     else:
-        # Режим 'as_is': если в ссылке задан fp — берем его, иначе по умолчанию надежный chrome
+        # Режим 'as_is': если в ссылке задан fp — берем его, иначе фолбэк на edge (Chromium-стек без сбросов)
         raw_fp = query.get("fp", [""])[0].lower().strip()
-        fp = raw_fp if raw_fp in valid_fps else "chrome"
+        fp = raw_fp if raw_fp in valid_fps else "edge"
 
     transport_type = query.get("type", [query.get("net", ["tcp"])[0]])[0].lower()
     transport_obj = None

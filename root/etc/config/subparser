@@ -1,4 +1,5 @@
 config subparser 'settings'
+	option override_fp 'as_is'
 	option enabled '0'
 	option interval 'never'
 	option custom_hour '3'

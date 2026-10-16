@@ -78,19 +78,7 @@ return view.extend({
         s.tab('telegram', _('💬 Telegram'));
         s.tab('subscriptions', _('📋 Подписки'));
 
-        var o = s.taboption('general', form.ListValue, 'override_fp', _('uTLS Fingerprint (эмуляция браузера)'));
-o.default = 'firefox';
-o.value('as_is', _('Как в подписке (fallback: firefox)'));
-o.value('firefox', _('firefox (рекомендуется для РФ)'));
-o.value('chrome', _('chrome'));
-o.value('safari', _('safari'));
-o.value('ios', _('ios'));
-o.value('edge', _('edge'));
-o.value('random', _('random (случайный)'));
-o.value('randomized', _('randomized'));
-o.description = _('Глобальная замена TLS фингерпринта для всех узлов во избежание блокировок по Client Hello.');
-
-		o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
+        var o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
         o.rmempty = false;
 
         o = s.taboption('general', form.ListValue, 'interval', _('Интервал автопроверки'));
@@ -129,6 +117,34 @@ o.description = _('Глобальная замена TLS фингерпринт�
 
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
+
+                var fpHint = s.taboption('general', form.DummyValue, '_fp_hint');
+        fpHint.rawhtml = true;
+        fpHint.render = function() {
+            return E('details', {
+                'class': 'alert-message info',
+                'style': 'margin-top: 15px; margin-bottom: 12px; font-size: 13px; cursor: pointer;'
+            }, [
+                E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 uTLS Fingerprint: экстренная маскировка (нажмите, чтобы раскрыть)')),
+                E('div', { 'style': 'margin: 10px 0 0 10px; line-height: 1.5; cursor: default;' }, [
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('<b>Что это такое:</b> Настройка глобально подменяет цифровой отпечаток браузера (TLS ClientHello) для узлов VLESS Reality/TLS и Trojan при проверке и выгрузке в Podkop.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0; color: #ffb300;' }, _('⚠️ <b>Важно:</b> Это экстренный инструмент. В обычных условиях держите значение <code>Как в подписке</code>.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('<b>Когда изменять:</b> Меняйте эту опцию <u>только если РКН / ТСПУ начинает блокировать соединения по отпечаткам браузера</u> (массовые таймауты или сбросы рукопожатий на рабочих узлах).')),
+                    E('p', { 'style': 'margin: 0;' }, _('<b>Рекомендации:</b> При блокировках переключайтесь на <b>edge</b> или <b>safari</b> — они построены на совместимых TLS-стеках, успешно обходят фильтры ТСПУ и не вызывают сбросов TCP на серверах Reality.'))
+                ])
+            ]);
+        };
+
+        var fpOpt = s.taboption('general', form.ListValue, 'override_fp', _('uTLS Fingerprint (эмуляция браузера)'));
+        fpOpt.value('as_is', _('Как в подписке (по умолчанию: edge)'));
+        fpOpt.value('edge', 'Edge (Chromium / Рекомендуется)');
+        fpOpt.value('safari', 'Safari (Apple WebKit / Рекомендуется)');
+        fpOpt.value('chrome', 'Chrome (Google Chromium)');
+        fpOpt.value('firefox', 'Firefox (Mozilla / РФ-маскировка)');
+        fpOpt.value('ios', 'iOS (iPhone / iPad)');
+        fpOpt.value('randomized', 'Randomized (Рандомизация TLS)');
+        fpOpt.default = 'as_is';
+        fpOpt.description = _('Глобальная подмена TLS-отпечатка. В штатном режиме рекомендуется <b>Как в подписке</b>.');
 
         o = s.taboption('general', form.Button, '_run_now', _('Синхронизация'));
         o.inputtitle = _('Синхронизировать сейчас');

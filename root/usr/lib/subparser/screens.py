@@ -44,7 +44,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
     limit_badge = "Все (без лимита)" if max_best == "0" else f"Топ-{max_best}"
     subs_count = len(get_subscriptions())
 
-    fp_val = get_uci_val("override_fp", "firefox").lower().strip()
+    fp_val = get_uci_val("override_fp", "as_is").lower().strip()
     fp_map = {
         "as_is": "Как в подписке",
         "firefox": "Firefox 🦊",
@@ -125,7 +125,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
 
 
 def get_fp_menu_screen():
-    cur = get_uci_val("override_fp", "firefox").lower().strip()
+    cur = get_uci_val("override_fp", "as_is").lower().strip()
     fps = [
         ("firefox", "🦊 Firefox (РФ)"),
         ("chrome", "🌐 Chrome"),
@@ -686,7 +686,7 @@ def get_reboot_confirm_screen():
 
 
 def get_fp_menu_screen():
-    cur = get_uci_val("override_fp", "firefox").lower().strip()
+    cur = get_uci_val("override_fp", "as_is").lower().strip()
     fps = [
         ("firefox", "🦊 Firefox (РФ)"),
         ("chrome", "🌐 Chrome"),

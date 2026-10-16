@@ -128,6 +128,7 @@ set_default_uci "per_section_config" "0"
 set_default_uci "update_mode" "replace"
 set_default_uci "sec_mode_main" "replace"
 set_default_uci "sec_en_main" "1"
+set_default_uci "override_fp" "as_is"
 
 if [ -z "$(uci -q get subparser.settings.target_section)" ]; then
     uci -q add_list subparser.settings.target_section='main'
