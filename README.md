@@ -80,6 +80,32 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninst
 
 ---
 
+## 📸 Скриншоты нтерфейса
+
+<details>
+<summary><b>🌐 Демонстрация панели управления LuCI</b></summary>
+<br>
+
+*Интерактивная панель параметров, гибкая настройка подписок и дашборд узлов Podkop с замером пинга:*
+
+<p align="center">
+  <img src="img/luci_demo.gif" alt="Демонстрация LuCI" width="100%" />
+</p>
+</details>
+
+<details>
+<summary><b>🤖 Демонстрация Telegram-бота</b></summary>
+<br>
+
+*Удаленный мониторинг роутера, управление узлами, подписками и сетевыми клиентами прямо в мессенджере:*
+
+<p align="center">
+  <img src="img/tg_bot_demo.gif" alt="Демонстрация Telegram-бота" width="45%" />
+</p>
+</details>
+
+---
+
 ## ✨ Ключевые возможности
 
 ### 🚀 Отбор и стресс-тестирование узлов
