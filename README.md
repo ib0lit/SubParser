@@ -80,7 +80,7 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninst
 
 ---
 
-## 📸 Скриншоты нтерфейса
+## 📸 Скриншоты интерфейса
 
 <details>
 <summary><b>🌐 Демонстрация панели управления LuCI</b></summary>
