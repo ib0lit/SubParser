@@ -1,27 +1,3 @@
-def check_post_update_notification(token):
-    import os, json
-    marker = "/tmp/subparser_update_pending"
-    if os.path.exists(marker):
-        try:
-            with open(marker, "r") as f:
-                data = json.load(f)
-            ver = "актуальной"
-            try:
-                with open("/etc/subparser_version", "r") as vf:
-                    ver = vf.read().strip()
-            except Exception:
-                pass
-            msg = f"🚀 <b>Сервис успешно обновлен до версии v{ver}!</b>\nВсе компоненты работают в штатном режиме."
-            kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
-            edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)
-        except Exception as e:
-            print(f"[!] Ошибка отправки пост-апдейт уведомления: {e}")
-        finally:
-            try:
-                os.remove(marker)
-            except Exception:
-                pass
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import sys
@@ -31,6 +7,8 @@ import html
 import subprocess
 import threading
 import urllib.parse
+import os
+import json
 
 from subparser.config import (
     CONFIG_NAME, UA_CHOICES, check_credentials,
@@ -52,7 +30,7 @@ from subparser.podkop import (
 )
 from subparser.screens import (
     get_clients_screen, get_device_action_screen, get_dmesg_screen,
-    get_log_screen, get_logread_screen, get_main_screen, get_update_screen, get_update_screen,
+    get_log_screen, get_logread_screen, get_main_screen, get_update_screen,
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_sections_menu_screen, get_sections_selector_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
@@ -73,26 +51,19 @@ def get_allowed_user_ids():
     except Exception:
         pass
     return ids
+
 def watch_parser_and_restore_menu(token, chat_id, old_msg_id):
-    # Ждем пока subparser.py реально начнет работу
     time.sleep(3)
-    # Ждем завершения работы процесса
     while True:
         ps = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE, text=True)
         if not ps.stdout.strip():
             break
         time.sleep(2)
-
-    # Даем паузу, чтобы отчет гарантированно доставился первым
     time.sleep(3)
-
-    # Удаляем старое окно синхронизации
     try:
         delete_msg(token, chat_id, old_msg_id)
     except Exception:
         pass
-
-    # Отправляем Главное меню новым сообщением
     try:
         t, kb = get_main_screen()
         send_msg(token, chat_id, t, reply_markup=kb)
@@ -106,7 +77,6 @@ def setup_bot_commands(token):
     tg_api(token, "setMyCommands", {"commands": commands})
 
 def check_post_update_notification(token):
-    import os, json
     marker = "/tmp/subparser_update_pending"
     if os.path.exists(marker):
         try:
@@ -296,23 +266,6 @@ def main():
                             continue
                         answer_callback(token, cb_id, "Запуск обновления...")
                         edit_msg(token, chat_id, msg_id, "🔄 <b>Выполняется загрузка и установка обновления...</b>\nБот автоматически перезапустится через 1-2 минуты.", {"inline_keyboard": []})
-                        import subprocess
-                        subprocess.Popen(["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh | sh"])
-                        continue
-
-                    elif data == "check_update":
-                        answer_callback(token, cb_id, "Поиск обновлений...")
-                        t, kb = get_update_screen()
-                        edit_msg(token, chat_id, msg_id, t, kb)
-                        continue
-
-                    elif data == "do_update":
-                        if user_id != admin_id:
-                            answer_callback(token, cb_id, "⛔ Доступно только администратору!")
-                            continue
-                        answer_callback(token, cb_id, "Запуск обновления...")
-                        edit_msg(token, chat_id, msg_id, "🔄 <b>Выполняется загрузка и установка обновления...</b>\nБот автоматически перезапустится через 1-2 минуты.", {"inline_keyboard": []})
-                        import json, subprocess
                         try:
                             with open("/tmp/subparser_update_pending", "w") as f:
                                 json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
@@ -517,7 +470,6 @@ def main():
                     elif data == "run_parser":
                         answer_callback(token, cb_id, "Запуск парсера...")
                         try:
-                            import json
                             with open("/tmp/subparser_progress.json", "w") as pf:
                                 json.dump({"token": token, "chat_id": chat_id, "msg_id": msg_id}, pf)
                         except Exception:
@@ -525,8 +477,6 @@ def main():
 
                         ok, text_sync = run_parser_process()
                         edit_msg(token, chat_id, msg_id, f"▶️ <b>Синхронизация по текущей конфигурации</b>\n\n{text_sync}", reply_markup={"inline_keyboard": []})
-
-                        # Запускаем фоновый поток слежения за завершением парсера
                         th = threading.Thread(target=watch_parser_and_restore_menu, args=(token, chat_id, msg_id), daemon=True)
                         th.start()
 
@@ -741,7 +691,6 @@ def main():
                         sel_set = set(sel_list)
                         cnt = len(sel_set)
 
-                        # Пересчитываем пинги ДО изменения UCI
                         old_delays = CACHED_DELAYS.get(sec_name, {})
                         new_delays = {}
                         new_idx = 0
@@ -752,15 +701,11 @@ def main():
                                 new_idx += 1
                         CACHED_DELAYS[sec_name] = new_delays
 
-                        # 1. Локально сохраняем в UCI
                         delete_nodes_batch(sel_list, section=sec_name)
 
-                        # 2. Немедленно отдаем обновленный экран с сохраненными пингами
                         msg_alert = f"🗑 <b>Удалено узлов: {cnt} шт.</b>\n<i>(Служба перезапускается в фоне)</i>\n\n"
                         t, kb = get_servers_screen(delays_map=new_delays, section=sec_name, page=0, delete_mode=False, selected_indices=[])
                         edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
-
-                        # 3. Отложенный рестарт в фоне
                         subprocess.Popen("sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &", shell=True)
 
                     elif data.startswith("srv_pg:"):
@@ -777,11 +722,9 @@ def main():
                         pg = int(p[2]) if len(p) > 2 else 0
                         from subparser.podkop import get_podkop_links, batch_ping_nodes
                         links = get_podkop_links(sec_name)
-                        # Замеряем пинги параллельно
                         delays = batch_ping_nodes(links, section=sec_name, force=True)
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg)
                         edit_msg(token, chat_id, msg_id, t, kb)
-                        # Показываем попап ТОЛЬКО после завершения замеров и обновления экрана
                         answer_callback(token, cb_id, "⚡️ Пинги обновлены!")
 
                     elif data == "noop":
