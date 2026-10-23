@@ -733,40 +733,63 @@ def get_fp_menu_screen():
 
 def get_update_screen():
     import urllib.request, json
+    local_sha = ""
+    local_ver = "unknown"
+    try:
+        with open('/etc/subparser_commit', 'r') as f:
+            local_sha = f.read().strip()
+    except Exception:
+        pass
+
     try:
         with open('/etc/subparser_version', 'r') as f:
             local_ver = f.read().strip()
     except Exception:
-        local_ver = "unknown"
-        
+        pass
+
+    remote_sha = ""
+    remote_ver = local_ver
+    changelog = "Описание недоступно"
+
     try:
-        req = urllib.request.Request("https://raw.githubusercontent.com/ib0lit/SubParser/main/root/etc/subparser_version")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            remote_ver = response.read().decode('utf-8').strip()
+        req = urllib.request.Request("https://api.github.com/repos/ib0lit/SubParser/commits/main", headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            remote_sha = data.get('sha', '').strip()
+            changelog = data.get('commit', {}).get('message', '').replace("<", "&lt;").replace(">", "&gt;")
     except Exception:
-        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений.", {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
-        
-    if local_ver != remote_ver and remote_ver != "":
-        changelog = "Описание недоступно"
-        try:
-            req = urllib.request.Request("https://api.github.com/repos/ib0lit/SubParser/commits/main", headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                changelog = data['commit']['message'].replace("<", "&lt;").replace(">", "&gt;")
-        except Exception:
-            pass
-            
-        text = (f"🎉 <b>Доступно обновление!</b>\n\n"
-                f"Текущая версия: <code>{local_ver}</code>\n"
-                f"Новая версия: <code>{remote_ver}</code>\n\n"
-                f"📝 <b>Что нового (чейнджлог):</b>\n<i>{changelog}</i>")
-                
+        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений на GitHub.", {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+
+    try:
+        req_v = urllib.request.Request("https://raw.githubusercontent.com/ib0lit/SubParser/main/root/etc/subparser_version", headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+        with urllib.request.urlopen(req_v, timeout=5) as resp_v:
+            remote_ver = resp_v.read().decode('utf-8').strip()
+    except Exception:
+        pass
+
+    is_update_available = False
+    if local_sha and remote_sha:
+        is_update_available = (local_sha != remote_sha)
+    elif remote_ver and local_ver != "unknown":
+        is_update_available = (local_ver != remote_ver)
+
+    if is_update_available:
+        short_remote_sha = remote_sha[:7] if remote_sha else ""
+        short_local_sha = local_sha[:7] if local_sha else "н/д"
+        text = (
+            f"🎉 <b>Доступно обновление!</b>\n\n"
+            f"• Текущая версия: <code>v{local_ver}</code> (<code>{short_local_sha}</code>)\n"
+            f"• Новая версия: <code>v{remote_ver}</code> (<code>{short_remote_sha}</code>)\n\n"
+            f"📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"
+        )
         kb = {"inline_keyboard": [
             [{"text": "🔄 Обновить", "callback_data": "do_update"}],
             [{"text": "◀ Главное меню", "callback_data": "home"}]
         ]}
     else:
-        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>{local_ver}</code>"
+        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>v{local_ver}</code>"
+        if local_sha:
+            text += f" (<code>{local_sha[:7]}</code>)"
         kb = {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
-        
+
     return text, kb
