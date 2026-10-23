@@ -443,6 +443,40 @@ def link_fingerprint(link: str) -> str:
     p = urllib.parse.urlsplit(link)
     return f"{p.scheme}://{p.netloc}{p.path}?{p.query}"
 
+def sanitize_podkop_link(link: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(link)
+        scheme = parsed.scheme.lower()
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+
+        if scheme in ("hysteria2", "hy2"):
+            # Для Hysteria 2 нельзя ставить security=none или type=tcp!
+            if "security" in query and query["security"][0].lower() in ("", "none"):
+                del query["security"]
+            clean_query = urllib.parse.urlencode(query, doseq=True)
+            return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, clean_query, parsed.fragment))
+
+        # 1. Исправление type / transport для VLESS / Trojan
+        transport = query.get("type", query.get("net", [""]))[0].lower().strip()
+        if not transport or transport == "none":
+            transport = "tcp"
+        query["type"] = [transport]
+        if "net" in query:
+            del query["net"]
+
+        # 2. Исправление security
+        security = query.get("security", [""])[0].lower().strip()
+        if not security:
+            query["security"] = ["none"]
+        else:
+            query["security"] = [security]
+
+        # 3. Сборка валидного query string без пустых ключей
+        clean_query = urllib.parse.urlencode(query, doseq=True)
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, clean_query, parsed.fragment))
+    except Exception:
+        return link
+
 def main():
     enabled = get_uci("enabled", "0")
     if enabled != "1" and "--force" not in sys.argv:
@@ -683,7 +717,8 @@ def main():
                 
                 safe_encoded_name = urllib.parse.quote(unquoted_name)
                 # Передаем всю ссылку внутри двойных кавычек: uci batch не сочтет # комментарием
-                batch_cmds.append(f"add_list podkop.{sec}.urltest_proxy_links=\"{base_url}#{safe_encoded_name}\"")
+                clean_base_url = sanitize_podkop_link(base_url)
+                batch_cmds.append(f"add_list podkop.{sec}.urltest_proxy_links=\"{clean_base_url}#{safe_encoded_name}\"")
 
             p = subprocess.Popen(["uci", "-q", "batch"], stdin=subprocess.PIPE, text=True)
             p.communicate(input="\n".join(batch_cmds) + "\n")
