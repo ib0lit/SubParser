@@ -52,7 +52,7 @@ from subparser.podkop import (
 )
 from subparser.screens import (
     get_clients_screen, get_device_action_screen, get_dmesg_screen,
-    get_log_screen, get_logread_screen, get_main_screen, get_update_screen,
+    get_log_screen, get_logread_screen, get_main_screen, get_update_screen, get_update_screen,
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_sections_menu_screen, get_sections_selector_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
@@ -105,14 +105,38 @@ def setup_bot_commands(token):
     ]
     tg_api(token, "setMyCommands", {"commands": commands})
 
+def check_post_update_notification(token):
+    import os, json
+    marker = "/tmp/subparser_update_pending"
+    if os.path.exists(marker):
+        try:
+            with open(marker, "r") as f:
+                data = json.load(f)
+            ver = "актуальной"
+            try:
+                with open("/etc/subparser_version", "r") as vf:
+                    ver = vf.read().strip()
+            except Exception:
+                pass
+            msg = f"🚀 <b>Сервис успешно обновлен до версии v{ver}!</b>\nВсе компоненты работают в штатном режиме."
+            kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
+            edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)
+        except Exception as e:
+            print(f"[!] Ошибка отправки пост-апдейт уведомления: {e}")
+        finally:
+            try:
+                os.remove(marker)
+            except Exception:
+                pass
+
 def main():
     offset = 0
     print("[*] SubParser Bot запущен (модульная архитектура)...")
-    check_post_update_notification(token_init)
     init_bot_firewall()
     token_init, _ = check_credentials()
     if token_init:
         setup_bot_commands(token_init)
+        check_post_update_notification(token_init)
 
     while True:
         token, admin_id = check_credentials()
@@ -273,6 +297,27 @@ def main():
                         answer_callback(token, cb_id, "Запуск обновления...")
                         edit_msg(token, chat_id, msg_id, "🔄 <b>Выполняется загрузка и установка обновления...</b>\nБот автоматически перезапустится через 1-2 минуты.", {"inline_keyboard": []})
                         import subprocess
+                        subprocess.Popen(["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh | sh"])
+                        continue
+
+                    elif data == "check_update":
+                        answer_callback(token, cb_id, "Поиск обновлений...")
+                        t, kb = get_update_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+                        continue
+
+                    elif data == "do_update":
+                        if user_id != admin_id:
+                            answer_callback(token, cb_id, "⛔ Доступно только администратору!")
+                            continue
+                        answer_callback(token, cb_id, "Запуск обновления...")
+                        edit_msg(token, chat_id, msg_id, "🔄 <b>Выполняется загрузка и установка обновления...</b>\nБот автоматически перезапустится через 1-2 минуты.", {"inline_keyboard": []})
+                        import json, subprocess
+                        try:
+                            with open("/tmp/subparser_update_pending", "w") as f:
+                                json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
+                        except Exception:
+                            pass
                         subprocess.Popen(["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh | sh"])
                         continue
 
