@@ -16,6 +16,7 @@ def get_main_screen():
     text = "🎛 <b>Панель управления SubParser & OpenWrt</b>\n\nВыберите необходимое действие:"
     kb = {"inline_keyboard": [
         [{"text": "⚙️ Меню парсера", "callback_data": "parser_menu"}, {"text": "📋 Серверы и пинг", "callback_data": "servers"}],
+            [{"text": "🔄 Проверить обновления", "callback_data": "check_update"}],
         [{"text": "📟 Ресурсы роутера", "callback_data": "sysinfo"}, {"text": "👥 Клиенты сети", "callback_data": "clients"}],
         [{"text": "🛡 Доступ к сервисам", "callback_data": "check_services"}, {"text": "📊 Статус системы", "callback_data": "status"}],
         [{"text": "♻️ Рестарт Podkop", "callback_data": "restart"}, {"text": "⚠️ Reboot роутера", "callback_data": "reboot"}]
@@ -728,4 +729,44 @@ def get_fp_menu_screen():
         "Глобально заменяет TLS Client Hello для всех узлов во избежание блокировок по сигнатурам браузера.\n\n"
         f"Текущий режим: <b>{cur_label}</b>"
     )
+    return text, kb
+
+def get_update_screen():
+    import urllib.request, json
+    try:
+        with open('/etc/subparser_version', 'r') as f:
+            local_ver = f.read().strip()
+    except Exception:
+        local_ver = "unknown"
+        
+    try:
+        req = urllib.request.Request("https://raw.githubusercontent.com/ib0lit/SubParser/main/root/etc/subparser_version")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            remote_ver = response.read().decode('utf-8').strip()
+    except Exception:
+        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений.", {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+        
+    if local_ver != remote_ver and remote_ver != "":
+        changelog = "Описание недоступно"
+        try:
+            req = urllib.request.Request("https://api.github.com/repos/ib0lit/SubParser/commits/main", headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                changelog = data['commit']['message'].replace("<", "&lt;").replace(">", "&gt;")
+        except Exception:
+            pass
+            
+        text = (f"🎉 <b>Доступно обновление!</b>\n\n"
+                f"Текущая версия: <code>{local_ver}</code>\n"
+                f"Новая версия: <code>{remote_ver}</code>\n\n"
+                f"📝 <b>Что нового (чейнджлог):</b>\n<i>{changelog}</i>")
+                
+        kb = {"inline_keyboard": [
+            [{"text": "🔄 Обновить", "callback_data": "do_update"}],
+            [{"text": "◀ Главное меню", "callback_data": "home"}]
+        ]}
+    else:
+        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>{local_ver}</code>"
+        kb = {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+        
     return text, kb

@@ -406,6 +406,8 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     if scheme == "vless":
         outbound["uuid"] = auth
         flow = query.get("flow", [""])[0]
+    if isinstance(flow, str):
+        flow = flow.replace("-udp443", "")
         if flow:
             outbound["flow"] = flow
         sec = query.get("security", [""])[0].lower()
