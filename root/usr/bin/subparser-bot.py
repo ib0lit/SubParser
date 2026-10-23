@@ -1,3 +1,27 @@
+def check_post_update_notification(token):
+    import os, json
+    marker = "/tmp/subparser_update_pending"
+    if os.path.exists(marker):
+        try:
+            with open(marker, "r") as f:
+                data = json.load(f)
+            ver = "актуальной"
+            try:
+                with open("/etc/subparser_version", "r") as vf:
+                    ver = vf.read().strip()
+            except Exception:
+                pass
+            msg = f"🚀 <b>Сервис успешно обновлен до версии v{ver}!</b>\nВсе компоненты работают в штатном режиме."
+            kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
+            edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)
+        except Exception as e:
+            print(f"[!] Ошибка отправки пост-апдейт уведомления: {e}")
+        finally:
+            try:
+                os.remove(marker)
+            except Exception:
+                pass
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import sys
@@ -84,6 +108,7 @@ def setup_bot_commands(token):
 def main():
     offset = 0
     print("[*] SubParser Bot запущен (модульная архитектура)...")
+    check_post_update_notification(token_init)
     init_bot_firewall()
     token_init, _ = check_credentials()
     if token_init:
