@@ -271,7 +271,11 @@ def main():
                                 json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
                         except Exception:
                             pass
-                        subprocess.Popen(["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh | sh"])
+                        subprocess.Popen(
+                            ["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh -o /tmp/run_update.sh && chmod +x /tmp/run_update.sh && (/tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
+                            close_fds=True,
+                            start_new_session=True
+                        )
                         continue
 
                     elif data == "parser_menu":
