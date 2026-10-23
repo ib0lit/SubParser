@@ -377,16 +377,14 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     alpn = [p.strip() for p in alpn_raw.split(",") if p.strip()] if alpn_raw else []
     insecure = query.get("allowInsecure", ["0"])[0] in ("1", "true")
 
-    # Читаем override_fp из UCI
     override_fp = get_uci("override_fp", "as_is").lower().strip()
     valid_fps = ("chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized")
 
     if override_fp in valid_fps:
         fp = override_fp
     else:
-        # Режим 'as_is': если в ссылке задан fp — берем его, иначе фолбэк на edge (Chromium-стек без сбросов)
         raw_fp = query.get("fp", [""])[0].lower().strip()
-        fp = raw_fp if raw_fp in valid_fps else "edge"
+        fp = raw_fp if raw_fp in valid_fps else "chrome"
 
     transport_type = query.get("type", [query.get("net", ["tcp"])[0]])[0].lower()
     transport_obj = None
@@ -405,11 +403,11 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
 
     if scheme == "vless":
         outbound["uuid"] = auth
-        flow = query.get("flow", [""])[0]
-    if isinstance(flow, str):
-        flow = flow.replace("-udp443", "")
-        if flow:
-            outbound["flow"] = flow
+        raw_flow = query.get("flow", [""])[0]
+        if isinstance(raw_flow, str):
+            flow = raw_flow.replace("-udp443", "")
+            if flow:
+                outbound["flow"] = flow
         sec = query.get("security", [""])[0].lower()
         if sec == "reality":
             outbound["tls"] = {
@@ -432,7 +430,8 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
 
     elif scheme in ("hysteria2", "hy2"):
         outbound["password"] = auth
-        tls_cfg = {"enabled": True, "server_name": sni, "insecure": insecure, "alpn": alpn if alpn else ["h3"]}
+        hy2_sni = sni if sni else server
+        tls_cfg = {"enabled": True, "server_name": hy2_sni, "insecure": insecure, "alpn": alpn if alpn else ["h3"]}
         outbound["tls"] = tls_cfg
         obfs_type = query.get("obfs", [""])[0]
         if obfs_type: outbound["obfs"] = {"type": obfs_type, "password": query.get("obfs-password", [""])[0]}
