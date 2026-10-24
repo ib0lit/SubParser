@@ -173,6 +173,16 @@ def get_subscriptions():
                 current["user_agent"] = line.split("option user_agent ", 1)[1].strip("'\" ")
             elif line.startswith("option enabled "):
                 current["enabled"] = line.split("option enabled ", 1)[1].strip("'\" ")
+            elif line.startswith("option custom_ua "):
+                current["custom_ua"] = line.split("option custom_ua ", 1)[1].strip("'\" ")
+            elif line.startswith("option device_id "):
+                current["device_id"] = line.split("option device_id ", 1)[1].strip("'\" ")
+            elif line.startswith("option device_model "):
+                current["device_model"] = line.split("option device_model ", 1)[1].strip("'\" ")
+            elif line.startswith("option device_os "):
+                current["device_os"] = line.split("option device_os ", 1)[1].strip("'\" ")
+            elif line.startswith("option os_version "):
+                current["os_version"] = line.split("option os_version ", 1)[1].strip("'\" ")
             elif line.startswith("option name "):
                 current["name"] = line.split("option name ", 1)[1].strip("'\" ")
     if current and current.get("url"):
