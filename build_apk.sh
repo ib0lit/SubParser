@@ -2,7 +2,7 @@
 set -e
 
 PKG_NAME="luci-app-subparser"
-PKG_VER="$(cat root/etc/subparser_version 2>/dev/null | tr -d '[:space:]')"
+PKG_VER="$(cat root/etc/subparser_version 2>/dev/null | tr -d ' \t\r\n')"
 [ -z "$PKG_VER" ] && PKG_VER="0.0.0"
 PKG_REL="1"
 OUT_DIR="./dist"

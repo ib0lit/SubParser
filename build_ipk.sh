@@ -3,7 +3,7 @@ set -e
 
 PKG_NAME="luci-app-subparser"
 # Единый источник версии — root/etc/subparser_version
-PKG_VERSION="$(cat root/etc/subparser_version 2>/dev/null | tr -d '[:space:]')"
+PKG_VERSION="$(cat root/etc/subparser_version 2>/dev/null | tr -d ' \t\r\n')"
 [ -z "$PKG_VERSION" ] && PKG_VERSION="0.0.0"
 PKG_VERSION="${PKG_VERSION}-1"
 

@@ -5,7 +5,7 @@ REPO_USER="ib0lit"
 REPO_NAME="SubParser"
 BRANCH="${SUBPARSER_BRANCH:-}"
 if [ -z "$BRANCH" ] && [ -f /etc/subparser_branch ]; then
-    BRANCH=$(cat /etc/subparser_branch 2>/dev/null | tr -d '[:space:]')
+    BRANCH=$(cat /etc/subparser_branch 2>/dev/null | tr -d ' \t\r\n')
 fi
 [ -z "$BRANCH" ] && BRANCH="main"
 case "$BRANCH" in
