@@ -502,14 +502,14 @@ def main():
 
                     elif data == "run_parser":
                         answer_callback(token, cb_id, "Запуск парсера...")
-                        try:
-                            with open("/tmp/subparser_progress.json", "w") as pf:
-                                json.dump({"token": token, "chat_id": chat_id, "msg_id": msg_id,
-                                           "started": int(time.time())}, pf)
-                        except Exception:
-                            pass
-
-                        ok, text_sync = run_parser_process()
+                        # Файл прогресса создаёт run_parser_process: только
+                        # после проверки, что парсер ещё не выполняется.
+                        ok, text_sync = run_parser_process(progress={
+                            "token": token,
+                            "chat_id": chat_id,
+                            "msg_id": msg_id,
+                            "started": int(time.time()),
+                        })
                         edit_msg(token, chat_id, msg_id, f"▶️ <b>Синхронизация по текущей конфигурации</b>\n\n{text_sync}", reply_markup={"inline_keyboard": []})
                         th = threading.Thread(target=watch_parser_and_restore_menu, args=(token, chat_id, msg_id), daemon=True)
                         th.start()

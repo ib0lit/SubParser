@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, set_uci_val
 
 CACHED_DELAYS = {}
+PROGRESS_FILE = "/tmp/subparser_progress.json"
 
 
 def get_lan_ip():
@@ -313,13 +314,19 @@ def is_parser_running():
     return bool(ps.stdout.strip())
 
 
-def run_parser_process(mode_override=None, force=False):
+def run_parser_process(mode_override=None, force=False, progress=None):
     if is_parser_running():
         return False, "Синхронизация уже запущена!"
     if mode_override:
         set_uci_val("update_mode", mode_override)
+    # progress передаёт бот: файл создаётся только после проверки, что парсер
+    # действительно стартует. Иначе старый файл мог перехватить чужое сообщение.
     try:
-        os.remove("/tmp/subparser_progress.json")
+        if progress:
+            with open(PROGRESS_FILE, "w", encoding="utf-8") as pf:
+                json.dump(progress, pf)
+        else:
+            os.remove(PROGRESS_FILE)
     except Exception:
         pass
     env = dict(os.environ)

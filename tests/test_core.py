@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import os
 import sys
 import tempfile
@@ -65,6 +66,47 @@ class TestRunLog(unittest.TestCase):
     def test_launch_source_from_env(self):
         with mock.patch.dict(os.environ, {"SUBPARSER_TRIGGER": "cron"}):
             self.assertEqual(subparser_main._detect_launch_source(), "cron")
+
+
+class TestRunParserProgress(unittest.TestCase):
+    def test_progress_written_before_start(self):
+        progress = {"token": "t", "chat_id": 1, "msg_id": 2, "started": 123}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "progress.json")
+            with mock.patch.object(podkop, "PROGRESS_FILE", path), \
+                    mock.patch.object(podkop, "is_parser_running", return_value=False), \
+                    mock.patch.object(podkop.subprocess, "Popen") as popen:
+                ok, _ = podkop.run_parser_process(progress=progress)
+            self.assertTrue(ok)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), progress)
+            self.assertEqual(popen.call_args.kwargs["env"]["SUBPARSER_TRIGGER"], "telegram")
+
+    def test_stale_progress_removed_without_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "progress.json")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("{}")
+            with mock.patch.object(podkop, "PROGRESS_FILE", path), \
+                    mock.patch.object(podkop, "is_parser_running", return_value=False), \
+                    mock.patch.object(podkop.subprocess, "Popen"):
+                ok, _ = podkop.run_parser_process()
+            self.assertTrue(ok)
+            self.assertFalse(os.path.exists(path))
+
+    def test_progress_not_touched_when_already_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "progress.json")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"old": true}')
+            with mock.patch.object(podkop, "PROGRESS_FILE", path), \
+                    mock.patch.object(podkop, "is_parser_running", return_value=True), \
+                    mock.patch.object(podkop.subprocess, "Popen") as popen:
+                ok, _ = podkop.run_parser_process(progress={"token": "new"})
+            self.assertFalse(ok)
+            popen.assert_not_called()
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), '{"old": true}')
 
 
 class TestUAAndConfig(unittest.TestCase):
