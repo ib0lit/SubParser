@@ -168,14 +168,14 @@ if ! api_get "/proxies" 2 | grep -q '"proxies"'; then
     exit 0
 fi
 
-# --- Проверка каждой секции Podkop ----------------------------------------------
+# --- Проверка управляемых секций Podkop -----------------------------------------
 SECTION_LIST=$(python3 - <<'PYEOF'
 import sys
 
 sys.path.insert(0, "/usr/lib")
 try:
-    from subparser.podkop import get_all_podkop_sections
-    print(" ".join(get_all_podkop_sections()))
+    from subparser.podkop import get_managed_podkop_sections
+    print(" ".join(get_managed_podkop_sections()))
 except Exception:
     print("main")
 PYEOF

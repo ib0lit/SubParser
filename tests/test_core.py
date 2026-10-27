@@ -169,6 +169,40 @@ class TestPodkopSections(unittest.TestCase):
                          ["@section[0]", "@section[1]"])
 
 
+class TestManagedPodkopSections(unittest.TestCase):
+    def _managed(self, all_sections, per_section, sec_en, target):
+        values = {f"sec_en_{s}": v for s, v in sec_en.items()}
+
+        def fake_bool(opt, default=False):
+            if opt == "per_section_config":
+                return per_section
+            return values.get(opt, default)
+
+        with mock.patch.object(podkop, "get_all_podkop_sections",
+                               return_value=all_sections), \
+                mock.patch.object(podkop, "get_uci_bool", side_effect=fake_bool), \
+                mock.patch.object(podkop, "get_uci_val", return_value=target):
+            return podkop.get_managed_podkop_sections()
+
+    def test_per_section_mode_excludes_disabled(self):
+        result = self._managed(["main", "gemini"], True,
+                               {"main": True, "gemini": False}, "")
+        self.assertEqual(result, ["main"])
+
+    def test_target_list_excludes_removed_section(self):
+        result = self._managed(["main", "gemini"], False, {}, "main")
+        self.assertEqual(result, ["main"])
+
+    def test_empty_target_means_all_sections(self):
+        result = self._managed(["main", "gemini"], False, {}, "")
+        self.assertEqual(result, ["main", "gemini"])
+
+    def test_all_sections_disabled_falls_back_to_main(self):
+        result = self._managed(["main", "gemini"], True,
+                               {"main": False, "gemini": False}, "")
+        self.assertEqual(result, ["main"])
+
+
 class TestTelegramSplit(unittest.TestCase):
     def test_short_text_single_chunk(self):
         self.assertEqual(telegram._split_text("hello"), ["hello"])

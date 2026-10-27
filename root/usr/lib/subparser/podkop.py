@@ -8,7 +8,8 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from .config import LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, set_uci_val
+from .config import (LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, get_uci_bool,
+                     set_uci_val)
 
 CACHED_DELAYS = {}
 PROGRESS_FILE = "/tmp/subparser_progress.json"
@@ -100,6 +101,28 @@ def get_all_podkop_sections():
     except Exception:
         return ["main"]
     return parse_podkop_sections(raw_secs) or ["main"]
+
+
+def get_managed_podkop_sections():
+    """Секции, которые SubParser реально обновляет.
+
+    Watchdog должен проверять только их: выключенная в настройках секция не
+    лечится парсером, поэтому алерт по ней был бы бесконечным.
+    """
+    all_sections = get_all_podkop_sections()
+    try:
+        if get_uci_bool("per_section_config", False):
+            enabled = [s for s in all_sections
+                       if get_uci_bool(f"sec_en_{s}", True)]
+            # Парсер при пустом списке всё равно обновляет main.
+            return enabled or ["main"]
+
+        raw = get_uci_val("target_section", "")
+        targets = [s for s in str(raw).split() if s in all_sections]
+        # Пустой target_section означает «все секции».
+        return targets or all_sections
+    except Exception:
+        return all_sections
 
 
 def get_podkop_links(section="main"):
