@@ -1092,10 +1092,7 @@ def _run():
                              worst <= max(350, int(med * 2.0)))
                     return link, name, med, eff_j, is_st, succ
 
-                # Ограничиваем параллелизм на этапе стресс-теста, чтобы
-                # не раздувать сокетный буфер и RAM при проверке сотен кандидатов.
-                probe_workers = min(6, MAX_WORKERS)
-                with ThreadPoolExecutor(max_workers=probe_workers) as executor:
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
                     for future in as_completed(futures):
                         link, name, med_d, diff, is_stable, succ = future.result()
