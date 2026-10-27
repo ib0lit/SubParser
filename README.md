@@ -70,6 +70,35 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninst
 
 ---
 
+## 🪶 Slim-сборка sing-box для роутеров с малым объёмом флеш-памяти
+
+`sing-box-extended` из фида занимает **~95 МБ** и на устройствах с флеш-памятью 128 МБ и меньше
+забивает `/overlay` под 100 % — после этого перестают сохраняться настройки и обновления.
+
+Готовые сборки **~44 МБ** (архив ~15 МБ) опубликованы в
+**[GitHub Releases](https://github.com/ib0lit/SubParser/releases/tag/slim-v1.14.3-extended-2.7.3)**
+под все распространённые архитектуры OpenWrt: `amd64`, `386`, `arm64`, `armv7`, `armv6`,
+`armv5`, `mips`, `mipsle`, `mips64`, `mips64le`, `riscv64`.
+В каталоге [`slim/`](slim/) — установщик, контрольные суммы и документация.
+
+Сохранены все функции, нужные Podkop и SubParser: **XHTTP, VLESS encryption, Reality/uTLS,
+Fallback, Failover, DNS fallback, Hysteria2, Clash API, TPROXY**. Вырезаны TUN/gVisor,
+admin panel, Node Manager и неиспользуемые протоколы.
+
+Установка одной командой (архитектура определяется автоматически):
+
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/ib0lit/SubParser/slim-v1.14.3-extended-2.7.3/slim/install-slim.sh)"
+```
+
+Скрипт сверит SHA256, проверит конфиг **до** замены, заменит `/usr/bin/sing-box`,
+перезапустит Podkop и покажет статус. Поддерживается откат: `install-slim.sh --rollback FILE`.
+
+📘 Подробно: **[slim/README.md](slim/README.md)** — таблица архитектур, установка через
+WinSCP, откат, поведение после `apk upgrade`, сборка из исходников.
+
+---
+
 ## 📖 О проекте
 
 **SubParser** — легковесный инструмент автоматизации для OpenWrt:

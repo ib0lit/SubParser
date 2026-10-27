@@ -1,0 +1,11 @@
+d5150ba980e693551b573b75a404fafd17993961fa719523179769f00883181b  sing-box-slim-386.tar.gz
+4217216472c070331c3f2ae2d70f46071f2e9eb579cd296663dc5d92a65d53ed  sing-box-slim-amd64.tar.gz
+61f9fcc99b12efdcf6e4dbdec5b2037a90ccea2448844eb30ab74265c8542980  sing-box-slim-arm64.tar.gz
+a2699f92a3339e9b0dc4e7cd045564eadac1def795c15de0471d82378b568261  sing-box-slim-armv5.tar.gz
+f67be7c2426b77e0b15b2d02bb73d3254fd886128d572730f6d47dccbd422ee9  sing-box-slim-armv6.tar.gz
+08ad5e2d442d654b22ddf4028d6228b6a23a9b912a17aae8e46ca02f08c90bb7  sing-box-slim-armv7.tar.gz
+f892d73683e53c43e20fc5bcb34d4d08911a8176fc00e88a1f11e654dbd92245  sing-box-slim-mips.tar.gz
+65032bcc62d55734aa6c906182f23e9e30a9dd070ba23c9f4e54ed600e889dfa  sing-box-slim-mips64.tar.gz
+5be8aa8d32a92f49ec45d8f9157757f41bb003d3775a24652f0c2ccceb95de39  sing-box-slim-mips64le.tar.gz
+4ca983e3fe0d09d235bb3b20501b076f9994d5c0b9ac546cfea018730ad69eb4  sing-box-slim-mipsle.tar.gz
+ad270635632bee2a6ba7524e7570c20cb2780da8a519f6b9fa37ee5c453ad1e2  sing-box-slim-riscv64.tar.gz

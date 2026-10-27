@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto eol=lf
+
+# Slim sing-box builds: архивы не трогать, скрипты — строго LF
+slim/*.tar.gz binary
+slim/*.sh text eol=lf
