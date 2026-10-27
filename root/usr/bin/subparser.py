@@ -987,15 +987,9 @@ def _run():
                  (time.time() - float(cached.get("ts", 0) or 0)) < cache_ttl and
                  isinstance(cached.get("results"), dict))
 
-    group_tag = "__sp_group"
     proc = None
     tmp_cfg = None
     if not use_cache:
-        outbounds.append({
-            "type": "urltest", "tag": group_tag,
-            "outbounds": list(tag_map.keys()),
-            "interval": "10m", "tolerance": 50,
-        })
         outbounds.append({"type": "direct", "tag": "direct"})
         cfg = {
             "log": {"level": "error"},
@@ -1037,47 +1031,31 @@ def _run():
             print(f"\n[Этап 1/2] Быстрый скрининг {len(tag_map)} узлов...")
             stage1_candidates = []
 
-            # Один запрос к группе: sing-box опрашивает узлы параллельно внутри ядра.
-            group_delays = query_group_delays(api_port, group_tag, timeout_ms=3000)
-            if group_delays:
-                print(f"  [i] Групповой замер вернул результаты по {len(group_delays)} узлам.")
-                for tag, link in tag_map.items():
+            def quick_probe(item):
+                tag, link = item
+                delays = []
+                for i in range(2):
+                    d = query_node_delay(api_port, tag, timeout_ms=3000)
+                    if d > 0:
+                        delays.append(d)
+                    if i == 0:
+                        time.sleep(0.1)
+                return tag, link, delays
+
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
+                for future in as_completed(futures):
+                    tag, link, delays = future.result()
                     name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                    delay = int(group_delays.get(tag, -1))
-                    if delay > 0:
+                    if delays:
+                        min_d = min(delays)
                         if not (filter_ru and is_ru_node(name)):
-                            stage1_candidates.append((tag, link, delay))
-                        results[link] = {"delay": delay, "jitter": 0, "is_stable": False,
-                                         "success_count": 1, "name": name}
-                        print(f"[ALIVE] {delay:4d} ms | {name}")
+                            stage1_candidates.append((tag, link, min_d))
+                        results[link] = {"delay": min_d, "jitter": 0, "is_stable": False,
+                                         "success_count": len(delays), "name": name}
+                        print(f"[ALIVE] {min_d:4d} ms | {name}")
                     else:
                         print(f"[DEAD ]         | {name}")
-            else:
-                def quick_probe(item):
-                    tag, link = item
-                    delays = []
-                    for i in range(2):
-                        d = query_node_delay(api_port, tag, timeout_ms=3000)
-                        if d > 0:
-                            delays.append(d)
-                        if i == 0:
-                            time.sleep(0.1)
-                    return tag, link, delays
-
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
-                    for future in as_completed(futures):
-                        tag, link, delays = future.result()
-                        name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                        if delays:
-                            min_d = min(delays)
-                            if not (filter_ru and is_ru_node(name)):
-                                stage1_candidates.append((tag, link, min_d))
-                            results[link] = {"delay": min_d, "jitter": 0, "is_stable": False,
-                                             "success_count": len(delays), "name": name}
-                            print(f"[ALIVE] {min_d:4d} ms | {name}")
-                        else:
-                            print(f"[DEAD ]         | {name}")
 
             print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
             if stage1_candidates:
