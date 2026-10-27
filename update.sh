@@ -100,7 +100,10 @@ if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
     rm -rf "$TMP_DIR"
     exit 1
 fi
-SRC_PATH="${TMP_DIR}/${REPO_NAME}-${BRANCH}/root"
+# GitHub заменяет слэши в имени ветки при формировании каталога архива,
+# поэтому ищем распакованный корень, а не собираем имя вручную.
+SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
+SRC_PATH="${SRC_PARENT}/root"
 if [ ! -d "$SRC_PATH" ]; then
     echo "[!] В архиве не найдена ожидаемая структура ${SRC_PATH}."
     rm -rf "$TMP_DIR"
