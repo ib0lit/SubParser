@@ -68,6 +68,35 @@ print(json.dumps(sections, ensure_ascii=False))
 PYEOF
         ;;
 
+    get_github_branches)
+        # Список веток для выпадающего списка в LuCI: исключает опечатки
+        # вроде `min` вместо `main`. При ошибке API возвращаем main + текущую.
+        CURRENT=$(uci -q get subparser.settings.update_branch)
+        BRANCHES_JSON=$(curl -sL -m 6 -H "User-Agent: SubParser" \
+            "https://api.github.com/repos/ib0lit/SubParser/branches?per_page=100" 2>/dev/null)
+        printf '%s' "$BRANCHES_JSON" | CURRENT="$CURRENT" python3 -c '
+import json
+import os
+import sys
+
+current = (os.environ.get("CURRENT") or "main").strip() or "main"
+try:
+    data = json.load(sys.stdin)
+    names = sorted({b.get("name") for b in data
+                    if isinstance(b, dict) and b.get("name")})
+except Exception:
+    names = []
+
+ordered = ["main"]
+if current != "main":
+    ordered.append(current)
+for name in names:
+    if name not in ordered:
+        ordered.append(name)
+print(json.dumps(ordered, ensure_ascii=False))
+'
+        ;;
+
     test_tg)
         TOKEN=$(uci -q get subparser.settings.tg_bot_token)
         CHAT_ID=$(uci -q get subparser.settings.tg_chat_id)

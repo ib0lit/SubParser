@@ -7,6 +7,7 @@
 return view.extend({
     serverLinks: [],
     availableSections: ['main'],
+    githubBranches: ['main'],
 
     load: function() {
         var self = this;
@@ -19,6 +20,15 @@ return view.extend({
         }).catch(function() {
             self.availableSections = ['main'];
             return [];
+        }).then(function(links) {
+            return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_branches']).then(function(res) {
+                try { self.githubBranches = JSON.parse(res.stdout.trim() || '["main"]'); }
+                catch(e) { self.githubBranches = ['main']; }
+                return links;
+            }).catch(function() {
+                self.githubBranches = ['main'];
+                return links;
+            });
         });
     },
 
@@ -267,10 +277,15 @@ return view.extend({
         o.default = 'socks5h://127.0.0.1:4534';
         o.rmempty = true;
 
-        o = s.taboption('advanced', form.Value, 'update_branch', _('Ветка GitHub для обновлений'));
-        o.placeholder = 'main';
+        o = s.taboption('advanced', form.ListValue, 'update_branch', _('Ветка GitHub для обновлений'));
+        var branches = (this.githubBranches && this.githubBranches.length)
+            ? this.githubBranches : ['main'];
+        if (branches.indexOf('main') === -1) branches.unshift('main');
+        branches.forEach(function(name) {
+            o.value(name, name === 'main' ? _('main (стабильная)') : name);
+        });
         o.default = 'main';
-        o.description = _('Позволяет обновляться с тестовой ветки. Для стабильной работы оставьте <code>main</code>.');
+        o.description = _('Список веток загружается из GitHub. Для стабильной работы выберите <code>main</code>.');
 
         o = s.taboption('telegram', form.Value, 'tg_bot_token', _('Telegram Bot Token'));
         o.placeholder = '123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ';
