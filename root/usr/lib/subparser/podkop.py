@@ -362,7 +362,7 @@ def capture_selection(section, links, proxies=None):
     return _capture_selection(section, links, proxies)
 
 
-def restore_selection(section, mode, link, new_links):
+def restore_selection(section, mode, link, new_links, proxies=None):
     """Восстанавливает ручной выбор по ссылке и возвращает статус."""
     if mode == "auto":
         return "auto"
@@ -371,8 +371,28 @@ def restore_selection(section, mode, link, new_links):
     new_index = _find_link_index(new_links, link)
     if new_index < 0:
         return "lost"
+    if proxies is None:
+        proxies, api_status = fetch_proxies()
+        api_ready = api_status in (200, 204)
+    else:
+        api_ready = bool(proxies)
+    # В режиме добавления индексы не сдвигаются, и Podkop после рестарта
+    # обычно сам оставляет выбор на прежнем сервере. Тогда PUT не нужен:
+    # на медленном API лишний запрос давал ложное «не удалось вернуть узел».
+    _, selector = _selector_data(section, proxies)
+    now = selector.get("now", "") if isinstance(selector, dict) else ""
+    current = _link_from_tag(section, now, new_links)
+    if current is not None and \
+            _link_identity(current) == _link_identity(link):
+        return "restored"
     ok, _ = _switch_with_retry(section, new_index)
-    return "restored" if ok else "failed"
+    if ok:
+        return "restored"
+    # Если API так и не ответил, это не ошибка восстановления: проверить
+    # и переключить селектор было невозможно.
+    if not api_ready:
+        return "not_ready"
+    return "failed"
 
 
 def _capture_selection(section, links, proxies):
@@ -393,7 +413,7 @@ def _capture_selection(section, links, proxies):
     return "unknown", None
 
 
-def _switch_with_retry(section, index, attempts=5):
+def _switch_with_retry(section, index, attempts=15):
     """Переключает селектор после рестарта, когда API ещё может быть не готов."""
     tag = f"{section}-{index+1}-out"
     for attempt in range(attempts):
@@ -401,7 +421,7 @@ def _switch_with_retry(section, index, attempts=5):
         if ok:
             return True, tag
         if attempt + 1 < attempts:
-            time.sleep(1)
+            time.sleep(2)
     return False, tag
 
 

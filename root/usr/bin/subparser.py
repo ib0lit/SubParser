@@ -68,10 +68,14 @@ except Exception:
 
 try:
     from subparser.podkop import (capture_selection, restore_selection,
+                                  fetch_proxies,
                                   get_proxies as get_podkop_proxies)
 except Exception:
     def get_podkop_proxies():
         return {}
+
+    def fetch_proxies():
+        return {}, None
 
     def capture_selection(section, links, proxies=None):
         return "unknown", None
@@ -288,10 +292,10 @@ def send_telegram_notify(text):
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode("utf-8")
 
         print("[*] Ожидание готовности сети для отправки отчета в Telegram...")
-        time.sleep(3)
+        time.sleep(4)
 
-        max_attempts = 6
-        retry_delay = 5
+        max_attempts = 20
+        retry_delay = 10
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -808,8 +812,15 @@ def _restore_podkop_backup():
         return False
 
 
-def _wait_podkop_ready(timeout=120):
+def _wait_podkop_ready(timeout=240):
+    """Ждёт не только процесс sing-box, но и готовый Clash API.
+
+    При большом числе правил процесс появляется раньше, чем API начинает
+    отвечать. Без этой проверки восстановление выбора и отчёт уходят слишком
+    рано, и получается ложное «не удалось вернуть активный узел».
+    """
     deadline = time.time() + timeout
+    process_seen = False
     while time.time() < deadline:
         try:
             status = subprocess.run(["/etc/init.d/podkop", "status"],
@@ -817,11 +828,16 @@ def _wait_podkop_ready(timeout=120):
             pid = subprocess.run(["pidof", "sing-box"], stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, text=True).stdout.strip()
             if status.returncode == 0 and pid:
-                return True
+                process_seen = True
+                proxies, api_status = fetch_proxies()
+                if api_status in (200, 204) and proxies:
+                    return True
         except Exception:
             pass
         time.sleep(2)
-    return False
+    # Podkop запущен, но Clash API так и не ответил (например, отключён).
+    # Конфигурацию из-за этого не откатываем — она рабочая.
+    return process_seen
 
 
 def _escape_uci_batch_value(value):
@@ -1255,7 +1271,7 @@ def _run():
         subprocess.run(["/etc/init.d/podkop", "restart"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         podkop_restarted = True
-        if not _wait_podkop_ready(timeout=120):
+        if not _wait_podkop_ready(timeout=240):
             print("[!] Podkop не поднялся после обновления — откатываем конфигурацию.")
             _restore_podkop_backup()
             send_telegram_notify(
@@ -1271,6 +1287,8 @@ def _run():
                 selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: активный узел сохранён")
             elif status == "lost":
                 selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: выбранный узел не попал в новый список, авто")
+            elif status == "not_ready":
+                selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: Clash API не ответил, выбор не проверен")
             elif status == "failed":
                 selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: не удалось вернуть активный узел")
         print("Podkop успешно обновлен!")
