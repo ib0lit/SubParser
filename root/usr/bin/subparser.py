@@ -8,6 +8,7 @@ import socket
 import ssl
 import gzip
 import base64
+import gc
 import fcntl
 import hashlib
 import html
@@ -606,7 +607,7 @@ def query_node_delay(api_port: int, tag: str, timeout_ms: int = 3500) -> int:
     encoded_url = urllib.parse.quote(TEST_URL, safe="")
     api_url = f"http://127.0.0.1:{api_port}/proxies/{encoded_tag}/delay?url={encoded_url}&timeout={timeout_ms}"
     try:
-        req = urllib.request.Request(api_url)
+        req = urllib.request.Request(api_url, headers={"Connection": "close"})
         with urllib.request.urlopen(req, timeout=(timeout_ms / 1000.0) + 1.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return int(data.get("delay", -1))
@@ -990,6 +991,7 @@ def _run():
     proc = None
     tmp_cfg = None
     if not use_cache:
+        gc.collect()
         outbounds.append({"type": "direct", "tag": "direct"})
         cfg = {
             "log": {"level": "error"},
@@ -1075,6 +1077,8 @@ def _run():
                         d = query_node_delay(api_port, tag, timeout_ms=3000)
                         if d > 0:
                             delays.append(d)
+                        if _i < 4:
+                            time.sleep(0.15)
                     name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
                     succ = len(delays)
                     if succ < 4:
@@ -1088,7 +1092,10 @@ def _run():
                              worst <= max(350, int(med * 2.0)))
                     return link, name, med, eff_j, is_st, succ
 
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                # Ограничиваем параллелизм на этапе стресс-теста, чтобы
+                # не раздувать сокетный буфер и RAM при проверке сотен кандидатов.
+                probe_workers = min(6, MAX_WORKERS)
+                with ThreadPoolExecutor(max_workers=probe_workers) as executor:
                     futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
                     for future in as_completed(futures):
                         link, name, med_d, diff, is_stable, succ = future.result()
