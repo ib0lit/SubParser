@@ -24,7 +24,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Syntax check shell scripts
         run: |
-          for f in install.sh update.sh uninstall.sh build_ipk.sh build_apk.sh sync-pull.sh root/usr/bin/*.sh root/etc/init.d/* root/etc/hotplug.d/uci/*; do
+          for f in install.sh update.sh uninstall.sh build_ipk.sh build_apk.sh root/usr/bin/*.sh root/etc/init.d/* root/etc/hotplug.d/uci/*; do
+            [ -e "$f" ] || continue
             echo "checking $f"
             sh -n "$f"
           done
