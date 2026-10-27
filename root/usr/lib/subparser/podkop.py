@@ -288,6 +288,9 @@ def reset_to_auto_urltest(section="main"):
 
 def _write_links(section, links, restart=False):
     """Атомарная перезапись списка ссылок. Бэкап делает вызывающая сторона."""
+    # Пустая секция ломает запуск Podkop, поэтому последний узел не удаляем.
+    if not links:
+        return False
     batch = [f"delete podkop.{section}.urltest_proxy_links"]
     for link in links:
         escaped = str(link).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "").replace("\r", "")
@@ -309,6 +312,8 @@ def delete_node(index, section="main"):
     links = get_podkop_links(section)
     if index < 0 or index >= len(links):
         return False, "Неверный индекс"
+    if len(links) <= 1:
+        return False, "Нельзя удалить последний узел секции"
     removed = links.pop(index)
     if not _write_links(section, links, restart=True):
         return False, "Не удалось записать конфигурацию"
@@ -322,6 +327,8 @@ def delete_nodes_batch(indices, section="main", restart=False):
     del_set = set(indices)
     new_links = [link for i, link in enumerate(links) if i not in del_set]
     removed_count = len(links) - len(new_links)
+    if not new_links:
+        return False, 0
     if not _write_links(section, new_links, restart=restart):
         return False, 0
     return True, removed_count
@@ -360,14 +367,20 @@ def scan_dead_in_all_sections():
             if isinstance(delay, int) and delay <= 0:
                 dead.append(i)
 
-        if dead:
+        if dead and len(dead) == len(links):
+            # Удалять нечего: секция осталась бы пустой и Podkop не стартовал бы.
+            status = "all_dead"
+            plan_indices = []
+        elif dead:
             status = "dead"
             total_dead += len(dead)
+            plan_indices = dead
         else:
             status = "no_data" if skipped == len(links) else "clean"
+            plan_indices = []
         details.append({"section": section, "total": len(links),
                         "dead": len(dead), "skipped": skipped,
-                        "status": status, "indices": dead,
+                        "status": status, "indices": plan_indices,
                         "links": list(links)})
 
     return {"total": total_dead, "error": "", "details": details}
@@ -388,6 +401,12 @@ def delete_dead_plan(plan_details):
                   "dead": int(item.get("dead", 0)), "deleted": 0,
                   "skipped": skipped, "status": item.get("status", "clean")}
         if not indices:
+            details.append(result)
+            continue
+
+        # Страховка: не оставляем секцию без единого узла даже при битом плане.
+        if len(indices) >= total:
+            result["status"] = "all_dead"
             details.append(result)
             continue
 

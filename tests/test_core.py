@@ -129,10 +129,10 @@ class TestDeadScanAndDelete(unittest.TestCase):
     def test_scan_builds_plan_without_changes(self):
         result, delete, restart = self._scan(
             ["main", "gemini", "empty"],
-            {"main": ["a", "b"], "gemini": ["c"], "empty": []},
+            {"main": ["a", "b"], "gemini": ["c", "d"], "empty": []},
             {"main-1-out": {}, "main-2-out": {},
-             "gemini-1-out": {}},
-            {"main": {0: 100, 1: -1}, "gemini": {0: -1}},
+             "gemini-1-out": {}, "gemini-2-out": {}},
+            {"main": {0: 100, 1: -1}, "gemini": {0: -1, 1: 150}},
         )
         self.assertEqual(result["total"], 2)
         self.assertFalse(result["error"])
@@ -144,14 +144,23 @@ class TestDeadScanAndDelete(unittest.TestCase):
         delete.assert_not_called()
         restart.assert_not_called()
 
+    def test_scan_marks_fully_dead_section(self):
+        result, delete, restart = self._scan(
+            ["only"], {"only": ["a"]}, {"only-1-out": {}}, {"only": {0: -1}})
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["details"][0]["status"], "all_dead")
+        self.assertEqual(result["details"][0]["indices"], [])
+        delete.assert_not_called()
+        restart.assert_not_called()
+
     def test_delete_plan_deletes_and_restarts_once(self):
         details = [
             {"section": "main", "total": 2, "dead": 1, "skipped": 0,
              "status": "dead", "indices": [1]},
-            {"section": "gemini", "total": 1, "dead": 1, "skipped": 0,
+            {"section": "gemini", "total": 2, "dead": 1, "skipped": 0,
              "status": "dead", "indices": [0]},
         ]
-        links = {"main": ["a", "b"], "gemini": ["c"]}
+        links = {"main": ["a", "b"], "gemini": ["c", "d"]}
         with mock.patch.object(podkop, "get_podkop_links",
                                side_effect=lambda s: list(links[s])), \
                 mock.patch.object(podkop, "delete_nodes_batch",
@@ -165,6 +174,19 @@ class TestDeadScanAndDelete(unittest.TestCase):
         delete.assert_any_call([1], section="main", restart=False)
         delete.assert_any_call([0], section="gemini", restart=False)
         restart.assert_called_once()
+
+    def test_delete_plan_refuses_to_empty_section(self):
+        details = [{"section": "main", "total": 2, "dead": 2, "skipped": 0,
+                    "status": "dead", "indices": [0, 1]}]
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "b"]), \
+                mock.patch.object(podkop, "delete_nodes_batch") as delete, \
+                mock.patch.object(podkop, "restart_podkop") as restart:
+            result = podkop.delete_dead_plan(details)
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["details"][0]["status"], "all_dead")
+        delete.assert_not_called()
+        restart.assert_not_called()
 
     def test_plan_is_skipped_when_section_changed(self):
         details = [{"section": "main", "total": 3, "dead": 1, "skipped": 0,
@@ -193,10 +215,10 @@ class TestDeadScanAndDelete(unittest.TestCase):
         restart.assert_not_called()
 
     def test_restart_failure_is_reported(self):
-        details = [{"section": "main", "total": 1, "dead": 1, "skipped": 0,
+        details = [{"section": "main", "total": 2, "dead": 1, "skipped": 0,
                     "status": "dead", "indices": [0]}]
         with mock.patch.object(podkop, "get_podkop_links",
-                               return_value=["a"]), \
+                               return_value=["a", "b"]), \
                 mock.patch.object(podkop, "delete_nodes_batch",
                                   return_value=(True, 1)), \
                 mock.patch.object(podkop, "restart_podkop",
@@ -222,6 +244,33 @@ class TestDeadScanAndDelete(unittest.TestCase):
         self.assertEqual(result["total"], 0)
         delete.assert_not_called()
         restart.assert_not_called()
+
+
+class TestLastNodeProtection(unittest.TestCase):
+    def test_write_links_refuses_empty_list(self):
+        with mock.patch.object(podkop.subprocess, "Popen") as popen, \
+                mock.patch.object(podkop.subprocess, "run") as run:
+            self.assertFalse(podkop._write_links("main", []))
+        popen.assert_not_called()
+        run.assert_not_called()
+
+    def test_batch_delete_refuses_all_nodes(self):
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "b"]), \
+                mock.patch.object(podkop, "_write_links") as write:
+            ok, deleted = podkop.delete_nodes_batch([0, 1])
+        self.assertFalse(ok)
+        self.assertEqual(deleted, 0)
+        write.assert_not_called()
+
+    def test_single_delete_refuses_last_node(self):
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a"]), \
+                mock.patch.object(podkop, "_write_links") as write:
+            ok, msg = podkop.delete_node(0)
+        self.assertFalse(ok)
+        self.assertIn("последний", msg)
+        write.assert_not_called()
 
 
 class TestRestartPodkop(unittest.TestCase):

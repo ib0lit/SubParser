@@ -706,6 +706,9 @@ def main():
                                 lines.append(f"• <b>{sec}</b>: ошибка записи")
                             elif status == "stale":
                                 lines.append(f"• <b>{sec}</b>: изменилась, пропущено")
+                            elif status == "all_dead":
+                                lines.append(f"• <b>{sec}</b>: все {total} мёртвые — "
+                                             "оставлено без изменений")
                             elif status == "deleted":
                                 lines.append(f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}")
                             else:
@@ -722,7 +725,7 @@ def main():
                             text = (f"🧹 <b>Удалено мёртвых узлов: {total_deleted}</b>\n\n"
                                     + "\n".join(lines) +
                                     f"\n\n<i>{note}</i>")
-                        elif any(item.get("status") in ("stale", "error")
+                        elif any(item.get("status") in ("stale", "error", "all_dead")
                                  for item in res.get("details", [])):
                             text = ("⚠️ <b>Ничего не удалено</b>\n\n"
                                     + "\n".join(lines) +
@@ -835,6 +838,26 @@ def main():
                         sel_set = set(sel_list)
                         cnt = len(sel_set)
 
+                        if cnt >= len(all_links):
+                            msg_alert = ("⚠️ <b>Нельзя удалить все узлы</b>\n"
+                                         "<i>В секции должен остаться хотя бы один сервер, "
+                                         "иначе Podkop не запустится.</i>\n\n")
+                            t, kb = get_servers_screen(delays_map=CACHED_DELAYS.get(sec_name, {}),
+                                                       section=sec_name, page=0,
+                                                       delete_mode=False, selected_indices=[])
+                            edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
+                            continue
+
+                        ok, deleted = delete_nodes_batch(sel_list, section=sec_name)
+                        if not ok:
+                            msg_alert = ("⚠️ <b>Не удалось удалить узлы</b>\n"
+                                         "<i>Конфигурация Podkop не изменена.</i>\n\n")
+                            t, kb = get_servers_screen(delays_map=CACHED_DELAYS.get(sec_name, {}),
+                                                       section=sec_name, page=0,
+                                                       delete_mode=False, selected_indices=[])
+                            edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
+                            continue
+
                         old_delays = CACHED_DELAYS.get(sec_name, {})
                         new_delays = {}
                         new_idx = 0
@@ -845,9 +868,7 @@ def main():
                                 new_idx += 1
                         CACHED_DELAYS[sec_name] = new_delays
 
-                        delete_nodes_batch(sel_list, section=sec_name)
-
-                        msg_alert = f"🗑 <b>Удалено узлов: {cnt} шт.</b>\n<i>(Служба перезапускается в фоне)</i>\n\n"
+                        msg_alert = f"🗑 <b>Удалено узлов: {deleted} шт.</b>\n<i>(Служба перезапускается в фоне)</i>\n\n"
                         t, kb = get_servers_screen(delays_map=new_delays, section=sec_name, page=0, delete_mode=False, selected_indices=[])
                         edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
                         subprocess.Popen("sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &", shell=True)

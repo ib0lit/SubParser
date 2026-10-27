@@ -391,6 +391,8 @@ def get_del_dead_all_confirm_screen(details, total_dead):
             lines.append(f"• <b>{sec}</b>: пропущено (нет данных Podkop)")
         elif status == "dead":
             lines.append(f"• <b>{sec}</b>: мёртвых <b>{dead}</b> из {total}")
+        elif status == "all_dead":
+            lines.append(f"• <b>{sec}</b>: все <b>{total}</b> мёртвые — секция не изменяется")
         else:
             lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
         if skipped and status != "no_data":
@@ -407,6 +409,17 @@ def get_del_dead_all_confirm_screen(details, total_dead):
         kb = {"inline_keyboard": [
             [{"text": f"✅ Удалить {total_dead}", "callback_data": "del_dead_all_do"}],
             [{"text": "❌ Отмена", "callback_data": "servers"}],
+        ]}
+    elif any(item.get("status") == "all_dead" for item in details or []):
+        text = (
+            "⚠️ <b>Удалять нечего</b>\n\n"
+            + "\n".join(lines) +
+            "\n\n<i>Секции без живых узлов оставлены без изменений, "
+            "чтобы Podkop мог запуститься. Разберитесь с ними вручную.</i>"
+        )
+        kb = {"inline_keyboard": [
+            [{"text": "◀️ К секциям", "callback_data": "servers"}],
+            [{"text": "🏠 В главное меню", "callback_data": "home"}],
         ]}
     else:
         text = (
