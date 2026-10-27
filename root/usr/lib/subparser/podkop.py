@@ -287,6 +287,83 @@ def delete_nodes_batch(indices, section="main", restart=False):
     return True, removed_count
 
 
+def delete_dead_from_all_sections():
+    """Проверяет все секции и удаляет мёртвые узлы за один перезапуск Podkop.
+
+    Узлы, которых нет в текущем runtime Podkop, не удаляются: проверить их
+    невозможно, а массовое удаление по ошибке API недопустимо.
+    """
+    sections = get_all_podkop_sections()
+    proxies = get_proxies()
+    details = []
+    total_deleted = 0
+
+    if not proxies:
+        return {"total": 0, "changed": False, "restarted": False,
+                "error": "Podkop API недоступен", "details": []}
+
+    for section in sections:
+        links = get_podkop_links(section)
+        if not links:
+            details.append({"section": section, "total": 0, "dead": 0,
+                            "deleted": 0, "skipped": 0, "status": "empty"})
+            continue
+
+        delays = batch_ping_nodes(links, section=section, force=True)
+        dead = []
+        skipped = 0
+        for i in range(len(links)):
+            tag = f"{section}-{i+1}-out"
+            if tag not in proxies:
+                skipped += 1
+                continue
+            delay = delays.get(i)
+            if isinstance(delay, int) and delay <= 0:
+                dead.append(i)
+
+        if not dead:
+            status = "no_data" if skipped == len(links) else "clean"
+            details.append({"section": section, "total": len(links), "dead": 0,
+                            "deleted": 0, "skipped": skipped, "status": status})
+            continue
+
+        ok, deleted = delete_nodes_batch(dead, section=section, restart=False)
+        if not ok:
+            details.append({"section": section, "total": len(links),
+                            "dead": len(dead), "deleted": 0,
+                            "skipped": skipped, "status": "error"})
+            continue
+
+        del_set = set(dead)
+        old_delays = CACHED_DELAYS.get(section, {})
+        new_delays = {}
+        new_idx = 0
+        for old_idx in range(len(links)):
+            if old_idx not in del_set:
+                if old_idx in old_delays:
+                    new_delays[new_idx] = old_delays[old_idx]
+                new_idx += 1
+        CACHED_DELAYS[section] = new_delays
+
+        total_deleted += deleted
+        details.append({"section": section, "total": len(links),
+                        "dead": len(dead), "deleted": deleted,
+                        "skipped": skipped, "status": "deleted"})
+
+    restarted = False
+    if total_deleted:
+        try:
+            subprocess.Popen(
+                "nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &",
+                shell=True)
+            restarted = True
+        except Exception:
+            restarted = False
+
+    return {"total": total_deleted, "changed": bool(total_deleted),
+            "restarted": restarted, "error": "", "details": details}
+
+
 def batch_ping_nodes(links, section="main", force=False):
     results = {}
     if not links:

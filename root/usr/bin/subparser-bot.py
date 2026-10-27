@@ -35,6 +35,7 @@ from subparser.screens import (
     get_log_screen, get_logread_screen, get_main_screen, get_update_screen,
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_sections_menu_screen, get_sections_selector_screen,
+    get_del_dead_all_confirm_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
 )
@@ -248,6 +249,7 @@ def main():
                     ADMIN_PREFIXES = (
                         'sub_del_', 'reboot', 'do_reboot', 'restart', 'enter_del_mode',
                         'srv_del_pg', 'apply_bdel', 'del:', 'blk:', 'unblk:', 'do_update',
+                        'del_dead_all',
                     )
                     if any(data == p or data.startswith(p) for p in ADMIN_PREFIXES) and user_id != admin_id:
                         print(f"[AUTH REJECT] Admin-only action '{data}' blocked for user {username} ({user_id})")
@@ -635,6 +637,62 @@ def main():
                         else:
                             t, kb = get_sections_selector_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "del_dead_all":
+                        answer_callback(token, cb_id)
+                        t, kb = get_del_dead_all_confirm_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "del_dead_all_do":
+                        answer_callback(token, cb_id, "Проверяю узлы...")
+                        edit_msg(token, chat_id, msg_id,
+                                 "🧹 <b>Проверяю узлы во всех секциях...</b>\n\n"
+                                 "<i>Это может занять до минуты.</i>",
+                                 {"inline_keyboard": []})
+                        from subparser.podkop import delete_dead_from_all_sections
+                        res = delete_dead_from_all_sections()
+                        if res.get("error"):
+                            text = (f"⚠️ <b>Не удалось проверить узлы</b>\n\n"
+                                    f"{html.escape(res['error'])}\n\n"
+                                    "Podkop не изменялся.")
+                        else:
+                            lines = []
+                            for item in res.get("details", []):
+                                sec = html.escape(str(item.get("section", "?")))
+                                status = item.get("status")
+                                total = int(item.get("total", 0))
+                                deleted = int(item.get("deleted", 0))
+                                skipped = int(item.get("skipped", 0))
+                                if status == "empty":
+                                    lines.append(f"• <b>{sec}</b>: нет узлов")
+                                elif status == "no_data":
+                                    lines.append(f"• <b>{sec}</b>: пропущено (нет данных Podkop)")
+                                elif status == "error":
+                                    lines.append(f"• <b>{sec}</b>: ошибка записи")
+                                elif status == "deleted":
+                                    lines.append(f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}")
+                                else:
+                                    lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
+                                if skipped and status != "no_data":
+                                    lines.append(f"   <i>не проверено: {skipped}</i>")
+
+                            total_deleted = int(res.get("total", 0))
+                            if total_deleted:
+                                note = ("Podkop перезапускается один раз в фоне."
+                                        if res.get("restarted")
+                                        else "Не удалось запустить перезапуск Podkop.")
+                                text = (f"🧹 <b>Удалено мёртвых узлов: {total_deleted}</b>\n\n"
+                                        + "\n".join(lines) +
+                                        f"\n\n<i>{note}</i>")
+                            else:
+                                text = ("✅ <b>Мёртвых узлов не найдено</b>\n\n"
+                                        + "\n".join(lines) +
+                                        "\n\n<i>Podkop не перезапускался.</i>")
+                        kb = {"inline_keyboard": [
+                            [{"text": "◀️ К секциям", "callback_data": "servers"}],
+                            [{"text": "🏠 В главное меню", "callback_data": "home"}],
+                        ]}
+                        edit_msg(token, chat_id, msg_id, text, kb)
 
                     elif data.startswith("sec_view:"):
                         answer_callback(token, cb_id, "Замеряю пинг...")

@@ -371,9 +371,29 @@ def get_sections_selector_screen():
         lines.append(f"• <b>{html.escape(s)}</b>: <code>{count} узлов</code>")
         keyboard.append([{"text": f"📁 Секция: {s} ({count} шт.)", "callback_data": f"sec_view:{s}"}])
 
+    keyboard.append([{"text": "🧹 Удалить DEAD из всех секций", "callback_data": "del_dead_all"}])
     keyboard.append([{"text": "◀️ В главное меню", "callback_data": "home"}])
     text = "📋 <b>Серверы Podkop: выбор секции</b>\n\n" + "\n".join(lines) + "\n\n<i>Выберите секцию для просмотра серверов:</i>"
     return text, {"inline_keyboard": keyboard}
+
+
+def get_del_dead_all_confirm_screen():
+    all_secs = get_all_podkop_sections()
+    names = ", ".join(html.escape(s) for s in all_secs) or "—"
+    text = (
+        "🧹 <b>Удалить DEAD из всех секций</b>\n\n"
+        f"Секции: <code>{names}</code>\n\n"
+        "Будет выполнен принудительный пинг всех узлов. Не ответившие узлы "
+        "будут удалены, после чего Podkop перезапустится <b>один раз</b>.\n\n"
+        "Секции, которые сейчас не активны в Podkop и не имеют данных для "
+        "проверки, будут пропущены.\n\n"
+        "Продолжить?"
+    )
+    kb = {"inline_keyboard": [
+        [{"text": "✅ Да, проверить и удалить", "callback_data": "del_dead_all_do"}],
+        [{"text": "❌ Отмена", "callback_data": "servers"}],
+    ]}
+    return text, kb
 
 def get_system_metrics():
     uptime_str = "н/д"

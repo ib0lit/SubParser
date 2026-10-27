@@ -109,6 +109,56 @@ class TestRunParserProgress(unittest.TestCase):
                 self.assertEqual(f.read(), '{"old": true}')
 
 
+class TestDeleteDeadAllSections(unittest.TestCase):
+    def _run(self, sections, links_map, proxies, delays_map):
+        def fake_links(section):
+            return list(links_map.get(section, []))
+
+        def fake_ping(links, section="main", force=False):
+            return dict(delays_map.get(section, {}))
+
+        with mock.patch.object(podkop, "get_all_podkop_sections", return_value=sections), \
+                mock.patch.object(podkop, "get_proxies", return_value=proxies), \
+                mock.patch.object(podkop, "get_podkop_links", side_effect=fake_links), \
+                mock.patch.object(podkop, "batch_ping_nodes", side_effect=fake_ping), \
+                mock.patch.object(podkop, "delete_nodes_batch",
+                                  return_value=(True, 1)) as delete, \
+                mock.patch.object(podkop.subprocess, "Popen") as popen:
+            result = podkop.delete_dead_from_all_sections()
+        return result, delete, popen
+
+    def test_deletes_dead_and_restarts_once(self):
+        result, delete, popen = self._run(
+            ["main", "gemini", "empty"],
+            {"main": ["a", "b"], "gemini": ["c"], "empty": []},
+            {"main-1-out": {}, "main-2-out": {},
+             "gemini-1-out": {}},
+            {"main": {0: 100, 1: -1}, "gemini": {0: -1}},
+        )
+        self.assertEqual(result["total"], 2)
+        self.assertFalse(result["error"])
+        self.assertTrue(result["restarted"])
+        self.assertEqual(delete.call_count, 2)
+        delete.assert_any_call([1], section="main", restart=False)
+        delete.assert_any_call([0], section="gemini", restart=False)
+        popen.assert_called_once()
+
+    def test_api_unavailable_does_not_touch_uci(self):
+        result, delete, popen = self._run(
+            ["main"], {"main": ["a"]}, {}, {"main": {0: -1}})
+        self.assertIn("API", result["error"])
+        delete.assert_not_called()
+        popen.assert_not_called()
+
+    def test_unknown_nodes_are_not_deleted(self):
+        result, delete, popen = self._run(
+            ["gemini"], {"gemini": ["a"]}, {"main-1-out": {}},
+            {"gemini": {0: -1}})
+        self.assertEqual(result["details"][0]["status"], "no_data")
+        delete.assert_not_called()
+        popen.assert_not_called()
+
+
 class TestUAAndConfig(unittest.TestCase):
     def test_ua_map_has_expected_keys(self):
         for key in ("v2rayN", "singbox", "happ", "incy", "curl"):
