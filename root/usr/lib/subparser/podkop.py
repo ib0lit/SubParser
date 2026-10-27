@@ -62,23 +62,43 @@ def _api_request(path, method="GET", payload=None, timeout=1.5):
         return None, None
 
 
+# Podkop хранит секции как `config section 'main'`. В старых версиях тип был
+# `podkop`. Тип нужно проверять явно: поиск подстроки `=podkop` находил только
+# `podkop.settings=settings`, поэтому все секции, кроме main, терялись.
+PODKOP_SECTION_TYPES = ("section", "podkop")
+PODKOP_SECTION_OPTIONS = ("urltest_proxy_links", "connection_type", "proxy_string")
+
+
+def parse_podkop_sections(raw_show: str) -> list:
+    """Имена секций Podkop из вывода `uci show podkop`."""
+    detected = []
+
+    def add(name):
+        if name and name != "settings" and name not in detected:
+            detected.append(name)
+
+    for line in (raw_show or "").splitlines():
+        line = line.strip()
+        if not line.startswith("podkop.") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        parts = key.split(".")
+        if len(parts) == 2:
+            if value.strip().strip("'\"") in PODKOP_SECTION_TYPES:
+                add(parts[1])
+        elif len(parts) >= 3 and parts[2] in PODKOP_SECTION_OPTIONS:
+            # Секция без явного типа (или нестандартный тип) — определяем по опциям.
+            add(parts[1])
+    return detected
+
+
 def get_all_podkop_sections():
     try:
         raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"],
                                            text=True, stderr=subprocess.DEVNULL)
-        detected = []
-        for line in raw_secs.splitlines():
-            if "=podkop" in line:
-                s = line.split(".")[1].split("=")[0]
-                if s not in detected:
-                    detected.append(s)
-            elif "urltest_proxy_links" in line:
-                s = line.split(".")[1]
-                if s not in detected:
-                    detected.append(s)
-        return detected if detected else ["main"]
     except Exception:
         return ["main"]
+    return parse_podkop_sections(raw_secs) or ["main"]
 
 
 def get_podkop_links(section="main"):

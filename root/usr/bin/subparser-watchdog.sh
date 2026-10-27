@@ -169,7 +169,17 @@ if ! api_get "/proxies" 2 | grep -q '"proxies"'; then
 fi
 
 # --- Проверка каждой секции Podkop ----------------------------------------------
-SECTION_LIST=$(uci -q show podkop 2>/dev/null | sed -n 's/^podkop\.\([^.=]*\)=podkop.*/\1/p' | sort -u)
+SECTION_LIST=$(python3 - <<'PYEOF'
+import sys
+
+sys.path.insert(0, "/usr/lib")
+try:
+    from subparser.podkop import get_all_podkop_sections
+    print(" ".join(get_all_podkop_sections()))
+except Exception:
+    print("main")
+PYEOF
+)
 [ -z "$SECTION_LIST" ] && SECTION_LIST="main"
 
 TEST_URL="https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"

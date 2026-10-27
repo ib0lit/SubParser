@@ -21,14 +21,20 @@ LOCK_FILE="/var/run/subparser.lock"
 
 case "$ACTION" in
     get_podkop_sections)
-        # Только чтение. Раньше здесь молча перезаписывался target_section,
-        # из-за чего открытие вкладки LuCI меняло настройки парсера.
-        SECTIONS=$(uci -q show podkop 2>/dev/null | sed -n 's/^podkop\.\([^.=]*\)=podkop.*/\1/p' | sort -u)
-        [ -z "$SECTIONS" ] && SECTIONS="main"
-        SECTIONS="$SECTIONS" python3 - <<'PYEOF'
-import json, os
-items = os.environ.get("SECTIONS", "main").split()
-print(json.dumps(items, ensure_ascii=False))
+        # Только чтение. Определение секций — одно на весь проект
+        # (subparser.podkop), иначе типы секций Podkop (`config section`)
+        # расходятся между LuCI, ботом, парсером и watchdog.
+        python3 - <<'PYEOF'
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib")
+try:
+    from subparser.podkop import get_all_podkop_sections
+    sections = get_all_podkop_sections()
+except Exception:
+    sections = ["main"]
+print(json.dumps(sections, ensure_ascii=False))
 PYEOF
         ;;
 

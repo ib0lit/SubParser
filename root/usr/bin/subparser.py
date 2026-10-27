@@ -72,6 +72,7 @@ CACHE_FILE = "/tmp/subparser_cache.json"
 METRICS_FILE = "/tmp/subparser_metrics.json"
 LAST_SELECTED_FILE = "/tmp/subparser_last_selected.json"
 PODKOP_BACKUP = "/tmp/subparser_podkop.bak"
+SECTIONS_SEEN_FILE = "/etc/subparser/sections_seen.json"
 DEFAULT_HWID = "0123456789abcdef"
 
 try:
@@ -178,21 +179,45 @@ def get_uci(option, default=""):
         return default
 
 def get_real_podkop_sections() -> list:
+    # Единая реализация с ботом и LuCI: подкоп хранит секции как `config section`,
+    # поэтому определяем их по типу секции/опциям, а не по подстроке `=podkop`.
     try:
-        raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"], text=True)
+        sys.path.insert(0, "/usr/lib")
+        from subparser.podkop import get_all_podkop_sections
+        return get_all_podkop_sections()
+    except Exception:
+        pass
+    try:
+        raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"], text=True,
+                                           stderr=subprocess.DEVNULL)
         detected = []
         for line in raw_secs.splitlines():
-            if "=podkop" in line:
-                s = line.split(".")[1].split("=")[0]
-                if s not in detected:
-                    detected.append(s)
-            elif "urltest_proxy_links" in line:
-                s = line.split(".")[1]
-                if s not in detected:
-                    detected.append(s)
-        return detected if detected else ["main"]
+            line = line.strip()
+            if not line.startswith("podkop.") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            parts = key.split(".")
+            if len(parts) == 2:
+                if value.strip().strip("'\"") in ("section", "podkop") and parts[1] != "settings":
+                    detected.append(parts[1])
+            elif len(parts) >= 3 and parts[2] in ("urltest_proxy_links", "connection_type", "proxy_string"):
+                detected.append(parts[1])
+        return list(dict.fromkeys(detected)) if detected else ["main"]
     except Exception:
         return ["main"]
+
+def _save_target_sections(sections) -> bool:
+    try:
+        subprocess.run(["uci", "-q", "delete", f"{CONFIG_NAME}.settings.target_section"],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for s in sections:
+            subprocess.run(["uci", "-q", "add_list", f"{CONFIG_NAME}.settings.target_section={s}"],
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["uci", "commit", CONFIG_NAME], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
 
 def get_target_sections() -> list:
     real = get_real_podkop_sections()
@@ -202,9 +227,31 @@ def get_target_sections() -> list:
         # Не добавляем автоматически все секции: пользователь мог осознанно
         # оставить только часть. Пустой список трактуем как «все».
         valid = [s for s in sections if s in real]
-        return valid if valid else real
     except Exception:
-        return real
+        valid = []
+        sections = []
+
+    # Новые секции Podkop (появившиеся после последнего запуска) подхватываем
+    # сами, иначе вторая секция остаётся без узлов. Ранее удалённые вручную
+    # секции помним в sections_seen.json и повторно не навязываем.
+    try:
+        seen_data = read_json(SECTIONS_SEEN_FILE, {})
+        seen = seen_data.get("sections", []) if isinstance(seen_data, dict) else []
+        if not isinstance(seen, list):
+            seen = []
+        seen = [str(s) for s in seen]
+        new_sections = [s for s in real if s not in seen and s not in valid]
+        if valid and new_sections:
+            valid = valid + new_sections
+            _save_target_sections(valid)
+            print(f"[i] Новые секции Podkop добавлены в target_section: {', '.join(new_sections)}")
+        merged_seen = sorted(set(seen) | set(real))
+        if merged_seen != sorted(set(seen)):
+            write_json_atomic(SECTIONS_SEEN_FILE, {"sections": merged_seen})
+    except Exception:
+        pass
+
+    return valid if valid else real
 
 def get_subscriptions():
     try:
@@ -700,18 +747,7 @@ def _run():
 
     section_targets = {}
     if per_section_config:
-        try:
-            raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"], text=True)
-            detected = set()
-            for line in raw_secs.splitlines():
-                if "=podkop" in line:
-                    detected.add(line.split(".")[1].split("=")[0])
-                elif "urltest_proxy_links" in line:
-                    detected.add(line.split(".")[1])
-            if not detected:
-                detected = {"main"}
-        except Exception:
-            detected = {"main"}
+        detected = set(get_real_podkop_sections())
 
         for s in detected:
             s_en = get_uci(f"sec_en_{s}", "1") == "1"

@@ -1,12 +1,26 @@
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "root", "usr", "lib"))
 
+# fcntl есть только на Linux; для локального запуска тестов на Windows.
+if "fcntl" not in sys.modules:
+    try:
+        import fcntl  # noqa: F401
+    except ImportError:
+        stub = types.ModuleType("fcntl")
+        stub.LOCK_EX = 1
+        stub.LOCK_NB = 2
+        stub.LOCK_UN = 4
+        stub.flock = lambda *a, **kw: None
+        sys.modules["fcntl"] = stub
+
 from subparser import config  # noqa: E402
+from subparser import podkop  # noqa: E402
 from subparser import telegram  # noqa: E402
 from subparser import system  # noqa: E402
 from subparser import subs  # noqa: E402
@@ -30,6 +44,46 @@ class TestUAAndConfig(unittest.TestCase):
         ctx = config.make_ssl_context(insecure=False)
         import ssl
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+
+
+class TestPodkopSections(unittest.TestCase):
+    """Podkop хранит секции как `config section` — их нельзя искать по `=podkop`."""
+
+    def test_section_type_is_detected(self):
+        raw = (
+            "podkop.settings=settings\n"
+            "podkop.settings.dns_type='udp'\n"
+            "podkop.main=section\n"
+            "podkop.main.urltest_proxy_links='vless://a'\n"
+            "podkop.second=section\n"
+            "podkop.second.connection_type='proxy'\n"
+        )
+        self.assertEqual(podkop.parse_podkop_sections(raw), ["main", "second"])
+
+    def test_legacy_podkop_type_is_detected(self):
+        raw = (
+            "podkop.main=podkop\n"
+            "podkop.main.urltest_proxy_links='vless://a'\n"
+            "podkop.second=podkop\n"
+        )
+        self.assertEqual(podkop.parse_podkop_sections(raw), ["main", "second"])
+
+    def test_settings_section_is_not_a_podkop_section(self):
+        raw = "podkop.settings=settings\npodkop.settings.dns_type='udp'\n"
+        self.assertEqual(podkop.parse_podkop_sections(raw), [])
+
+    def test_section_without_links_detected_by_type(self):
+        raw = "podkop.main=section\npodkop.extra=section\n"
+        self.assertEqual(podkop.parse_podkop_sections(raw), ["main", "extra"])
+
+    def test_anonymous_sections(self):
+        raw = (
+            "podkop.@section[0]=section\n"
+            "podkop.@section[0].urltest_proxy_links='vless://a'\n"
+            "podkop.@section[1]=section\n"
+        )
+        self.assertEqual(podkop.parse_podkop_sections(raw),
+                         ["@section[0]", "@section[1]"])
 
 
 class TestTelegramSplit(unittest.TestCase):
