@@ -13,6 +13,46 @@ from .config import (LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, get_uci_bool,
 
 CACHED_DELAYS = {}
 PROGRESS_FILE = "/tmp/subparser_progress.json"
+PODKOP_INIT = "/etc/init.d/podkop"
+
+
+def _singbox_pid():
+    try:
+        return subprocess.check_output(["pidof", "sing-box"], text=True,
+                                       stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+
+def restart_podkop(timeout=60):
+    """Перезапускает Podkop и ждёт, пока sing-box действительно поднимется.
+
+    Возвращает True только при подтверждённом новом процессе. Раньше запуск
+    шёл через `nohup sh -c ... &`: если nohup отсутствовал в системе, команда
+    молча не выполнялась, а бот всё равно сообщал об успехе.
+    """
+    old_pid = _singbox_pid()
+    try:
+        proc = subprocess.Popen([PODKOP_INIT, "restart"],
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True, close_fds=True)
+        try:
+            proc.wait(timeout=min(timeout, 30))
+        except subprocess.TimeoutExpired:
+            # init-скрипт может ждать procd дольше — сервис проверим по pid.
+            pass
+    except Exception:
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pid = _singbox_pid()
+        if pid and pid != old_pid:
+            return True
+        time.sleep(2)
+    return False
 
 
 def get_lan_ip():
@@ -352,13 +392,7 @@ def delete_dead_from_all_sections():
 
     restarted = False
     if total_deleted:
-        try:
-            subprocess.Popen(
-                "nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &",
-                shell=True)
-            restarted = True
-        except Exception:
-            restarted = False
+        restarted = restart_podkop()
 
     return {"total": total_deleted, "changed": bool(total_deleted),
             "restarted": restarted, "error": "", "details": details}

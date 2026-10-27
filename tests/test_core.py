@@ -123,12 +123,13 @@ class TestDeleteDeadAllSections(unittest.TestCase):
                 mock.patch.object(podkop, "batch_ping_nodes", side_effect=fake_ping), \
                 mock.patch.object(podkop, "delete_nodes_batch",
                                   return_value=(True, 1)) as delete, \
-                mock.patch.object(podkop.subprocess, "Popen") as popen:
+                mock.patch.object(podkop, "restart_podkop",
+                                  return_value=True) as restart:
             result = podkop.delete_dead_from_all_sections()
-        return result, delete, popen
+        return result, delete, restart
 
     def test_deletes_dead_and_restarts_once(self):
-        result, delete, popen = self._run(
+        result, delete, restart = self._run(
             ["main", "gemini", "empty"],
             {"main": ["a", "b"], "gemini": ["c"], "empty": []},
             {"main-1-out": {}, "main-2-out": {},
@@ -141,22 +142,61 @@ class TestDeleteDeadAllSections(unittest.TestCase):
         self.assertEqual(delete.call_count, 2)
         delete.assert_any_call([1], section="main", restart=False)
         delete.assert_any_call([0], section="gemini", restart=False)
-        popen.assert_called_once()
+        restart.assert_called_once()
+
+    def test_restart_failure_is_reported(self):
+        with mock.patch.object(podkop, "get_all_podkop_sections",
+                               return_value=["main"]), \
+                mock.patch.object(podkop, "get_proxies",
+                                  return_value={"main-1-out": {}}), \
+                mock.patch.object(podkop, "get_podkop_links",
+                                  return_value=["a"]), \
+                mock.patch.object(podkop, "batch_ping_nodes",
+                                  return_value={0: -1}), \
+                mock.patch.object(podkop, "delete_nodes_batch",
+                                  return_value=(True, 1)), \
+                mock.patch.object(podkop, "restart_podkop",
+                                  return_value=False) as restart:
+            result = podkop.delete_dead_from_all_sections()
+        self.assertEqual(result["total"], 1)
+        self.assertFalse(result["restarted"])
+        restart.assert_called_once()
 
     def test_api_unavailable_does_not_touch_uci(self):
-        result, delete, popen = self._run(
+        result, delete, restart = self._run(
             ["main"], {"main": ["a"]}, {}, {"main": {0: -1}})
         self.assertIn("API", result["error"])
         delete.assert_not_called()
-        popen.assert_not_called()
+        restart.assert_not_called()
 
     def test_unknown_nodes_are_not_deleted(self):
-        result, delete, popen = self._run(
+        result, delete, restart = self._run(
             ["gemini"], {"gemini": ["a"]}, {"main-1-out": {}},
             {"gemini": {0: -1}})
         self.assertEqual(result["details"][0]["status"], "no_data")
         delete.assert_not_called()
-        popen.assert_not_called()
+        restart.assert_not_called()
+
+
+class TestRestartPodkop(unittest.TestCase):
+    def test_returns_true_when_singbox_pid_changes(self):
+        pids = iter(["100", "100", "200"])
+        with mock.patch.object(podkop, "_singbox_pid",
+                               side_effect=lambda: next(pids)), \
+                mock.patch.object(podkop.subprocess, "Popen") as popen, \
+                mock.patch.object(podkop.time, "sleep"):
+            self.assertTrue(podkop.restart_podkop(timeout=10))
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], [podkop.PODKOP_INIT, "restart"])
+        popen.return_value.wait.assert_called_once()
+
+    def test_returns_false_when_service_does_not_restart(self):
+        with mock.patch.object(podkop, "_singbox_pid", return_value="100"), \
+                mock.patch.object(podkop.subprocess, "Popen"), \
+                mock.patch.object(podkop.time, "sleep"), \
+                mock.patch.object(podkop.time, "time",
+                                  side_effect=[0, 1, 2, 3, 100]):
+            self.assertFalse(podkop.restart_podkop(timeout=5))
 
 
 class TestUAAndConfig(unittest.TestCase):

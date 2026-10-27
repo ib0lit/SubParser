@@ -647,7 +647,8 @@ def main():
                         answer_callback(token, cb_id, "Проверяю узлы...")
                         edit_msg(token, chat_id, msg_id,
                                  "🧹 <b>Проверяю узлы во всех секциях...</b>\n\n"
-                                 "<i>Это может занять до минуты.</i>",
+                                 "<i>Это может занять пару минут: пинг узлов и "
+                                 "перезапуск Podkop.</i>",
                                  {"inline_keyboard": []})
                         from subparser.podkop import delete_dead_from_all_sections
                         res = delete_dead_from_all_sections()
@@ -678,9 +679,10 @@ def main():
 
                             total_deleted = int(res.get("total", 0))
                             if total_deleted:
-                                note = ("Podkop перезапускается один раз в фоне."
+                                note = ("Podkop перезапущен."
                                         if res.get("restarted")
-                                        else "Не удалось запустить перезапуск Podkop.")
+                                        else "⚠️ Podkop не удалось перезапустить — "
+                                             "перезапустите вручную.")
                                 text = (f"🧹 <b>Удалено мёртвых узлов: {total_deleted}</b>\n\n"
                                         + "\n".join(lines) +
                                         f"\n\n<i>{note}</i>")
