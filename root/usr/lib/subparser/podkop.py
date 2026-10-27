@@ -308,6 +308,65 @@ def switch_active_node(section, index):
     return False, tag
 
 
+def _selector_data(section, proxies):
+    """Возвращает (имя селектора, данные) из уже полученного /proxies."""
+    name = f"{section}-out"
+    data = proxies.get(name) if isinstance(proxies, dict) else None
+    if isinstance(data, dict) and data.get("type", "").lower() == "selector":
+        return name, data
+    for key, value in (proxies or {}).items():
+        if isinstance(value, dict) and \
+                value.get("type", "").lower() == "selector" and \
+                (key == name or section in key):
+            return key, value
+    return name, data if isinstance(data, dict) else {}
+
+
+def _link_from_tag(section, tag, links):
+    """Преобразует тег вида `main-3-out` в ссылку из списка секции."""
+    prefix = f"{section}-"
+    suffix = "-out"
+    if not tag.startswith(prefix) or not tag.endswith(suffix):
+        return None
+    middle = tag[len(prefix):-len(suffix)]
+    if not middle.isdigit():
+        return None
+    index = int(middle) - 1
+    if 0 <= index < len(links):
+        return links[index]
+    return None
+
+
+def _capture_selection(section, links, proxies):
+    """Запоминает ручной выбор до удаления узлов.
+
+    Возвращает (mode, link):
+      auto        — был выбран urltest, трогать не нужно;
+      manual      — был выбран конкретный узел, link нужно восстановить;
+      unknown     — выбор есть, но сопоставить его со ссылкой не удалось.
+    """
+    _, selector = _selector_data(section, proxies)
+    now = selector.get("now", "") if isinstance(selector, dict) else ""
+    if not now or "urltest" in now.lower():
+        return "auto", None
+    link = _link_from_tag(section, now, links)
+    if link is not None:
+        return "manual", link
+    return "unknown", None
+
+
+def _switch_with_retry(section, index, attempts=5):
+    """Переключает селектор после рестарта, когда API ещё может быть не готов."""
+    tag = f"{section}-{index+1}-out"
+    for attempt in range(attempts):
+        ok, tag = switch_active_node(section, index)
+        if ok:
+            return True, tag
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    return False, tag
+
+
 def reset_to_auto_urltest(section="main"):
     target_urltest = f"{section}-urltest-out"
     selector_name, selector = _find_selector(section)
@@ -428,6 +487,8 @@ def delete_dead_plan(plan_details):
     """Удаляет узлы из готового плана и перезапускает Podkop один раз."""
     total_deleted = 0
     details = []
+    restore_plan = []
+    proxies = None
 
     for item in plan_details or []:
         section = item.get("section")
@@ -457,6 +518,13 @@ def delete_dead_plan(plan_details):
             details.append(result)
             continue
 
+        # Ручной выбор хранится в runtime, а не в UCI. Снимаем его до записи:
+        # после удаления индексы сдвинутся и тег `section-N-out` будет уже
+        # указывать на другой сервер.
+        if proxies is None:
+            proxies = get_proxies()
+        selection_mode, selected_link = _capture_selection(section, links, proxies)
+
         ok, deleted = delete_nodes_batch(indices, section=section, restart=False)
         if not ok:
             result["status"] = "error"
@@ -464,6 +532,7 @@ def delete_dead_plan(plan_details):
             continue
 
         del_set = set(indices)
+        new_links = [link for i, link in enumerate(links) if i not in del_set]
         old_delays = CACHED_DELAYS.get(section, {})
         new_delays = {}
         new_idx = 0
@@ -474,12 +543,33 @@ def delete_dead_plan(plan_details):
                 new_idx += 1
         CACHED_DELAYS[section] = new_delays
 
+        restore_plan.append((result, section, selection_mode,
+                             selected_link, new_links))
         total_deleted += deleted
         result["deleted"] = deleted
         result["status"] = "deleted"
         details.append(result)
 
     restarted = restart_podkop() if total_deleted else False
+
+    # Возвращаем ручной выбор на тот же сервер по ссылке, а не по старому
+    # индексу. Если был urltest — оставляем urltest. Если выбранный узел сам
+    # удалён — секция остаётся на urltest.
+    for result, section, mode, link, new_links in restore_plan:
+        if mode == "auto":
+            result["selection"] = "auto"
+        elif mode != "manual":
+            result["selection"] = "unchanged"
+        elif not restarted:
+            result["selection"] = "not_restarted"
+        else:
+            try:
+                new_index = new_links.index(link)
+            except ValueError:
+                result["selection"] = "lost"
+            else:
+                ok, _ = _switch_with_retry(section, new_index)
+                result["selection"] = "restored" if ok else "failed"
 
     return {"total": total_deleted, "changed": bool(total_deleted),
             "restarted": restarted, "error": "", "details": details}

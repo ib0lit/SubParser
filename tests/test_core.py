@@ -165,6 +165,7 @@ class TestDeadScanAndDelete(unittest.TestCase):
         links = {"main": ["a", "b"], "gemini": ["c", "d"]}
         with mock.patch.object(podkop, "get_podkop_links",
                                side_effect=lambda s: list(links[s])), \
+                mock.patch.object(podkop, "get_proxies", return_value={}), \
                 mock.patch.object(podkop, "delete_nodes_batch",
                                   return_value=(True, 1)) as delete, \
                 mock.patch.object(podkop, "restart_podkop",
@@ -221,6 +222,7 @@ class TestDeadScanAndDelete(unittest.TestCase):
                     "status": "dead", "indices": [0]}]
         with mock.patch.object(podkop, "get_podkop_links",
                                return_value=["a", "b"]), \
+                mock.patch.object(podkop, "get_proxies", return_value={}), \
                 mock.patch.object(podkop, "delete_nodes_batch",
                                   return_value=(True, 1)), \
                 mock.patch.object(podkop, "restart_podkop",
@@ -229,6 +231,61 @@ class TestDeadScanAndDelete(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertFalse(result["restarted"])
         restart.assert_called_once()
+
+    def _delete_with_selection(self, now, indices):
+        details = [{"section": "main", "total": 4, "dead": len(indices),
+                    "skipped": 0, "status": "dead", "indices": indices,
+                    "links": ["a", "b", "c", "d"]}]
+        proxies = {"main-out": {"type": "selector", "now": now}} \
+            if now is not None else {}
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "b", "c", "d"]), \
+                mock.patch.object(podkop, "get_proxies",
+                                  return_value=proxies), \
+                mock.patch.object(podkop, "delete_nodes_batch",
+                                  return_value=(True, len(indices))), \
+                mock.patch.object(podkop, "restart_podkop",
+                                  return_value=True), \
+                mock.patch.object(podkop, "switch_active_node",
+                                  return_value=(True, "tag")) as switch:
+            result = podkop.delete_dead_plan(details)
+        return result, switch
+
+    def test_manual_selection_restored_by_link_after_reindex(self):
+        # Был выбран main-3-out (ссылка c). Удаляем main-2-out (b):
+        # c переезжает с индекса 2 на 1, селектор должен остаться на c.
+        result, switch = self._delete_with_selection("main-3-out", [1])
+        self.assertEqual(result["details"][0]["selection"], "restored")
+        switch.assert_called_once_with("main", 1)
+
+    def test_urltest_selection_is_not_touched(self):
+        result, switch = self._delete_with_selection("main-urltest-out", [1])
+        self.assertEqual(result["details"][0]["selection"], "auto")
+        switch.assert_not_called()
+
+    def test_deleted_selected_node_falls_back_to_urltest(self):
+        # Выбран был main-2-out (b), его же и удаляем.
+        result, switch = self._delete_with_selection("main-2-out", [1])
+        self.assertEqual(result["details"][0]["selection"], "lost")
+        switch.assert_not_called()
+
+    def test_selection_not_restored_without_restart(self):
+        details = [{"section": "main", "total": 3, "dead": 1, "skipped": 0,
+                    "status": "dead", "indices": [0],
+                    "links": ["a", "b", "c"]}]
+        proxies = {"main-out": {"type": "selector", "now": "main-2-out"}}
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "b", "c"]), \
+                mock.patch.object(podkop, "get_proxies",
+                                  return_value=proxies), \
+                mock.patch.object(podkop, "delete_nodes_batch",
+                                  return_value=(True, 1)), \
+                mock.patch.object(podkop, "restart_podkop",
+                                  return_value=False), \
+                mock.patch.object(podkop, "switch_active_node") as switch:
+            result = podkop.delete_dead_plan(details)
+        self.assertEqual(result["details"][0]["selection"], "not_restarted")
+        switch.assert_not_called()
 
     def test_api_unavailable_returns_error(self):
         result, delete, restart = self._scan(

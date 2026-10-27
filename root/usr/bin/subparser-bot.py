@@ -710,7 +710,17 @@ def main():
                                 lines.append(f"• <b>{sec}</b>: все {total} мёртвые — "
                                              "оставлено без изменений")
                             elif status == "deleted":
-                                lines.append(f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}")
+                                line = (f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}")
+                                selection = item.get("selection")
+                                if selection == "restored":
+                                    line += " · выбор сохранён"
+                                elif selection == "lost":
+                                    line += " · выбранный узел удалён, авто"
+                                elif selection == "failed":
+                                    line += " · не удалось вернуть выбор"
+                                elif selection == "not_restarted":
+                                    line += " · выбор не восстановлен (нет рестарта)"
+                                lines.append(line)
                             else:
                                 lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
                             if skipped and status != "no_data":
