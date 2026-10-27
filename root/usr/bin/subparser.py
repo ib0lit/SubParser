@@ -223,7 +223,10 @@ def _teardown_run_log():
     _RUN_LOG.update({"fp": None, "stdout": None, "stderr": None})
 
 try:
-    MAX_WORKERS = max(4, min(12, (os.cpu_count() or 2) * 2))
+    # 12 параллельных замеров — как в прежних версиях. Привязка к числу ядер
+    # (2 ядра → 4 воркера) втрое увеличивала время анализа: замеры в основном
+    # ждут сеть, а не CPU.
+    MAX_WORKERS = 12
 except Exception:
     MAX_WORKERS = 12
 

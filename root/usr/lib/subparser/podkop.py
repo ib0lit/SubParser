@@ -623,7 +623,8 @@ def delete_dead_plan(plan_details):
             "restarted": restarted, "error": "", "details": details}
 
 
-def batch_ping_nodes(links, section="main", force=False):
+def batch_ping_nodes(links, section="main", force=False, max_workers=10,
+                    request_timeout=2.5, delay_timeout=1800):
     results = {}
     if not links:
         return results
@@ -645,12 +646,13 @@ def batch_ping_nodes(links, section="main", force=False):
         def probe_node(idx):
             t = urllib.parse.quote(f"{section}-{idx+1}-out")
             status, data = _api_request(
-                f"/proxies/{t}/delay?url={test_url}&timeout=1800", timeout=2.5)
+                f"/proxies/{t}/delay?url={test_url}&timeout={delay_timeout}",
+                timeout=request_timeout)
             if status == 200 and isinstance(data, dict):
                 return idx, int(data.get("delay", -1))
             return idx, -1
 
-        with ThreadPoolExecutor(max_workers=min(10, len(missing))) as pool:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(missing))) as pool:
             for idx, delay in pool.map(probe_node, missing):
                 results[idx] = delay
 

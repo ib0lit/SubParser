@@ -531,56 +531,76 @@ return view.extend({
             return false;
         };
 
-        fs.exec('/usr/bin/subparser-helper.sh', ['ping_group', s]).then(function(res) {
-            var groupDelays = {};
-            try { groupDelays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
-            var okCount = 0;
-            var missing = [];
+        var finish = function(okCount, failed) {
+            if (summary) {
+                summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length +
+                    _(' узлов отвечают') + (failed ? _(' (') + failed + _(' с таймаутом)') : '');
+            }
+        };
 
+        // Разбирает ответ вида { "main-1-out": 123, ... } и возвращает
+        // счётчики плюс бейджи, для которых ответа не было.
+        var applyDelays = function(delays) {
+            var state = { okCount: 0, failed: 0, missing: [] };
             badges.forEach(function(b) {
                 var tag = b.getAttribute('data-tag');
-                if (Object.prototype.hasOwnProperty.call(groupDelays, tag) && setBadge(b, groupDelays[tag])) {
-                    okCount++;
+                if (Object.prototype.hasOwnProperty.call(delays, tag)) {
+                    if (setBadge(b, delays[tag])) state.okCount++; else state.failed++;
                 } else {
                     b.innerText = '...';
-                    missing.push(b);
+                    state.missing.push(b);
                 }
             });
+            return state;
+        };
 
-            // Ограничиваем параллелизм: роутер не любит десятки одновременных
-            // вызовов uci/curl, а зависшие узлы ждут таймаут.
-            var CONCURRENCY = 4;
+        // Добор узлов, которых не было в общем ответе. Параллелизм ограничен,
+        // чтобы роутер не захлёбывался, но 6 потоков заметно быстрее 4.
+        var runMissing = function(state) {
             var index = 0;
-            var failed = 0;
-
+            var CONCURRENCY = 6;
+            if (!state.missing.length) { finish(state.okCount, state.failed); return; }
             var next = function() {
-                if (index >= missing.length) {
-                    if (summary) {
-                        summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length +
-                            _(' узлов отвечают') + (failed ? _(' (') + failed + _(' с таймаутом)') : '');
-                    }
+                if (index >= state.missing.length) {
+                    finish(state.okCount, state.failed);
                     return;
                 }
-                var b = missing[index++];
+                var b = state.missing[index++];
                 var tag = b.getAttribute('data-tag');
                 fs.exec('/usr/bin/subparser-helper.sh', ['ping_node', tag]).then(function(nodeRes) {
                     var data = {};
                     try { data = JSON.parse(nodeRes.stdout.trim()); } catch(err) {}
-                    if (setBadge(b, data.delay)) okCount++; else failed++;
+                    if (setBadge(b, data.delay)) state.okCount++; else state.failed++;
                 }).catch(function() {
                     setBadge(b, -1);
-                    failed++;
+                    state.failed++;
                 }).then(next);
             };
+            for (var i = 0; i < Math.min(CONCURRENCY, state.missing.length); i++) next();
+        };
 
-            if (missing.length === 0) {
-                if (summary) {
-                    summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length + _(' узлов отвечают');
-                }
-            } else {
-                for (var i = 0; i < Math.min(CONCURRENCY, missing.length); i++) next();
+        // Старый путь на случай, если helper ещё не обновлён и не знает
+        // действие ping_section.
+        var legacy = function() {
+            fs.exec('/usr/bin/subparser-helper.sh', ['ping_group', s]).then(function(res) {
+                var groupDelays = {};
+                try { groupDelays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+                runMissing(applyDelays(groupDelays));
+            }).catch(function() {
+                runMissing({ okCount: 0, failed: 0, missing: badges.slice() });
+            });
+        };
+
+        fs.exec('/usr/bin/subparser-helper.sh', ['ping_section', s]).then(function(res) {
+            var delays = {};
+            try { delays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+            var state = applyDelays(delays);
+            if (badges.length && state.missing.length === badges.length) {
+                legacy();
+                return;
             }
-        });
+            runMissing(state);
+        }).catch(function() { legacy(); });
     },
 
     saveSelectedNodes: function(container, sec) {

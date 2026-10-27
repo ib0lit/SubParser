@@ -188,9 +188,33 @@ print(json.dumps(ordered, ensure_ascii=False))
         fi
         ;;
 
+    ping_section)
+        # Один вызов на всю секцию: Python сам опрашивает узлы параллельно,
+        # вместо десятков последовательных запусков curl из LuCI.
+        SECTION="$SECTION" python3 - <<'PYEOF'
+import json
+import os
+import sys
+
+sys.path.insert(0, "/usr/lib")
+out = {}
+try:
+    from subparser.podkop import batch_ping_nodes, get_podkop_links
+    sec = os.environ.get("SECTION", "main")
+    links = get_podkop_links(sec)
+    delays = batch_ping_nodes(links, section=sec, force=True,
+                              max_workers=16, request_timeout=4.0,
+                              delay_timeout=3000)
+    out = {f"{sec}-{i + 1}-out": d for i, d in delays.items()}
+except Exception:
+    out = {}
+print(json.dumps(out))
+PYEOF
+        ;;
+
     ping_group)
         URL="https://www.gstatic.com/generate_204"
-        RES=$(api_get "/group/${SECTION}-urltest-out/delay?url=${URL}&timeout=3000" 5)
+        RES=$(api_get "/group/${SECTION}-urltest-out/delay?url=${URL}&timeout=3000" 10)
         [ -n "$RES" ] && echo "$RES" || echo '{}'
         ;;
 
