@@ -64,7 +64,7 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 Любую ветку можно установить или обновить без изменения `main`:
 
 ```sh
-SUBPARSER_BRANCH=fix/audit-2026-10 sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/fix/audit-2026-10/update.sh)"
+SUBPARSER_BRANCH=test sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/test/update.sh)"
 ```
 
 Выбранная ветка сохраняется в `/etc/subparser_branch`, а в LuCI её можно указать в поле
