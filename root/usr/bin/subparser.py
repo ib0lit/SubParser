@@ -66,6 +66,19 @@ except Exception:
         except Exception:
             return False
 
+try:
+    from subparser.podkop import (capture_selection, restore_selection,
+                                  get_proxies as get_podkop_proxies)
+except Exception:
+    def get_podkop_proxies():
+        return {}
+
+    def capture_selection(section, links, proxies=None):
+        return "unknown", None
+
+    def restore_selection(section, mode, link, new_links):
+        return "unchanged"
+
 CONFIG_NAME = "subparser"
 SINGBOX_BIN = "/usr/bin/sing-box"
 TEST_URL = "https://www.gstatic.com/generate_204"
@@ -1172,6 +1185,9 @@ def _run():
 
     changed_sections = []
     section_reports = []
+    selection_plan = []
+    selection_notes = []
+    selection_proxies = None
     write_failed = False
     for sec, mode in section_targets.items():
         existing_links = []
@@ -1207,10 +1223,17 @@ def _run():
             continue
 
         print(f"Секция '{sec}': запись {after_cnt} узлов (было {before_cnt}).")
+        # Запоминаем ручной выбор до перезаписи: после замены списка теги
+        # сдвинутся, и старый `sec-N-out` будет указывать на другой сервер.
+        if selection_proxies is None:
+            selection_proxies = get_podkop_proxies()
+        sel_mode, sel_link = capture_selection(sec, existing_links,
+                                               selection_proxies)
         if not _write_section_links(sec, target_links):
             write_failed = True
             break
         changed_sections.append(sec)
+        selection_plan.append((sec, sel_mode, sel_link, list(target_links)))
         section_reports.append(report)
 
     if write_failed:
@@ -1240,6 +1263,16 @@ def _run():
                 "Выполнен автоматический откат к предыдущему списку узлов."
             )
             return
+        # Возвращаем ручной выбор на тот же сервер, если он остался в новом
+        # списке. Если был urltest — секция остаётся на urltest.
+        for sec, mode, link, new_links in selection_plan:
+            status = restore_selection(sec, mode, link, new_links)
+            if status == "restored":
+                selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: активный узел сохранён")
+            elif status == "lost":
+                selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: выбранный узел не попал в новый список, авто")
+            elif status == "failed":
+                selection_notes.append(f"  ▫️ <b>{html.escape(sec)}</b>: не удалось вернуть активный узел")
         print("Podkop успешно обновлен!")
         write_json_atomic(LAST_SELECTED_FILE, {"ts": int(time.time()), "links": best})
     else:
@@ -1262,7 +1295,7 @@ def _run():
         m = medals[i] if i < len(medals) else "•"
         top_lines.append(f"{m} <code>{d} ms</code> (±{jit}) — {nm}")
     top_text = "\n".join(top_lines)
-    sections_block = "\n".join(section_reports)
+    sections_block = "\n".join(section_reports + selection_notes)
     status_line = "🟢 <b>SubParser: Podkop обновлен</b>" if podkop_restarted else "⚪ <b>SubParser: состав узлов без изменений</b>"
 
     msg = (

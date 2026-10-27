@@ -337,6 +337,44 @@ def _link_from_tag(section, tag, links):
     return None
 
 
+def _link_identity(link):
+    """Ссылка без #фрагмента — имя узла может меняться между синхронизациями."""
+    try:
+        parsed = urllib.parse.urlsplit(str(link))
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+    except Exception:
+        return str(link)
+
+
+def _find_link_index(links, link):
+    target = _link_identity(link)
+    for index, candidate in enumerate(links):
+        if _link_identity(candidate) == target:
+            return index
+    return -1
+
+
+def capture_selection(section, links, proxies=None):
+    """Запоминает текущий ручной выбор секции перед перезаписью списка."""
+    if proxies is None:
+        proxies = get_proxies()
+    return _capture_selection(section, links, proxies)
+
+
+def restore_selection(section, mode, link, new_links):
+    """Восстанавливает ручной выбор по ссылке и возвращает статус."""
+    if mode == "auto":
+        return "auto"
+    if mode != "manual":
+        return "unchanged"
+    new_index = _find_link_index(new_links, link)
+    if new_index < 0:
+        return "lost"
+    ok, _ = _switch_with_retry(section, new_index)
+    return "restored" if ok else "failed"
+
+
 def _capture_selection(section, links, proxies):
     """Запоминает ручной выбор до удаления узлов.
 
@@ -556,20 +594,10 @@ def delete_dead_plan(plan_details):
     # индексу. Если был urltest — оставляем urltest. Если выбранный узел сам
     # удалён — секция остаётся на urltest.
     for result, section, mode, link, new_links in restore_plan:
-        if mode == "auto":
-            result["selection"] = "auto"
-        elif mode != "manual":
-            result["selection"] = "unchanged"
-        elif not restarted:
+        if not restarted and mode != "auto":
             result["selection"] = "not_restarted"
         else:
-            try:
-                new_index = new_links.index(link)
-            except ValueError:
-                result["selection"] = "lost"
-            else:
-                ok, _ = _switch_with_retry(section, new_index)
-                result["selection"] = "restored" if ok else "failed"
+            result["selection"] = restore_selection(section, mode, link, new_links)
 
     return {"total": total_deleted, "changed": bool(total_deleted),
             "restarted": restarted, "error": "", "details": details}

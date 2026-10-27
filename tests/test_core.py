@@ -427,6 +427,37 @@ class TestPodkopApiAuth(unittest.TestCase):
         self.assertIn("YACD", result["error"])
 
 
+class TestSelectionRestore(unittest.TestCase):
+    def test_manual_selection_found_by_link_ignoring_name(self):
+        links = ["a#old-name", "c#new-name", "d"]
+        with mock.patch.object(podkop, "switch_active_node",
+                               return_value=(True, "main-2-out")) as switch:
+            status = podkop.restore_selection("main", "manual",
+                                              "c#old-name", links)
+        self.assertEqual(status, "restored")
+        switch.assert_called_once_with("main", 1)
+
+    def test_urltest_selection_is_left_alone(self):
+        with mock.patch.object(podkop, "switch_active_node") as switch:
+            status = podkop.restore_selection("main", "auto", None, ["a"])
+        self.assertEqual(status, "auto")
+        switch.assert_not_called()
+
+    def test_missing_selected_link_falls_back_to_urltest(self):
+        with mock.patch.object(podkop, "switch_active_node") as switch:
+            status = podkop.restore_selection("main", "manual", "gone",
+                                              ["a", "b"])
+        self.assertEqual(status, "lost")
+        switch.assert_not_called()
+
+    def test_restore_failure_is_reported(self):
+        with mock.patch.object(podkop, "switch_active_node",
+                               return_value=(False, "main-1-out")), \
+                mock.patch.object(podkop.time, "sleep"):
+            status = podkop.restore_selection("main", "manual", "a", ["a"])
+        self.assertEqual(status, "failed")
+
+
 class TestUAAndConfig(unittest.TestCase):
     def test_ua_map_has_expected_keys(self):
         for key in ("v2rayN", "singbox", "happ", "incy", "curl"):
