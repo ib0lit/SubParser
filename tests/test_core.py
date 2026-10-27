@@ -118,6 +118,8 @@ class TestDeadScanAndDelete(unittest.TestCase):
             return dict(delays_map.get(section, {}))
 
         with mock.patch.object(podkop, "get_all_podkop_sections", return_value=sections), \
+                mock.patch.object(podkop, "fetch_proxies",
+                                  return_value=(proxies, 200)), \
                 mock.patch.object(podkop, "get_proxies", return_value=proxies), \
                 mock.patch.object(podkop, "get_podkop_links", side_effect=fake_links), \
                 mock.patch.object(podkop, "batch_ping_nodes", side_effect=fake_ping), \
@@ -292,6 +294,80 @@ class TestRestartPodkop(unittest.TestCase):
                 mock.patch.object(podkop.time, "time",
                                   side_effect=[0, 1, 2, 3, 100]):
             self.assertFalse(podkop.restart_podkop(timeout=5))
+
+
+class TestPodkopApiAuth(unittest.TestCase):
+    """YACD включает secret у Clash API — SubParser должен его использовать."""
+
+    def test_headers_fall_back_to_yacd_secret(self):
+        def fake_uci(opt, default=""):
+            return default
+
+        def fake_raw(path, default=""):
+            if path == "podkop.settings.yacd_secret_key":
+                return "yacd-secret"
+            return default
+
+        with mock.patch.object(podkop, "get_uci_val", side_effect=fake_uci), \
+                mock.patch.object(podkop, "_uci_get", side_effect=fake_raw):
+            headers = podkop.get_api_headers()
+        self.assertEqual(headers["Authorization"], "Bearer yacd-secret")
+
+    def test_explicit_secret_wins_over_yacd(self):
+        def fake_uci(opt, default=""):
+            return {"podkop_api_secret": "user-secret",
+                    "clash_api_secret": ""}.get(opt, default)
+
+        with mock.patch.object(podkop, "get_uci_val", side_effect=fake_uci), \
+                mock.patch.object(podkop, "_uci_get", return_value="yacd-secret"):
+            headers = podkop.get_api_headers()
+        self.assertEqual(headers["Authorization"], "Bearer user-secret")
+
+    def test_api_base_uses_podkop_listen_address(self):
+        def fake_uci(opt, default=""):
+            return default
+
+        def fake_raw(path, default=""):
+            if path == "podkop.settings.service_listen_address":
+                return "10.0.0.5/24"
+            return default
+
+        with mock.patch.object(podkop, "get_uci_val", side_effect=fake_uci), \
+                mock.patch.object(podkop, "_uci_get", side_effect=fake_raw):
+            self.assertEqual(podkop.get_api_base(), "http://10.0.0.5:9090")
+
+    def test_api_base_ignores_wildcard_listen_address(self):
+        def fake_raw(path, default=""):
+            return "0.0.0.0"
+
+        with mock.patch.object(podkop, "get_uci_val", return_value=""), \
+                mock.patch.object(podkop, "_uci_get", side_effect=fake_raw), \
+                mock.patch.object(podkop, "get_lan_ip", return_value="192.168.1.1"):
+            self.assertEqual(podkop.get_api_base(), "http://192.168.1.1:9090")
+
+    def test_http_401_is_returned_as_status(self):
+        import urllib.error
+        err = urllib.error.HTTPError(
+            "http://router:9090/proxies", 401, "Unauthorized", {},
+            io.BytesIO(b'{"message":"Unauthorized"}'))
+        with mock.patch.object(podkop, "get_api_base",
+                               return_value="http://router:9090"), \
+                mock.patch.object(podkop, "get_api_headers", return_value={}), \
+                mock.patch.object(podkop.urllib.request, "urlopen",
+                                  side_effect=err):
+            status, data = podkop._api_request("/proxies")
+        self.assertEqual(status, 401)
+        self.assertEqual(data["message"], "Unauthorized")
+
+    def test_scan_reports_auth_error_instead_of_unreachable(self):
+        with mock.patch.object(podkop, "get_all_podkop_sections",
+                               return_value=["main"]), \
+                mock.patch.object(podkop, "fetch_proxies",
+                                  return_value=({}, 401)):
+            result = podkop.scan_dead_in_all_sections()
+        self.assertEqual(result["total"], 0)
+        self.assertIn("авторизацию", result["error"])
+        self.assertIn("YACD", result["error"])
 
 
 class TestUAAndConfig(unittest.TestCase):

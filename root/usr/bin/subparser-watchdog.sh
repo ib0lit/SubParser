@@ -141,6 +141,13 @@ if [ -z "$API_HOST" ]; then
     LAN_IP=$(uci -q get network.lan.ipaddr | cut -d'/' -f1)
     [ -z "$LAN_IP" ] && LAN_IP=$(uci -q get subparser.settings.lan_ip_override)
     [ -z "$LAN_IP" ] && LAN_IP="192.168.1.1"
+    # Если Podkop слушает API на заданном адресе, берём его. 0.0.0.0/:: —
+    # это «все интерфейсы», подключаться к ним бессмысленно.
+    API_LISTEN=$(uci -q get podkop.settings.service_listen_address | cut -d'/' -f1)
+    case "$API_LISTEN" in
+        ""|0.0.0.0|::|"*") ;;
+        *) LAN_IP="$API_LISTEN" ;;
+    esac
     API_PORT=$(uci -q get subparser.settings.podkop_api_port)
     [ -z "$API_PORT" ] && API_PORT=$(uci -q get subparser.settings.clash_api_port)
     [ -z "$API_PORT" ] && API_PORT=9090
@@ -154,6 +161,8 @@ API_BASE="${API_BASE%/}"
 
 API_SECRET=$(uci -q get subparser.settings.podkop_api_secret)
 [ -z "$API_SECRET" ] && API_SECRET=$(uci -q get subparser.settings.clash_api_secret)
+# При включённом YACD Podkop использует yacd_secret_key как secret Clash API.
+[ -z "$API_SECRET" ] && API_SECRET=$(uci -q get podkop.settings.yacd_secret_key)
 
 api_get() {
     if [ -n "$API_SECRET" ]; then

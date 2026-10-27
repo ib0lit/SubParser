@@ -13,7 +13,38 @@ esac
 
 LAN_IP=$(uci -q get network.lan.ipaddr | cut -d'/' -f1)
 [ -z "$LAN_IP" ] && LAN_IP="192.168.1.1"
-API_HOST="${LAN_IP}:9090"
+
+# Podkop может слушать Clash API на явно заданном адресе (service_listen_address).
+API_LISTEN=$(uci -q get podkop.settings.service_listen_address | cut -d'/' -f1)
+case "$API_LISTEN" in
+    ""|0.0.0.0|::|"*") API_LISTEN="$LAN_IP" ;;
+esac
+API_PORT=$(uci -q get subparser.settings.podkop_api_port)
+[ -z "$API_PORT" ] && API_PORT=$(uci -q get subparser.settings.clash_api_port)
+[ -z "$API_PORT" ] && API_PORT=9090
+API_BASE="http://${API_LISTEN}:${API_PORT}"
+
+API_OVERRIDE=$(uci -q get subparser.settings.podkop_api)
+if [ -n "$API_OVERRIDE" ]; then
+    case "$API_OVERRIDE" in
+        http://*|https://*) API_BASE="$API_OVERRIDE" ;;
+        *) API_BASE="http://${API_OVERRIDE}" ;;
+    esac
+    API_BASE="${API_BASE%/}"
+fi
+
+# При включённом YACD Podkop передаёт yacd_secret_key как secret Clash API.
+API_SECRET=$(uci -q get subparser.settings.podkop_api_secret)
+[ -z "$API_SECRET" ] && API_SECRET=$(uci -q get subparser.settings.clash_api_secret)
+[ -z "$API_SECRET" ] && API_SECRET=$(uci -q get podkop.settings.yacd_secret_key)
+
+api_get() {
+    if [ -n "$API_SECRET" ]; then
+        curl -s -m "$2" -H "Authorization: Bearer ${API_SECRET}" "${API_BASE}$1" 2>/dev/null
+    else
+        curl -s -m "$2" "${API_BASE}$1" 2>/dev/null
+    fi
+}
 
 PID_FILE="/tmp/subparser_sync.pid"
 LOG_FILE="/tmp/subparser_sync.log"
@@ -130,14 +161,14 @@ PYEOF
 
     ping_group)
         URL="https://www.gstatic.com/generate_204"
-        RES=$(curl -s -m 5 "http://${API_HOST}/group/${SECTION}-urltest-out/delay?url=${URL}&timeout=3000" 2>/dev/null)
+        RES=$(api_get "/group/${SECTION}-urltest-out/delay?url=${URL}&timeout=3000" 5)
         [ -n "$RES" ] && echo "$RES" || echo '{}'
         ;;
 
     ping_node)
         TAG="$2"
         URL="https://www.gstatic.com/generate_204"
-        RES=$(curl -s -m 4 "http://${API_HOST}/proxies/${TAG}/delay?url=${URL}&timeout=3000" 2>/dev/null)
+        RES=$(api_get "/proxies/${TAG}/delay?url=${URL}&timeout=3000" 4)
         [ -n "$RES" ] && echo "$RES" || echo '{"delay": -1}'
         ;;
 

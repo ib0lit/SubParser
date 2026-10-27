@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -67,6 +68,16 @@ def get_lan_ip():
         return "192.168.1.1"
 
 
+def _uci_get(path, default=""):
+    """Читает произвольную UCI-опцию Podkop (не только subparser.settings)."""
+    try:
+        out = subprocess.check_output(["uci", "-q", "get", path], text=True,
+                                      stderr=subprocess.DEVNULL).strip()
+        return out.strip("'\"") if out else default
+    except Exception:
+        return default
+
+
 def get_api_base():
     """Clash API Podkop. Больше не привязан жёстко к 192.168.1.1."""
     override = get_uci_val("podkop_api", "").strip()
@@ -76,12 +87,19 @@ def get_api_base():
         return override.rstrip("/")
     port = (get_uci_val("podkop_api_port", "") or
             get_uci_val("clash_api_port", "") or "9090").strip()
+    # Podkop умеет слушать API на явно заданном адресе. 0.0.0.0/:: — это
+    # «все интерфейсы», для подключения нужен реальный адрес роутера.
+    listen = _uci_get("podkop.settings.service_listen_address", "").strip()
+    if listen and listen not in ("0.0.0.0", "::", "*"):
+        listen = listen.split("/")[0]
+        return f"http://{listen}:{port}"
     return f"http://{get_lan_ip()}:{port}"
 
 
 def get_api_headers():
     secret = (get_uci_val("podkop_api_secret", "") or
-              get_uci_val("clash_api_secret", "")).strip()
+              get_uci_val("clash_api_secret", "") or
+              _uci_get("podkop.settings.yacd_secret_key", "")).strip()
     headers = {"User-Agent": "SubParser"}
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
@@ -100,6 +118,16 @@ def _api_request(path, method="GET", payload=None, timeout=1.5):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
             return resp.status, (json.loads(body.decode("utf-8")) if body else {})
+    except urllib.error.HTTPError as e:
+        # 401/403 и прочие ответы API важны для диагностики: раньше любая
+        # ошибка превращалась в «API недоступен» и маскировала неверный секрет.
+        body = None
+        try:
+            raw = e.read()
+            body = json.loads(raw.decode("utf-8")) if raw else None
+        except Exception:
+            body = None
+        return e.code, body
     except Exception:
         return None, None
 
@@ -229,11 +257,17 @@ def get_podkop_service_status():
     return service_ok, pid, ram_mb, mode_str
 
 
-def get_proxies():
+def fetch_proxies():
+    """Возвращает (proxies, http_status), чтобы отличать 401 от недоступности."""
     status, data = _api_request("/proxies", timeout=0.9)
+    proxies = {}
     if status in (200, 204) and isinstance(data, dict):
-        return data.get("proxies", {})
-    return {}
+        proxies = data.get("proxies", {})
+    return proxies, status
+
+
+def get_proxies():
+    return fetch_proxies()[0]
 
 
 def get_section_routing_state(section="main"):
@@ -341,11 +375,15 @@ def scan_dead_in_all_sections():
     попадают: удалять непроверенное по ошибке API недопустимо.
     """
     sections = get_all_podkop_sections()
-    proxies = get_proxies()
+    proxies, api_status = fetch_proxies()
     details = []
     total_dead = 0
 
     if not proxies:
+        if api_status in (401, 403):
+            return {"total": 0,
+                    "error": "Podkop API требует авторизацию (YACD Secret Key)",
+                    "details": []}
         return {"total": 0, "error": "Podkop API недоступен", "details": []}
 
     for section in sections:
