@@ -62,7 +62,7 @@ write_crontab() {
             local sched
             sched=$(get_cron_schedule "$interval" "$ch" "$cm")
             if [ -n "$sched" ]; then
-                echo "$sched /usr/bin/python3 /usr/bin/subparser.py >/dev/null 2>&1" >> "$CRON_TMP"
+                echo "$sched SUBPARSER_TRIGGER=cron /usr/bin/python3 /usr/bin/subparser.py >/dev/null 2>&1" >> "$CRON_TMP"
             fi
         fi
     fi

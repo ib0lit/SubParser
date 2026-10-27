@@ -256,4 +256,4 @@ notify "⚠️ <b>Сбой проксирования Podkop!</b>
 
 # Lock-файл НЕ удаляем: subparser.py сам берёт flock. Если парсер уже
 # запущен, новый экземпляр просто завершится без повреждения конфигурации.
-/usr/bin/python3 /usr/bin/subparser.py --force >/dev/null 2>&1 &
+SUBPARSER_TRIGGER=watchdog /usr/bin/python3 /usr/bin/subparser.py --force >/dev/null 2>&1 &

@@ -647,12 +647,12 @@ def get_log_screen():
         try:
             with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
-                log_text = "".join(lines[-15:]).strip()
+                log_text = "".join(lines[-25:]).strip()
         except Exception as e:
             log_text = f"Ошибка чтения лога: {e}"
 
     safe_log = html.escape(log_text[-3000:])
-    text = f"📄 <b>Последние строки лога парсера:</b>\n\n<pre>{safe_log}</pre>"
+    text = f"📄 <b>Последние 25 строк лога парсера:</b>\n\n<pre>{safe_log}</pre>"
     kb = {
         "inline_keyboard": [
             [{"text": "🔄 Обновить лог", "callback_data": "view_log"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],

@@ -322,6 +322,8 @@ def run_parser_process(mode_override=None, force=False):
         os.remove("/tmp/subparser_progress.json")
     except Exception:
         pass
+    env = dict(os.environ)
+    env["SUBPARSER_TRIGGER"] = "telegram"
     subprocess.Popen(["/usr/bin/python3", "/usr/bin/subparser.py", "--force"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     return True, "🚀 <b>Синхронизация запущена!</b>\nПроцесс выполняется в фоне."

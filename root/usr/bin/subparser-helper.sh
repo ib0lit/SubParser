@@ -17,7 +17,6 @@ API_HOST="${LAN_IP}:9090"
 
 PID_FILE="/tmp/subparser_sync.pid"
 LOG_FILE="/tmp/subparser_sync.log"
-LOCK_FILE="/var/run/subparser.lock"
 
 case "$ACTION" in
     get_podkop_sections)
@@ -63,21 +62,12 @@ PYEOF
             exit 0
         fi
 
-        if [ -f "$LOG_FILE" ]; then
-            tail -n 200 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null
-            mv "${LOG_FILE}.tmp" "$LOG_FILE"
-        fi
-
-        echo "=== Старт синхронизации: $(date) ===" >> "$LOG_FILE"
-
+        # Лог, ротацию и блокировку делает сам subparser.py: так он пишет
+        # историю при любом запуске (LuCI, бот, cron, watchdog, консоль).
         (
-            flock -n 9 || {
-                echo "[!] Синхронизация уже запущена другим процессом." >> "$LOG_FILE"
-                exit 1
-            }
-            /usr/bin/python3 /usr/bin/subparser.py --force >> "$LOG_FILE" 2>&1
+            SUBPARSER_TRIGGER=luci /usr/bin/python3 /usr/bin/subparser.py --force
             rm -f "$PID_FILE"
-        ) 9>"$LOCK_FILE" </dev/null >/dev/null 2>&1 &
+        ) </dev/null >/dev/null 2>&1 &
 
         echo $! > "$PID_FILE"
         echo '{"status": "started"}'
@@ -89,7 +79,7 @@ PYEOF
         else
             rm -f "$PID_FILE"
             if [ -f "$LOG_FILE" ] && awk '
-                /=== Старт синхронизации/ { found=1; win="" }
+                /=== (Старт|Запуск) синхронизации/ { found=1; win="" }
                 found { win = win $0 "\n" }
                 END {
                     if (win ~ /Podkop успешно обновлен/) exit 0

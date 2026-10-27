@@ -14,9 +14,11 @@ import html
 import shutil
 import subprocess
 import tempfile
+import threading
 import traceback
 import urllib.request
 import urllib.parse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, "/usr/lib")
@@ -74,6 +76,134 @@ LAST_SELECTED_FILE = "/tmp/subparser_last_selected.json"
 PODKOP_BACKUP = "/tmp/subparser_podkop.bak"
 SECTIONS_SEEN_FILE = "/etc/subparser/sections_seen.json"
 DEFAULT_HWID = "0123456789abcdef"
+SYNC_LOG_FILE = "/tmp/subparser_sync.log"
+RUN_LOG_KEEP_LINES = 200
+_RUN_LOG = {"fp": None, "stdout": None, "stderr": None}
+
+
+class _TeeStream:
+    """Пишет в консоль и в файл одновременно."""
+
+    def __init__(self, console, log_fp, lock):
+        self._console = console
+        self._log = log_fp
+        self._lock = lock
+
+    def write(self, data):
+        with self._lock:
+            for stream in (self._console, self._log):
+                try:
+                    stream.write(data)
+                    stream.flush()
+                except Exception:
+                    pass
+        return len(data)
+
+    def flush(self):
+        with self._lock:
+            for stream in (self._console, self._log):
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+
+    def isatty(self):
+        try:
+            return self._console.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        return self._console.fileno()
+
+    @property
+    def encoding(self):
+        return getattr(self._console, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._console, "errors", "replace")
+
+
+def _detect_launch_source():
+    """Откуда запущен парсер: telegram, luci, watchdog, cron или console."""
+    trigger = os.environ.get("SUBPARSER_TRIGGER", "").strip()
+    if trigger:
+        return trigger
+    try:
+        with open(f"/proc/{os.getppid()}/cmdline", "rb") as f:
+            cmd = f.read().replace(b"\0", b" ").decode("utf-8", "ignore").lower()
+    except Exception:
+        return "console"
+    if "subparser-bot" in cmd:
+        return "telegram"
+    if "subparser-helper" in cmd:
+        return "luci"
+    if "subparser-watchdog" in cmd:
+        return "watchdog"
+    if "crond" in cmd or "cron" in cmd:
+        return "cron"
+    return "console"
+
+
+def _trim_run_log():
+    """Оставляет хвост прошлого запуска, чтобы /tmp не разрастался."""
+    try:
+        if not os.path.exists(SYNC_LOG_FILE):
+            return
+        with open(SYNC_LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            tail = list(deque(f, maxlen=RUN_LOG_KEEP_LINES))
+        tmp = SYNC_LOG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(tail)
+        os.replace(tmp, SYNC_LOG_FILE)
+    except Exception:
+        pass
+
+
+def _append_run_log(text):
+    try:
+        with open(SYNC_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(text.rstrip() + "\n")
+    except Exception:
+        pass
+
+
+def _setup_run_log():
+    """Включает лог для любого способа запуска, а не только для LuCI."""
+    _trim_run_log()
+    try:
+        log_fp = open(SYNC_LOG_FILE, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        return None
+    lock = threading.Lock()
+    _RUN_LOG["fp"] = log_fp
+    _RUN_LOG["stdout"] = sys.stdout
+    _RUN_LOG["stderr"] = sys.stderr
+    sys.stdout = _TeeStream(sys.stdout, log_fp, lock)
+    sys.stderr = _TeeStream(sys.stderr, log_fp, lock)
+    print(f"=== Запуск синхронизации: {time.strftime('%d.%m.%Y %H:%M:%S')} | "
+          f"источник: {_detect_launch_source()} | pid {os.getpid()} ===")
+    return log_fp
+
+
+def _teardown_run_log():
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    log_fp = _RUN_LOG.get("fp")
+    if _RUN_LOG.get("stdout") is not None:
+        sys.stdout = _RUN_LOG["stdout"]
+    if _RUN_LOG.get("stderr") is not None:
+        sys.stderr = _RUN_LOG["stderr"]
+    if log_fp:
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+    _RUN_LOG.update({"fp": None, "stdout": None, "stderr": None})
 
 try:
     MAX_WORKERS = max(4, min(12, (os.cpu_count() or 2) * 2))
@@ -1167,8 +1297,12 @@ def _run():
 def main():
     lock_fd = _acquire_lock()
     if lock_fd is None:
-        print("[!] Синхронизация уже запущена другим процессом.")
+        msg = ("[!] Запуск отклонён: парсер уже выполняется другим процессом "
+               f"(источник: {_detect_launch_source()}, pid {os.getpid()}).")
+        print(msg)
+        _append_run_log(f"{time.strftime('%d.%m.%Y %H:%M:%S')} {msg}")
         return
+    _setup_run_log()
     try:
         _run()
     except Exception as e:
@@ -1181,6 +1315,7 @@ def main():
         except Exception:
             pass
     finally:
+        _teardown_run_log()
         _release_lock(lock_fd)
 
 

@@ -1,5 +1,9 @@
+import importlib.util
+import io
 import os
 import sys
+import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -24,6 +28,43 @@ from subparser import podkop  # noqa: E402
 from subparser import telegram  # noqa: E402
 from subparser import system  # noqa: E402
 from subparser import subs  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "subparser_main", os.path.join(ROOT, "root", "usr", "bin", "subparser.py"))
+subparser_main = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(subparser_main)
+
+
+class TestRunLog(unittest.TestCase):
+    def test_trim_keeps_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sync.log")
+            with open(path, "w", encoding="utf-8") as f:
+                for i in range(300):
+                    f.write(f"old {i}\n")
+            with mock.patch.object(subparser_main, "SYNC_LOG_FILE", path), \
+                    mock.patch.object(subparser_main, "RUN_LOG_KEEP_LINES", 200):
+                subparser_main._trim_run_log()
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            self.assertEqual(len(lines), 200)
+            self.assertEqual(lines[0], "old 100")
+
+    def test_tee_writes_to_console_and_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sync.log")
+            console = io.StringIO()
+            with open(path, "w", encoding="utf-8") as log_fp:
+                tee = subparser_main._TeeStream(console, log_fp, threading.Lock())
+                tee.write("строка лога\n")
+                tee.flush()
+            self.assertEqual(console.getvalue(), "строка лога\n")
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "строка лога\n")
+
+    def test_launch_source_from_env(self):
+        with mock.patch.dict(os.environ, {"SUBPARSER_TRIGGER": "cron"}):
+            self.assertEqual(subparser_main._detect_launch_source(), "cron")
 
 
 class TestUAAndConfig(unittest.TestCase):
