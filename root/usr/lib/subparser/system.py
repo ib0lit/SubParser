@@ -1,73 +1,103 @@
 # -*- coding: utf-8 -*-
+import ipaddress
 import os
-import time
-import json
 import socket
 import subprocess
-import urllib.request
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from .config import BLOCKED_FILE, SSL_CTX
+
+from .config import (
+    BLOCKED_FILE, get_ssl_ctx, get_uci_bool, get_uci_val,
+    load_blocked_macs as _load_blocked, save_blocked_macs as _save_blocked,
+)
+
+_FIREWALL_READY = False
+
 
 def get_blocked_macs():
-    if os.path.exists(BLOCKED_FILE):
-        try:
-            with open(BLOCKED_FILE, "r") as f:
-                return [m.upper() for m in json.load(f)]
-        except Exception:
-            return []
-    return []
+    return _load_blocked()
+
 
 def save_blocked_macs(mac_list):
-    try:
-        with open(BLOCKED_FILE, "w") as f:
-            json.dump([m.upper() for m in mac_list], f)
-    except Exception:
-        pass
+    return _save_blocked(mac_list)
 
-def init_bot_firewall():
-    subprocess.run(["nft", "add", "table", "inet", "bot_block"], stderr=subprocess.DEVNULL, check=False)
-    subprocess.run([
-        "nft", "add", "chain", "inet", "bot_block", "prerouting",
-        "{ type filter hook prerouting priority -300; policy accept; }"
-    ], stderr=subprocess.DEVNULL, check=False)
-    subprocess.run(["nft", "add", "set", "inet", "bot_block", "blocked_ips", "{ type ipv4_addr; }"], stderr=subprocess.DEVNULL, check=False)
-    subprocess.run(["nft", "flush", "chain", "inet", "bot_block", "prerouting"], stderr=subprocess.DEVNULL, check=False)
-    subprocess.run(["nft", "add", "rule", "inet", "bot_block", "prerouting", "ip", "saddr", "@blocked_ips", "meta", "l4proto", "tcp", "reject", "with", "tcp", "reset"], stderr=subprocess.DEVNULL, check=False)
-    subprocess.run(["nft", "add", "rule", "inet", "bot_block", "prerouting", "ip", "saddr", "@blocked_ips", "reject"], stderr=subprocess.DEVNULL, check=False)
+
+def _nft(*args):
+    subprocess.run(["nft"] + list(args), stderr=subprocess.DEVNULL, check=False)
+
+
+def init_bot_firewall(force=False):
+    """Создаёт nft-таблицу. Элементы set'ов при этом не сбрасываются."""
+    global _FIREWALL_READY
+    if _FIREWALL_READY and not force:
+        return
+    _nft("add", "table", "inet", "bot_block")
+    _nft("add", "chain", "inet", "bot_block", "prerouting",
+         "{ type filter hook prerouting priority -300; policy accept; }")
+    _nft("add", "set", "inet", "bot_block", "blocked_ips", "{ type ipv4_addr; }")
+    _nft("add", "set", "inet", "bot_block", "blocked_macs", "{ type ether_addr; }")
+    # Пересоздаём только правила, сами элементы блокировок сохраняются.
+    _nft("flush", "chain", "inet", "bot_block", "prerouting")
+    _nft("add", "rule", "inet", "bot_block", "prerouting",
+         "ether", "saddr", "@blocked_macs", "reject")
+    _nft("add", "rule", "inet", "bot_block", "prerouting",
+         "ip", "saddr", "@blocked_ips", "meta", "l4proto", "tcp", "reject", "with", "tcp", "reset")
+    _nft("add", "rule", "inet", "bot_block", "prerouting",
+         "ip", "saddr", "@blocked_ips", "reject")
+    _FIREWALL_READY = True
+
+    # Восстанавливаем сохранённые блокировки после перезагрузки роутера.
+    for mac in _load_blocked():
+        _nft("add", "element", "inet", "bot_block", "blocked_macs", f"{{ {mac} }}")
+        ip = get_ip_by_mac(mac)
+        if ip:
+            _nft("add", "element", "inet", "bot_block", "blocked_ips", f"{{ {ip} }}")
+
 
 def get_ip_by_mac(mac):
-    mac_upper = mac.upper()
+    mac_upper = str(mac).upper()
     try:
         with open("/tmp/dhcp.leases", "r") as f:
-            for l in f:
-                p = l.strip().split()
-                if len(p) >= 4 and p[1].upper() == mac_upper:
-                    return p[2]
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4 and parts[1].upper() == mac_upper:
+                    return parts[2]
     except Exception:
         pass
     try:
         with open("/proc/net/arp", "r") as f:
-            for l in f.readlines()[1:]:
-                p = l.strip().split()
-                if len(p) >= 4 and p[3].upper() == mac_upper:
-                    return p[0]
+            for line in f.readlines()[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 4 and parts[3].upper() == mac_upper:
+                    return parts[0]
     except Exception:
         pass
     return None
 
+
 def apply_mac_firewall(mac, block=True):
     init_bot_firewall()
-    ip = get_ip_by_mac(mac)
+    mac_u = str(mac).upper()
+    ip = get_ip_by_mac(mac_u)
+
     if block:
+        # Блокируем по MAC (не слетает при смене IP по DHCP) и по текущему IP
+        # для сброса уже установленных соединений.
+        _nft("add", "element", "inet", "bot_block", "blocked_macs", f"{{ {mac_u} }}")
         if ip:
-            subprocess.run(["nft", "add", "element", "inet", "bot_block", "blocked_ips", f"{{ {ip} }}"], stderr=subprocess.DEVNULL, check=False)
+            _nft("add", "element", "inet", "bot_block", "blocked_ips", f"{{ {ip} }}")
             subprocess.run(["conntrack", "-D", "-s", ip], stderr=subprocess.DEVNULL, check=False)
             subprocess.run(["conntrack", "-D", "-d", ip], stderr=subprocess.DEVNULL, check=False)
             subprocess.run(["ip", "neigh", "flush", "to", ip], stderr=subprocess.DEVNULL, check=False)
     else:
+        _nft("delete", "element", "inet", "bot_block", "blocked_macs", f"{{ {mac_u} }}")
         if ip:
-            subprocess.run(["nft", "delete", "element", "inet", "bot_block", "blocked_ips", f"{{ {ip} }}"], stderr=subprocess.DEVNULL, check=False)
+            _nft("delete", "element", "inet", "bot_block", "blocked_ips", f"{{ {ip} }}")
+    return True
+
 
 def get_wifi_stations():
     wifi_data = {}
@@ -75,13 +105,17 @@ def get_wifi_stations():
         res = subprocess.check_output(["ubus", "list", "hostapd.*"], text=True, stderr=subprocess.DEVNULL)
         h_objs = [line.strip() for line in res.splitlines() if line.strip()]
         for obj in h_objs:
-            band = "5G" if ("5" in obj or "phy1" in obj) else "2.4G"
             try:
-                raw_json = subprocess.check_output(["ubus", "call", obj, "get_clients"], text=True, stderr=subprocess.DEVNULL)
-                c_data = json.loads(raw_json)
-                clients_map = c_data.get("clients", {})
+                raw_json = subprocess.check_output(["ubus", "call", obj, "get_clients"],
+                                                   text=True, stderr=subprocess.DEVNULL)
+                clients_map = __import__("json").loads(raw_json).get("clients", {})
                 for mac, meta in clients_map.items():
                     sig = meta.get("signal", -100)
+                    freq = meta.get("freq", 0) or meta.get("frequency", 0)
+                    if freq:
+                        band = "5G" if int(freq) >= 4000 else "2.4G"
+                    else:
+                        band = "5G" if ("5" in obj or "phy1" in obj) else "2.4G"
                     tx_rate = meta.get("tx", {}).get("rate", 0)
                     tx_mbps = f"{tx_rate / 1000:.1f} M" if tx_rate > 1000 else (f"{tx_rate} M" if tx_rate > 0 else "")
                     if sig >= -55:
@@ -92,11 +126,10 @@ def get_wifi_stations():
                         s_ico = "🛜 Средний"
                     else:
                         s_ico = "🛜 Слабый"
-
                     wifi_data[mac.upper()] = {
                         "type": f"Wi-Fi {band}",
                         "signal": f"{s_ico} ({sig} dBm)",
-                        "tx": tx_mbps
+                        "tx": tx_mbps,
                     }
             except Exception:
                 pass
@@ -104,21 +137,52 @@ def get_wifi_stations():
         pass
     return wifi_data
 
+
+def _is_private_address(ip_str):
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_multicast or ip.is_reserved)
+    except Exception:
+        return False
+
+
+def _validate_diag_target(raw_input):
+    """Разрешает только http/https и по умолчанию не даёт сканировать LAN/loopback."""
+    text = (raw_input or "").strip()
+    if not text:
+        raise ValueError("пустой адрес")
+    if "://" not in text:
+        text = "https://" + text
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("поддерживаются только http/https")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("не удалось определить хост")
+    if not get_uci_bool("allow_local_diag", False):
+        try:
+            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
+                                       socket.AF_INET, socket.SOCK_STREAM)
+            for info in infos:
+                if _is_private_address(info[4][0]):
+                    raise ValueError("локальные и служебные адреса запрещены")
+        except ValueError:
+            raise
+        except Exception:
+            pass
+    return text, host
+
+
 def analyze_custom_url(raw_input):
     try:
-        text = raw_input.strip()
-        if "://" in text:
-            parsed = urllib.parse.urlsplit(text)
-            domain = parsed.hostname or parsed.netloc
-            test_url = text
-        else:
-            domain = text.split("/")[0].split(":")[0]
-            test_url = f"https://{text}"
+        test_url, domain = _validate_diag_target(raw_input)
 
         is_proxied = False
         resolved_ip = "н/д"
         try:
-            addrinfo = socket.getaddrinfo(domain, 443, socket.AF_INET, socket.SOCK_STREAM)
+            addrinfo = socket.getaddrinfo(domain, urllib.parse.urlsplit(test_url).port or 443,
+                                          socket.AF_INET, socket.SOCK_STREAM)
             if addrinfo:
                 resolved_ip = addrinfo[0][4][0]
                 if resolved_ip.startswith("198.18.") or resolved_ip.startswith("198.19."):
@@ -132,7 +196,7 @@ def analyze_custom_url(raw_input):
         t0 = time.time()
         try:
             req = urllib.request.Request(test_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=3.5, context=SSL_CTX) as r:
+            with urllib.request.urlopen(req, timeout=3.5, context=get_ssl_ctx()) as r:
                 ms = int((time.time() - t0) * 1000)
                 status_text = f"🟢 Доступен ({r.status}, <code>{ms} ms</code>)"
         except urllib.error.HTTPError as he:
@@ -149,8 +213,11 @@ def analyze_custom_url(raw_input):
             f"• <b>Отклик:</b> {status_text}\n"
             f"• <b>Проверен URL:</b> <code>{test_url[:50]}</code>"
         )
+    except ValueError as e:
+        return f"⚠️ Недопустимый адрес: {e}"
     except Exception as e:
         return f"⚠️ Ошибка при анализе адреса: {e}"
+
 
 def check_single_service(item):
     name, domain, url = item
@@ -170,7 +237,7 @@ def check_single_service(item):
     t0 = time.time()
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=3.0, context=SSL_CTX) as r:
+        with urllib.request.urlopen(req, timeout=3.0, context=get_ssl_ctx()) as r:
             ms = int((time.time() - t0) * 1000)
             ok = True
     except urllib.error.HTTPError:
@@ -184,11 +251,12 @@ def check_single_service(item):
 
 def measure_download_speed():
     test_url = "https://speed.cloudflare.com/__down?bytes=10485760"
+    proxy = get_uci_val("speedtest_proxy", "socks5h://127.0.0.1:4534")
     cmd = [
-        "curl", "-s", "-x", "socks5h://127.0.0.1:4534",
+        "curl", "-s", "-x", proxy,
         "-w", "%{http_code} %{speed_download} %{time_total}",
         "-o", "/dev/null", "-m", "10",
-        test_url
+        test_url,
     ]
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)

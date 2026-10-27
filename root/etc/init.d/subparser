@@ -4,6 +4,7 @@ START=95
 STOP=10
 
 CRON_TMP="/tmp/cron_subparser.tmp"
+WATCHDOG_CRON="*/5 * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1"
 
 get_cron_schedule() {
     local interval="$1"
@@ -43,25 +44,26 @@ get_cron_schedule() {
     esac
 }
 
-start() {
-    local enabled
-    local interval
-    local custom_hour
-    local custom_minute
+write_crontab() {
+    local enabled="$1"
+    local interval="$2"
+    local ch="$3"
+    local cm="$4"
 
-    config_load subparser
-    config_get enabled settings enabled '0'
-    config_get interval settings interval 'never'
-    config_get custom_hour settings custom_hour '0'
-    config_get custom_minute settings custom_minute '0'
+    crontab -l 2>/dev/null | grep -v "subparser.py" | grep -v "subparser-helper.sh bg_sync" \
+        | grep -v "subparser-watchdog.sh" > "$CRON_TMP" || true
 
-    crontab -l 2>/dev/null | grep -v "subparser.py" | grep -v "subparser-helper.sh bg_sync" > "$CRON_TMP" || true
+    if [ "$enabled" = "1" ]; then
+        # Watchdog работает всегда, когда служба включена: он сам проверяет
+        # настройки и не трогает Podkop при выключенном сервисе.
+        echo "$WATCHDOG_CRON" >> "$CRON_TMP"
 
-    if [ "$enabled" = "1" ] && [ "$interval" != "never" ]; then
-        local sched
-        sched=$(get_cron_schedule "$interval" "$custom_hour" "$custom_minute")
-        if [ -n "$sched" ]; then
-            echo "$sched /usr/bin/python3 /usr/bin/subparser.py >/dev/null 2>&1" >> "$CRON_TMP"
+        if [ "$interval" != "never" ]; then
+            local sched
+            sched=$(get_cron_schedule "$interval" "$ch" "$cm")
+            if [ -n "$sched" ]; then
+                echo "$sched /usr/bin/python3 /usr/bin/subparser.py >/dev/null 2>&1" >> "$CRON_TMP"
+            fi
         fi
     fi
 
@@ -70,11 +72,20 @@ start() {
     /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
+start() {
+    local enabled interval custom_hour custom_minute
+
+    config_load subparser
+    config_get enabled settings enabled '0'
+    config_get interval settings interval 'never'
+    config_get custom_hour settings custom_hour '0'
+    config_get custom_minute settings custom_minute '0'
+
+    write_crontab "$enabled" "$interval" "$custom_hour" "$custom_minute"
+}
+
 stop() {
-    crontab -l 2>/dev/null | grep -v "subparser.py" | grep -v "subparser-helper.sh bg_sync" > "$CRON_TMP" || true
-    crontab "$CRON_TMP" 2>/dev/null || true
-    rm -f "$CRON_TMP"
-    /etc/init.d/cron restart >/dev/null 2>&1 || true
+    write_crontab "0" "never" "0" "0"
 }
 
 restart() {

@@ -1,11 +1,57 @@
 #!/bin/sh
-if [ "$PACKAGE" = "subparser" ]; then
-    /etc/init.d/subparser restart >/dev/null 2>&1 || true
-    
+# Реакция на изменения UCI. Перезапускаем только те службы, чьи настройки
+# действительно изменились: иначе бот, сохраняющий любую опцию, перезапускал
+# сам себя через этот hotplug.
+[ "$PACKAGE" = "subparser" ] || exit 0
+
+STATE_FILE="/tmp/subparser_hotplug.state"
+LOCK_FILE="/tmp/subparser_hotplug.lock"
+
+# Debounce: серия uci commit подряд должна привести к одному перезапуску.
+(
+    flock -n 9 || exit 0
+    sleep 3
+
     EN=$(uci -q get subparser.settings.enabled)
-    if [ "$EN" = "1" ]; then
-        /etc/init.d/subparser-bot restart >/dev/null 2>&1 || true
-    else
-        /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
+    TOKEN=$(uci -q get subparser.settings.tg_bot_token)
+    CHAT=$(uci -q get subparser.settings.tg_chat_id)
+    INTERVAL=$(uci -q get subparser.settings.interval)
+    CH=$(uci -q get subparser.settings.custom_hour)
+    CM=$(uci -q get subparser.settings.custom_minute)
+
+    PREV_EN=""
+    PREV_TOKEN=""
+    PREV_CHAT=""
+    PREV_INTERVAL=""
+    PREV_CH=""
+    PREV_CM=""
+    if [ -f "$STATE_FILE" ]; then
+        PREV_EN=$(sed -n '1p' "$STATE_FILE")
+        PREV_TOKEN=$(sed -n '2p' "$STATE_FILE")
+        PREV_CHAT=$(sed -n '3p' "$STATE_FILE")
+        PREV_INTERVAL=$(sed -n '4p' "$STATE_FILE")
+        PREV_CH=$(sed -n '5p' "$STATE_FILE")
+        PREV_CM=$(sed -n '6p' "$STATE_FILE")
     fi
-fi
+
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+        "$EN" "$TOKEN" "$CHAT" "$INTERVAL" "$CH" "$CM" > "$STATE_FILE"
+
+    # Первый запуск: только запоминаем состояние.
+    if [ -z "$PREV_INTERVAL" ] && [ -z "$PREV_EN" ] && [ -z "$PREV_TOKEN" ]; then
+        exit 0
+    fi
+
+    if [ "$EN" != "$PREV_EN" ] || [ "$INTERVAL" != "$PREV_INTERVAL" ] || \
+       [ "$CH" != "$PREV_CH" ] || [ "$CM" != "$PREV_CM" ]; then
+        /etc/init.d/subparser restart >/dev/null 2>&1 || true
+    fi
+
+    if [ "$EN" != "$PREV_EN" ] || [ "$TOKEN" != "$PREV_TOKEN" ] || [ "$CHAT" != "$PREV_CHAT" ]; then
+        if [ "$EN" = "1" ] && [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
+            /etc/init.d/subparser-bot restart >/dev/null 2>&1 || true
+        else
+            /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
+        fi
+    fi
+) 9>"$LOCK_FILE" </dev/null >/dev/null 2>&1 &

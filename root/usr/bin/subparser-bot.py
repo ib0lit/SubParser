@@ -4,6 +4,7 @@ import sys
 import time
 sys.path.insert(0, "/usr/lib")
 import html
+import logging
 import subprocess
 import threading
 import urllib.parse
@@ -12,7 +13,8 @@ import json
 
 from subparser.config import (
     CONFIG_NAME, UA_CHOICES, check_credentials,
-    get_uci_val, set_uci_val, get_user_state, set_user_state
+    get_uci_val, set_uci_val, get_user_state, set_user_state,
+    clear_user_state, get_bot_offset, set_bot_offset,
 )
 from subparser.telegram import tg_api, send_msg, edit_msg, delete_msg, answer_callback
 from subparser.subs import (
@@ -55,10 +57,14 @@ def get_allowed_user_ids():
 def watch_parser_and_restore_menu(token, chat_id, old_msg_id):
     time.sleep(3)
     while True:
-        ps = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE, text=True)
+        ps = subprocess.run(["pgrep", "-f", "[s]ubparser.py"], stdout=subprocess.PIPE, text=True)
         if not ps.stdout.strip():
             break
         time.sleep(2)
+    try:
+        os.remove("/tmp/subparser_progress.json")
+    except Exception:
+        pass
     time.sleep(3)
     try:
         delete_msg(token, chat_id, old_msg_id)
@@ -100,7 +106,17 @@ def check_post_update_notification(token):
                 pass
 
 def main():
-    offset = 0
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler("/tmp/subparser_bot.log", encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    log = logging.getLogger("subparser-bot")
+    offset = get_bot_offset()
+    first_poll = offset == 0
     print("[*] SubParser Bot запущен (модульная архитектура)...")
     init_bot_firewall()
     token_init, _ = check_credentials()
@@ -115,13 +131,19 @@ def main():
             continue
 
         try:
-            updates = tg_api(token, "getUpdates", {"offset": offset, "timeout": 20}, timeout=25)
+            payload = {"offset": offset, "timeout": 20}
+            if first_poll:
+                # Не выполняем старые кнопки, накопившиеся до первого запуска.
+                payload["drop_pending_updates"] = True
+            updates = tg_api(token, "getUpdates", payload, timeout=25)
+            first_poll = False
             if not updates or not updates.get("ok"):
-                time.sleep(2)
+                time.sleep(3)
                 continue
 
             for u in updates.get("result", []):
                 offset = u["update_id"] + 1
+                set_bot_offset(offset)
 
                 if "message" in u:
                     msg = u["message"]
@@ -137,10 +159,10 @@ def main():
                     if not raw_text:
                         continue
 
-                    state = get_user_state()
+                    state = get_user_state(user_id)
 
                     if state.get("waiting_for") == "custom_threshold":
-                        set_user_state({})
+                        clear_user_state(user_id)
                         if raw_text.isdigit() and 30 <= int(raw_text) <= 3000:
                             set_uci_val("ping_threshold", raw_text)
                             send_msg(token, user_id, f"✅ <b>Порог задержки установлен:</b> <code>{raw_text} ms</code>")
@@ -160,7 +182,7 @@ def main():
                         is_sub, sub_type = detect_is_subscription(raw_text)
                         if is_sub:
                             parsed = urllib.parse.urlsplit(raw_text)
-                            set_user_state({"pending_sub_url": raw_text})
+                            set_user_state(user_id, {"pending_sub_url": raw_text})
                             card = (
                                 f"📥 <b>Обнаружена подписка ({sub_type})!</b>\n\n"
                                 f"🌐 <b>Хост:</b> <code>{parsed.netloc}</code>\n"
@@ -223,26 +245,29 @@ def main():
                     msg_id = msg_obj.get("message_id")
                     chat_id = msg_obj.get("chat", {}).get("id")
 
-                    ADMIN_PREFIXES = ('sub_del_', 'reboot', 'do_reboot', 'restart', 'enter_del_mode', 'srv_del_pg')
+                    ADMIN_PREFIXES = (
+                        'sub_del_', 'reboot', 'do_reboot', 'restart', 'enter_del_mode',
+                        'srv_del_pg', 'apply_bdel', 'del:', 'blk:', 'unblk:', 'do_update',
+                    )
                     if any(data == p or data.startswith(p) for p in ADMIN_PREFIXES) and user_id != admin_id:
                         print(f"[AUTH REJECT] Admin-only action '{data}' blocked for user {username} ({user_id})")
                         answer_callback(token, cb_id, "⛔ Действие доступно только администратору!")
                         continue
 
                     if data == "close_msg":
-                        set_user_state({})
+                        clear_user_state(user_id)
                         answer_callback(token, cb_id, "Окно закрыто")
                         delete_msg(token, chat_id, msg_id)
                         continue
 
                     elif data == "home":
-                        set_user_state({})
+                        clear_user_state(user_id)
                         answer_callback(token, cb_id)
                         t, kb = get_main_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "menu_fp":
-                        set_user_state({})
+                        clear_user_state(user_id)
                         answer_callback(token, cb_id)
                         t, kb = get_fp_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
@@ -271,15 +296,18 @@ def main():
                                 json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
                         except Exception:
                             pass
+                        branch = get_uci_val("update_branch", "main") or "main"
+                        branch = "".join(ch for ch in branch if ch.isalnum() or ch in "-_./")
                         subprocess.Popen(
-                            ["sh", "-c", "curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh -o /tmp/run_update.sh && chmod +x /tmp/run_update.sh && (/tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
+                            ["sh", "-c",
+                             f"curl -fsSL https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/update.sh -o /tmp/run_update.sh && chmod +x /tmp/run_update.sh && (SUBPARSER_BRANCH={branch} /tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
                             close_fds=True,
                             start_new_session=True
                         )
                         continue
 
                     elif data == "parser_menu":
-                        set_user_state({})
+                        clear_user_state(user_id)
                         answer_callback(token, cb_id)
                         t, kb = get_parser_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
@@ -291,12 +319,12 @@ def main():
 
                     elif data.startswith("sub_card:"):
                         answer_callback(token, cb_id)
-                        s_idx = int(data.split(":")[1])
+                        s_idx = data.split(":", 1)[1]
                         t, kb = get_sub_card_screen(s_idx)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data.startswith("sub_tgl:"):
-                        s_idx = int(data.split(":")[1])
+                        s_idx = data.split(":", 1)[1]
                         ok, new_st = toggle_sub_enabled(s_idx)
                         txt = "Подписка включена" if new_st == "1" else "Подписка выключена"
                         answer_callback(token, cb_id, txt)
@@ -304,7 +332,7 @@ def main():
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data.startswith("sub_cycle_ua:"):
-                        s_idx = int(data.split(":")[1])
+                        s_idx = data.split(":", 1)[1]
                         ok, new_ua = cycle_sub_ua(s_idx)
                         answer_callback(token, cb_id, f"UA изменен: {new_ua}")
                         t, kb = get_sub_card_screen(s_idx)
@@ -312,23 +340,24 @@ def main():
 
                     elif data.startswith("sub_del_ask:"):
                         answer_callback(token, cb_id)
-                        s_idx = int(data.split(":")[1])
+                        s_idx = data.split(":", 1)[1]
                         t, kb = get_sub_delete_confirm_screen(s_idx)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data.startswith("sub_del_do:"):
-                        s_idx = int(data.split(":")[1])
+                        s_idx = data.split(":", 1)[1]
                         ok = delete_sub_by_idx(s_idx)
-                        answer_callback(token, cb_id, "Подписка удалена")
+                        answer_callback(token, cb_id, "Подписка удалена" if ok else "Ошибка удаления")
                         t, kb = get_subs_list_screen()
-                        edit_msg(token, chat_id, msg_id, f"🗑 <b>Подписка удалена из роутера!</b>\n\n{t}", kb)
+                        prefix = "🗑 <b>Подписка удалена из роутера!</b>" if ok else "⚠️ <b>Подписка не найдена.</b>"
+                        edit_msg(token, chat_id, msg_id, f"{prefix}\n\n{t}", kb)
 
                     elif data.startswith("addsub_ua:"):
                         answer_callback(token, cb_id, "Сохраняю...")
                         ua_key = data.split("addsub_ua:")[1]
-                        state = get_user_state()
+                        state = get_user_state(user_id)
                         sub_url = state.get("pending_sub_url", "")
-                        set_user_state({})
+                        clear_user_state(user_id)
 
                         if not sub_url:
                             edit_msg(token, chat_id, msg_id, "⚠️ <b>Время действия ссылки истекло.</b>\nОтправьте ссылку на подписку снова.")
@@ -355,9 +384,9 @@ def main():
 
                     elif data == "diag_host":
                         answer_callback(token, cb_id, "Тестирую...")
-                        state = get_user_state()
+                        state = get_user_state(user_id)
                         test_url = state.get("pending_sub_url", "")
-                        set_user_state({})
+                        clear_user_state(user_id)
                         rep = analyze_custom_url(test_url)
                         kb_back = {"inline_keyboard": [
                             [{"text": "🗑 Закрыть", "callback_data": "close_msg"}, {"text": "◀️ В главное меню", "callback_data": "home"}]
@@ -419,7 +448,7 @@ def main():
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "ask_custom_th":
-                        set_user_state({"waiting_for": "custom_threshold"})
+                        set_user_state(user_id, {"waiting_for": "custom_threshold"})
                         answer_callback(token, cb_id, "Ожидаю число...")
                         t, kb = get_parser_menu_screen(prompt_custom_ping=True)
                         edit_msg(token, chat_id, msg_id, t, kb)
@@ -475,7 +504,8 @@ def main():
                         answer_callback(token, cb_id, "Запуск парсера...")
                         try:
                             with open("/tmp/subparser_progress.json", "w") as pf:
-                                json.dump({"token": token, "chat_id": chat_id, "msg_id": msg_id}, pf)
+                                json.dump({"token": token, "chat_id": chat_id, "msg_id": msg_id,
+                                           "started": int(time.time())}, pf)
                         except Exception:
                             pass
 
@@ -491,7 +521,16 @@ def main():
 
                     elif data == "clients":
                         answer_callback(token, cb_id)
-                        t, kb = get_clients_screen()
+                        t, kb = get_clients_screen(page=0)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("clients_pg:"):
+                        answer_callback(token, cb_id)
+                        try:
+                            pg = int(data.split(":", 1)[1])
+                        except Exception:
+                            pg = 0
+                        t, kb = get_clients_screen(page=pg)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data.startswith("dev:"):
@@ -613,7 +652,7 @@ def main():
                         p = data.split(":")
                         sec_name = p[1]
                         pg = int(p[2]) if len(p) > 2 else 0
-                        set_user_state({"del_batch_sel": []})
+                        set_user_state(user_id, {"del_batch_sel": []})
                         from subparser.podkop import CACHED_DELAYS
                         delays = CACHED_DELAYS.get(sec_name, {})
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg, delete_mode=True, selected_indices=[])
@@ -625,14 +664,14 @@ def main():
                         sec_name = p[1]
                         idx = int(p[2])
                         pg = int(p[3]) if len(p) > 3 else 0
-                        st = get_user_state()
+                        st = get_user_state(user_id)
                         sel_set = set(st.get("del_batch_sel", []))
                         if idx in sel_set:
                             sel_set.remove(idx)
                         else:
                             sel_set.add(idx)
                         sel_list = list(sel_set)
-                        set_user_state({"del_batch_sel": sel_list})
+                        set_user_state(user_id, {"del_batch_sel": sel_list})
                         from subparser.podkop import CACHED_DELAYS
                         delays = CACHED_DELAYS.get(sec_name, {})
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg, delete_mode=True, selected_indices=sel_list)
@@ -646,13 +685,13 @@ def main():
                         from subparser.podkop import CACHED_DELAYS, get_podkop_links
                         delays = CACHED_DELAYS.get(sec_name, {})
                         links = get_podkop_links(sec_name)
-                        st = get_user_state()
+                        st = get_user_state(user_id)
                         sel_set = set(st.get("del_batch_sel", []))
                         for i in range(len(links)):
                             if delays.get(i, -1) <= 0 and i in delays:
                                 sel_set.add(i)
                         sel_list = list(sel_set)
-                        set_user_state({"del_batch_sel": sel_list})
+                        set_user_state(user_id, {"del_batch_sel": sel_list})
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg, delete_mode=True, selected_indices=sel_list)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
@@ -661,7 +700,7 @@ def main():
                         p = data.split(":")
                         sec_name = p[1]
                         pg = int(p[2]) if len(p) > 2 else 0
-                        set_user_state({})
+                        clear_user_state(user_id)
                         from subparser.podkop import CACHED_DELAYS
                         delays = CACHED_DELAYS.get(sec_name, {})
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg, delete_mode=False, selected_indices=[])
@@ -672,7 +711,7 @@ def main():
                         p = data.split(":")
                         sec_name = p[1]
                         pg = int(p[2])
-                        st = get_user_state()
+                        st = get_user_state(user_id)
                         sel_list = st.get("del_batch_sel", [])
                         from subparser.podkop import CACHED_DELAYS
                         delays = CACHED_DELAYS.get(sec_name, {})
@@ -683,9 +722,9 @@ def main():
                         answer_callback(token, cb_id, "Применяю...")
                         p = data.split(":")
                         sec_name = p[1]
-                        st = get_user_state()
+                        st = get_user_state(user_id)
                         sel_list = st.get("del_batch_sel", [])
-                        set_user_state({})
+                        clear_user_state(user_id)
                         if not sel_list:
                             answer_callback(token, cb_id, "Ничего не выбрано")
                             continue
@@ -832,7 +871,8 @@ def main():
                         edit_msg(token, chat_id, msg_id, f"{alert}\n\n{t}", kb)
 
         except Exception:
-            time.sleep(2)
+            log.exception("Необработанная ошибка в цикле бота")
+            time.sleep(3)
 
 if __name__ == "__main__":
     main()

@@ -2,7 +2,8 @@
 set -e
 
 PKG_NAME="luci-app-subparser"
-PKG_VER="1.0.0"
+PKG_VER="$(cat root/etc/subparser_version 2>/dev/null | tr -d '[:space:]')"
+[ -z "$PKG_VER" ] && PKG_VER="0.0.0"
 PKG_REL="1"
 OUT_DIR="./dist"
 
@@ -17,6 +18,7 @@ cat << 'EOF' > "$BUILD_DIR/post-install"
 #!/bin/sh
 /etc/init.d/subparser enable >/dev/null 2>&1 || true
 /etc/init.d/subparser-bot enable >/dev/null 2>&1 || true
+chmod 600 /etc/config/subparser 2>/dev/null || true
 CRON_TMP="/tmp/cron_subparser_apk.tmp"
 crontab -l 2>/dev/null | grep -v "subparser-watchdog.sh" > "$CRON_TMP" || true
 echo "*/5 * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1" >> "$CRON_TMP"
@@ -64,6 +66,7 @@ package() {
   cp -a /work/root/* "\$pkgdir/"
   chmod 755 "\$pkgdir"/etc/init.d/*
   chmod 755 "\$pkgdir"/usr/bin/*
+  chmod 600 "\$pkgdir"/etc/config/subparser 2>/dev/null || true
 }
 EOF
 
@@ -78,8 +81,8 @@ cd /work/.build_apk_tmp
 export REPODEST=/tmp/repodest
 abuild -F -d
 TARGET=$(find /tmp/repodest -type f -name "*.apk" -not -name "APKINDEX*" | head -n 1)
-cp "$TARGET" /work/dist/luci-app-subparser-1.0.0-r1.apk
-chmod 666 /work/dist/luci-app-subparser-1.0.0-r1.apk
+cp "$TARGET" /work/dist/
+chmod 666 /work/dist/*.apk
 EOF
 chmod +x "$BUILD_DIR/docker_build.sh"
 

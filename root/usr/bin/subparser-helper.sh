@@ -3,6 +3,14 @@ ACTION="$1"
 SECTION="$2"
 [ -z "$SECTION" ] && SECTION="main"
 
+# Имя секции UCI не должно содержать ничего, кроме безопасных символов.
+case "$SECTION" in
+    *[!A-Za-z0-9_-]*)
+        echo '{"status": "error", "message": "Недопустимое имя секции"}'
+        exit 1
+        ;;
+esac
+
 LAN_IP=$(uci -q get network.lan.ipaddr | cut -d'/' -f1)
 [ -z "$LAN_IP" ] && LAN_IP="192.168.1.1"
 API_HOST="${LAN_IP}:9090"
@@ -13,26 +21,15 @@ LOCK_FILE="/var/run/subparser.lock"
 
 case "$ACTION" in
     get_podkop_sections)
-        SECTIONS=$(uci -q show podkop 2>/dev/null | grep -E "=podkop|urltest_proxy_links" | cut -d"." -f2 | cut -d"=" -f1 | sort -u)
+        # Только чтение. Раньше здесь молча перезаписывался target_section,
+        # из-за чего открытие вкладки LuCI меняло настройки парсера.
+        SECTIONS=$(uci -q show podkop 2>/dev/null | sed -n 's/^podkop\.\([^.=]*\)=podkop.*/\1/p' | sort -u)
         [ -z "$SECTIONS" ] && SECTIONS="main"
-        
-        # Автоматическая синхронизация конфига subparser: чистим старое, добавляем актуальное
-        CUR_SECS=$(uci -q get subparser.settings.target_section)
-        uci -q delete subparser.settings.target_section
-        for s in $SECTIONS; do
-            uci add_list subparser.settings.target_section="$s"
-        done
-        uci commit subparser
-        
-        echo "["
-        FIRST=1
-        for s in $SECTIONS; do
-            [ $FIRST -eq 0 ] && echo ","
-            FIRST=0
-            printf '  "%s"' "$s"
-        done
-        echo ""
-        echo "]"
+        SECTIONS="$SECTIONS" python3 - <<'PYEOF'
+import json, os
+items = os.environ.get("SECTIONS", "main").split()
+print(json.dumps(items, ensure_ascii=False))
+PYEOF
         ;;
 
     test_tg)
@@ -44,14 +41,13 @@ case "$ACTION" in
         fi
         MSG="🔔 <b>SubParser</b>: Тестовое сообщение успешно доставлено!"
         RES=$(curl -s -m 8 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-            -d "chat_id=${CHAT_ID}" \
-            -d "text=${MSG}" \
-            -d "parse_mode=HTML" 2>&1)
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}" \
+            --data-urlencode "parse_mode=HTML" 2>&1)
         if echo "$RES" | grep -q '"ok":true'; then
             echo '{"status": "ok"}'
         else
-            ERR=$(echo "$RES" | sed 's/"/\\"/g' | tr -d '\r\n')
-            echo "{\"status\": \"error\", \"message\": \"$ERR\"}"
+            printf '%s' "$RES" | python3 -c 'import json,sys; print(json.dumps({"status": "error", "message": sys.stdin.read()[:300]}, ensure_ascii=False))'
         fi
         ;;
 
@@ -86,7 +82,14 @@ case "$ACTION" in
             echo '{"status": "running"}'
         else
             rm -f "$PID_FILE"
-            if grep -q "Podkop успешно обновлен" "$LOG_FILE" 2>/dev/null; then
+            if [ -f "$LOG_FILE" ] && awk '
+                /=== Старт синхронизации/ { found=1; win="" }
+                found { win = win $0 "\n" }
+                END {
+                    if (win ~ /Podkop успешно обновлен/) exit 0
+                    if (win ~ /Состав узлов не изменился/) exit 0
+                    exit 1
+                }' "$LOG_FILE"; then
                 echo '{"status": "done"}'
             else
                 echo '{"status": "error"}'
@@ -101,15 +104,7 @@ case "$ACTION" in
 
     get_links)
         LINKS=$(uci -q get podkop.${SECTION}.urltest_proxy_links)
-        echo "["
-        FIRST=1
-        for link in $LINKS; do
-            [ $FIRST -eq 0 ] && echo ","
-            FIRST=0
-            printf '  "%s"' "$link"
-        done
-        echo ""
-        echo "]"
+        printf '%s' "$LINKS" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(), ensure_ascii=False))'
         ;;
 
     save_selected)
@@ -118,15 +113,23 @@ case "$ACTION" in
             echo '{"status": "error", "message": "Файл пуст или не найден"}'
             exit 1
         fi
-        uci -q delete podkop.${SECTION}.urltest_proxy_links
+        TMP_BATCH=$(mktemp /tmp/subparser_uci.XXXXXX) || exit 1
+        printf 'delete podkop.%s.urltest_proxy_links\n' "$SECTION" > "$TMP_BATCH"
         while IFS= read -r link || [ -n "$link" ]; do
-            link_clean=$(echo "$link" | tr -d '\r\n')
-            [ -n "$link_clean" ] && uci add_list podkop.${SECTION}.urltest_proxy_links="$link_clean"
+            link_clean=$(printf '%s' "$link" | tr -d '\r\n')
+            [ -z "$link_clean" ] && continue
+            esc=$(printf '%s' "$link_clean" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+            printf 'add_list podkop.%s.urltest_proxy_links="%s"\n' "$SECTION" "$esc" >> "$TMP_BATCH"
         done < "$SRC_FILE"
-        rm -f "$SRC_FILE"
-        uci commit podkop
-        /etc/init.d/podkop restart >/dev/null 2>&1
-        echo '{"status": "ok"}'
+        if uci -q batch < "$TMP_BATCH" && uci -q commit podkop; then
+            rm -f "$SRC_FILE" "$TMP_BATCH"
+            /etc/init.d/podkop restart >/dev/null 2>&1
+            echo '{"status": "ok"}'
+        else
+            rm -f "$TMP_BATCH"
+            echo '{"status": "error", "message": "Не удалось записать конфигурацию Podkop"}'
+            exit 1
+        fi
         ;;
 
     ping_group)

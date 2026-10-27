@@ -1,16 +1,71 @@
 # -*- coding: utf-8 -*-
-import subprocess
-import urllib.request
-import urllib.parse
+import fcntl
 import json
+import os
+import subprocess
+import time
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from .config import SSL_CTX, TEST_URL_GLOBAL, LOCK_FILE, set_uci_val
+
+from .config import LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, set_uci_val
 
 CACHED_DELAYS = {}
 
+
+def get_lan_ip():
+    ip = get_uci_val("lan_ip_override", "")
+    if ip:
+        return ip
+    try:
+        out = subprocess.check_output(["uci", "-q", "get", "network.lan.ipaddr"],
+                                      text=True, stderr=subprocess.DEVNULL).strip()
+        return out.split("/")[0] if out else "192.168.1.1"
+    except Exception:
+        return "192.168.1.1"
+
+
+def get_api_base():
+    """Clash API Podkop. Больше не привязан жёстко к 192.168.1.1."""
+    override = get_uci_val("podkop_api", "").strip()
+    if override:
+        if not override.startswith("http"):
+            override = "http://" + override
+        return override.rstrip("/")
+    port = (get_uci_val("podkop_api_port", "") or
+            get_uci_val("clash_api_port", "") or "9090").strip()
+    return f"http://{get_lan_ip()}:{port}"
+
+
+def get_api_headers():
+    secret = (get_uci_val("podkop_api_secret", "") or
+              get_uci_val("clash_api_secret", "")).strip()
+    headers = {"User-Agent": "SubParser"}
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+    return headers
+
+
+def _api_request(path, method="GET", payload=None, timeout=1.5):
+    url = f"{get_api_base()}{path}"
+    data = None
+    headers = get_api_headers()
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+            return resp.status, (json.loads(body.decode("utf-8")) if body else {})
+    except Exception:
+        return None, None
+
+
 def get_all_podkop_sections():
     try:
-        raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"], text=True)
+        raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"],
+                                           text=True, stderr=subprocess.DEVNULL)
         detected = []
         for line in raw_secs.splitlines():
             if "=podkop" in line:
@@ -25,12 +80,15 @@ def get_all_podkop_sections():
     except Exception:
         return ["main"]
 
+
 def get_podkop_links(section="main"):
     try:
-        raw = subprocess.check_output(["uci", "-q", "get", f"podkop.{section}.urltest_proxy_links"], text=True).strip()
+        raw = subprocess.check_output(["uci", "-q", "get", f"podkop.{section}.urltest_proxy_links"],
+                                      text=True, stderr=subprocess.DEVNULL).strip()
         return [l.strip() for l in raw.split() if l.strip()] if raw else []
     except Exception:
         return []
+
 
 def get_node_name(link, idx):
     try:
@@ -41,17 +99,20 @@ def get_node_name(link, idx):
         pass
     return f"Узел #{idx+1}"
 
+
 def get_podkop_service_status():
     pid = ""
     try:
-        pids = subprocess.check_output(["pidof", "sing-box"], text=True, stderr=subprocess.DEVNULL).strip().split()
+        pids = subprocess.check_output(["pidof", "sing-box"], text=True,
+                                       stderr=subprocess.DEVNULL).strip().split()
         if pids:
             pid = pids[0]
     except Exception:
         pass
     service_ok = False
     try:
-        res = subprocess.run(["/etc/init.d/podkop", "status"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        res = subprocess.run(["/etc/init.d/podkop", "status"], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
         if res.returncode == 0 or "running" in res.stdout.lower() or pid:
             service_ok = True
     except Exception:
@@ -72,7 +133,8 @@ def get_podkop_service_status():
 
     mode_str = "TPROXY / iptables"
     try:
-        ip_out = subprocess.check_output(["ip", "-o", "link", "show"], text=True, stderr=subprocess.DEVNULL)
+        ip_out = subprocess.check_output(["ip", "-o", "link", "show"], text=True,
+                                         stderr=subprocess.DEVNULL)
         for line in ip_out.splitlines():
             for ifn in ["tun-podkop", "sing-tun", "podkop", "tun0"]:
                 if f" {ifn}:" in line or f" {ifn}@" in line:
@@ -82,166 +144,164 @@ def get_podkop_service_status():
         pass
     return service_ok, pid, ram_mb, mode_str
 
+
+def get_proxies():
+    status, data = _api_request("/proxies", timeout=0.9)
+    if status in (200, 204) and isinstance(data, dict):
+        return data.get("proxies", {})
+    return {}
+
+
 def get_section_routing_state(section="main"):
-    try:
-        req = urllib.request.Request("http://192.168.1.1:9090/proxies")
-        with urllib.request.urlopen(req, timeout=0.8, context=SSL_CTX) as resp:
-            proxies = json.loads(resp.read().decode()).get("proxies", {})
-            selector_data = proxies.get(f"{section}-out") or proxies.get(section)
-            if not selector_data or selector_data.get("type", "").lower() != "selector":
-                for k, v in proxies.items():
-                    if section in k and v.get("type", "").lower() == "selector":
-                        selector_data = v
-                        break
-            if selector_data:
-                now_val = selector_data.get("now", "")
-                if "urltest" in now_val.lower():
-                    return "", True
-                else:
-                    return now_val, False
-    except Exception:
-        pass
+    proxies = get_proxies()
+    if not proxies:
+        return "", True
+    selector_data = proxies.get(f"{section}-out") or proxies.get(section)
+    if not selector_data or selector_data.get("type", "").lower() != "selector":
+        for k, v in proxies.items():
+            if section in k and v.get("type", "").lower() == "selector":
+                selector_data = v
+                break
+    if selector_data:
+        now_val = selector_data.get("now", "")
+        if "urltest" in now_val.lower():
+            return "", True
+        return now_val, False
     return "", True
+
+
+def _find_selector(section):
+    selector_name = f"{section}-out"
+    proxies = get_proxies()
+    if selector_name not in proxies:
+        for k, v in proxies.items():
+            if section in k and v.get("type", "").lower() == "selector":
+                return k, v
+    return selector_name, proxies.get(selector_name, {})
+
 
 def switch_active_node(section, index):
     tag = f"{section}-{index+1}-out"
-    selector_name = f"{section}-out"
-    try:
-        req = urllib.request.Request("http://192.168.1.1:9090/proxies")
-        with urllib.request.urlopen(req, timeout=0.8, context=SSL_CTX) as resp:
-            proxies = json.loads(resp.read().decode()).get("proxies", {})
-            if selector_name not in proxies:
-                for k, v in proxies.items():
-                    if section in k and v.get("type", "").lower() == "selector":
-                        selector_name = k
-                        break
-    except Exception:
-        pass
-
-    enc_group = urllib.parse.quote(selector_name)
-    url = f"http://192.168.1.1:9090/proxies/{enc_group}"
-    payload = json.dumps({"name": tag}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method="PUT", headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=1.2, context=SSL_CTX) as resp:
-            if resp.status in (200, 204):
-                return True, tag
-    except Exception:
-        pass
+    selector_name, _ = _find_selector(section)
+    status, _ = _api_request(f"/proxies/{urllib.parse.quote(selector_name)}",
+                             method="PUT", payload={"name": tag}, timeout=1.5)
+    if status in (200, 204):
+        return True, tag
     return False, tag
+
 
 def reset_to_auto_urltest(section="main"):
     target_urltest = f"{section}-urltest-out"
-    selector_name = f"{section}-out"
-    try:
-        req = urllib.request.Request("http://192.168.1.1:9090/proxies")
-        with urllib.request.urlopen(req, timeout=0.8, context=SSL_CTX) as resp:
-            proxies = json.loads(resp.read().decode()).get("proxies", {})
-            if selector_name not in proxies:
-                for k, v in proxies.items():
-                    if section in k and v.get("type", "").lower() == "selector":
-                        selector_name = k
-                        for cand in v.get("all", []):
-                            if "urltest" in cand.lower():
-                                target_urltest = cand
-                                break
-                        break
-            else:
-                for cand in proxies[selector_name].get("all", []):
-                    if "urltest" in cand.lower():
-                        target_urltest = cand
-                        break
-    except Exception:
-        pass
+    selector_name, selector = _find_selector(section)
+    for cand in selector.get("all", []) if isinstance(selector, dict) else []:
+        if "urltest" in cand.lower():
+            target_urltest = cand
+            break
+    status, _ = _api_request(f"/proxies/{urllib.parse.quote(selector_name)}",
+                             method="PUT", payload={"name": target_urltest}, timeout=1.5)
+    return status in (200, 204)
 
-    enc_group = urllib.parse.quote(selector_name)
-    url = f"http://192.168.1.1:9090/proxies/{enc_group}"
-    payload = json.dumps({"name": target_urltest}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method="PUT", headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=1.2, context=SSL_CTX) as resp:
-            if resp.status in (200, 204):
-                return True
-    except Exception:
-        pass
-    return False
+
+def _write_links(section, links, restart=False):
+    """Атомарная перезапись списка ссылок. Бэкап делает вызывающая сторона."""
+    batch = [f"delete podkop.{section}.urltest_proxy_links"]
+    for link in links:
+        escaped = str(link).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "").replace("\r", "")
+        batch.append(f'add_list podkop.{section}.urltest_proxy_links="{escaped}"')
+    proc = subprocess.Popen(["uci", "-q", "batch"], stdin=subprocess.PIPE, text=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc.communicate(input="\n".join(batch) + "\n")
+    commit = subprocess.run(["uci", "commit", "podkop"], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    if commit.returncode != 0:
+        return False
+    if restart:
+        subprocess.Popen("nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &",
+                         shell=True)
+    return True
+
 
 def delete_node(index, section="main"):
     links = get_podkop_links(section)
     if index < 0 or index >= len(links):
         return False, "Неверный индекс"
     removed = links.pop(index)
-    subprocess.run(["uci", "-q", "delete", f"podkop.{section}.urltest_proxy_links"], check=False)
-    for l in links:
-        subprocess.run(["uci", "add_list", f"podkop.{section}.urltest_proxy_links={l}"], check=False)
-    subprocess.run(["uci", "commit", "podkop"], check=False)
-    subprocess.Popen("nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &", shell=True)
+    if not _write_links(section, links, restart=True):
+        return False, "Не удалось записать конфигурацию"
     return True, get_node_name(removed, index)
 
-def delete_nodes_batch(indices, section="main"):
+
+def delete_nodes_batch(indices, section="main", restart=False):
     links = get_podkop_links(section)
     if not links or not indices:
         return False, 0
     del_set = set(indices)
     new_links = [link for i, link in enumerate(links) if i not in del_set]
     removed_count = len(links) - len(new_links)
-    
-    subprocess.run(["uci", "-q", "delete", f"podkop.{section}.urltest_proxy_links"], check=False)
-    for l in new_links:
-        subprocess.run(["uci", "add_list", f"podkop.{section}.urltest_proxy_links={l}"], check=False)
-    subprocess.run(["uci", "commit", "podkop"], check=False)
+    if not _write_links(section, new_links, restart=restart):
+        return False, 0
     return True, removed_count
+
 
 def batch_ping_nodes(links, section="main", force=False):
     results = {}
     if not links:
         return results
 
-    api_base = "http://192.168.1.1:9090"
     test_url = urllib.parse.quote(TEST_URL_GLOBAL, safe="")
 
-    # 1. Если не запрошен принудительный замер — пробуем взять историю ядра
+    # 1. История ядра, если не запрошен принудительный замер.
     if not force:
-        try:
-            req = urllib.request.Request(f"{api_base}/proxies", headers={"User-Agent": "SubParser"})
-            with urllib.request.urlopen(req, timeout=1.2, context=SSL_CTX) as resp:
-                data = json.loads(resp.read().decode()).get("proxies", {})
-                for i in range(len(links)):
-                    tag = f"{section}-{i+1}-out"
-                    if tag in data:
-                        hist = data[tag].get("history", [])
-                        if hist and hist[-1].get("delay", 0) > 0:
-                            results[i] = hist[-1]["delay"]
-        except Exception:
-            pass
+        proxies = get_proxies()
+        for i in range(len(links)):
+            tag = f"{section}-{i+1}-out"
+            if tag in proxies:
+                hist = proxies[tag].get("history", [])
+                if hist and hist[-1].get("delay", 0) > 0:
+                    results[i] = hist[-1]["delay"]
 
-    # 2. Опрашиваем узлы напрямую через /delay
     missing = [i for i in range(len(links)) if i not in results]
     if missing:
         def probe_node(idx):
             t = urllib.parse.quote(f"{section}-{idx+1}-out")
-            u = f"{api_base}/proxies/{t}/delay?url={test_url}&timeout=1800"
-            try:
-                req_n = urllib.request.Request(u, headers={"User-Agent": "SubParser"})
-                with urllib.request.urlopen(req_n, timeout=2.2, context=SSL_CTX) as r:
-                    d = json.loads(r.read().decode()).get("delay", -1)
-                    return idx, d
-            except Exception:
-                return idx, -1
+            status, data = _api_request(
+                f"/proxies/{t}/delay?url={test_url}&timeout=1800", timeout=2.5)
+            if status == 200 and isinstance(data, dict):
+                return idx, int(data.get("delay", -1))
+            return idx, -1
 
         with ThreadPoolExecutor(max_workers=min(10, len(missing))) as pool:
-            for idx, d in pool.map(probe_node, missing):
-                results[idx] = d
+            for idx, delay in pool.map(probe_node, missing):
+                results[idx] = delay
 
     CACHED_DELAYS[section] = results
     return results
 
-def run_parser_process(mode_override=None):
-    ps_check = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE, text=True)
-    if ps_check.stdout.strip():
+
+def is_parser_running():
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "a+") as lf:
+                try:
+                    fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+                except OSError:
+                    return True
+        except Exception:
+            pass
+    ps = subprocess.run(["pgrep", "-f", "[s]ubparser.py"], stdout=subprocess.PIPE, text=True)
+    return bool(ps.stdout.strip())
+
+
+def run_parser_process(mode_override=None, force=False):
+    if is_parser_running():
         return False, "Синхронизация уже запущена!"
     if mode_override:
         set_uci_val("update_mode", mode_override)
-    subprocess.run(["rm", "-f", LOCK_FILE], check=False)
-    subprocess.Popen(["/usr/bin/subparser.py", "--force"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        os.remove("/tmp/subparser_progress.json")
+    except Exception:
+        pass
+    subprocess.Popen(["/usr/bin/python3", "/usr/bin/subparser.py", "--force"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return True, "🚀 <b>Синхронизация запущена!</b>\nПроцесс выполняется в фоне."

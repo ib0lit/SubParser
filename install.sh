@@ -3,9 +3,20 @@ set -e
 
 REPO_USER="ib0lit"
 REPO_NAME="SubParser"
-BRANCH="main"
+BRANCH="${SUBPARSER_BRANCH:-}"
+if [ -z "$BRANCH" ] && [ -f /etc/subparser_branch ]; then
+    BRANCH=$(cat /etc/subparser_branch 2>/dev/null | tr -d '[:space:]')
+fi
+[ -z "$BRANCH" ] && BRANCH="main"
+case "$BRANCH" in
+    *[!A-Za-z0-9._/-]*)
+        echo "[!] Недопустимое имя ветки: $BRANCH"
+        exit 1
+        ;;
+esac
 COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
+BRANCH_FILE="/etc/subparser_branch"
 
 echo "=== [1/7] Проверка дискового пространства устройства ==="
 
@@ -83,13 +94,35 @@ fi
 
 set -e
 
-echo "=== [3/7] Загрузка компонентов с GitHub ==="
+echo "=== [3/7] Загрузка компонентов с GitHub (ветка: ${BRANCH}) ==="
 TMP_DIR="/tmp/subparser-install"
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
-curl -sL "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" | tar -xz -C "$TMP_DIR"
+TARBALL="${TMP_DIR}/subparser.tar.gz"
+if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
+        "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
+        -o "$TARBALL"; then
+    echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+if ! gzip -t "$TARBALL" 2>/dev/null; then
+    echo "[!] Архив повреждён (проверка gzip не пройдена). Установка отменена."
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
+    echo "[!] Не удалось распаковать архив. Установка отменена."
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
 SRC_PATH="${TMP_DIR}/${REPO_NAME}-${BRANCH}/root"
+if [ ! -d "$SRC_PATH" ]; then
+    echo "[!] В архиве не найдена ожидаемая структура ${SRC_PATH}."
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
 
 echo "=== [4/7] Развертывание системных файлов и конфигурации ==="
 mkdir -p /etc/config /etc/init.d /usr/bin /usr/lib/subparser \
@@ -116,6 +149,14 @@ else
     set_default_uci "sec_mode_main" "replace"
     set_default_uci "sec_en_main" "1"
     set_default_uci "override_fp" "as_is"
+    set_default_uci "allow_insecure_tls" "0"
+    set_default_uci "allow_local_diag" "0"
+    set_default_uci "allow_unstable_fallback" "0"
+    set_default_uci "cache_ttl" "900"
+    set_default_uci "stress_top" "40"
+    set_default_uci "hysteresis_pct" "10"
+    set_default_uci "update_branch" "$BRANCH"
+    set_default_uci "speedtest_proxy" "socks5h://127.0.0.1:4534"
     if [ -z "$(uci -q get subparser.settings.target_section)" ]; then
         uci -q add_list subparser.settings.target_section='main'
     fi
@@ -123,6 +164,10 @@ else
     uci -q delete subparser.settings.custom_interval_min 2>/dev/null || true
     uci commit subparser
 fi
+
+# Конфиг содержит токен бота — ограничиваем права.
+chmod 600 /etc/config/subparser 2>/dev/null || true
+printf '%s\n' "$BRANCH" > "$BRANCH_FILE"
 
 # Копирование модулей Python и системных утилит
 rm -rf /usr/lib/subparser/*

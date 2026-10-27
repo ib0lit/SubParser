@@ -8,34 +8,83 @@ import socket
 import ssl
 import gzip
 import base64
+import fcntl
+import hashlib
+import html
+import shutil
 import subprocess
+import tempfile
+import traceback
 import urllib.request
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+sys.path.insert(0, "/usr/lib")
+try:
+    from subparser.config import UA_MAP, make_ssl_context, get_uci_bool, read_json, write_json_atomic
+except Exception:
+    UA_MAP = {
+        "v2rayN": "v2rayN/6.42",
+        "ClashMeta": "ClashMeta/1.18.0",
+        "clashmeta": "ClashMeta/1.18.0",
+        "SingBox": "sing-box/1.9.0",
+        "singbox": "sing-box/1.9.0",
+        "Shadowrocket": "Shadowrocket/2.2.0",
+        "shadowrocket": "Shadowrocket/2.2.0",
+        "NekoBox": "NekoBox/1.3.1",
+        "flclash": "ClashMeta/1.18.0",
+        "clash": "ClashforWindows/0.20.39",
+        "incy": "Incy/3.7.0 (Android)",
+        "happ": "Happ/1.0.0 (iOS)",
+        "curl": "curl/7.88.1",
+    }
+
+    def make_ssl_context(insecure=False):
+        ctx = ssl.create_default_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def get_uci_bool(opt, default=False):
+        return False
+
+    def read_json(path, default=None):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default if default is not None else {}
+
+    def write_json_atomic(path, data):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            return True
+        except Exception:
+            return False
+
 CONFIG_NAME = "subparser"
 SINGBOX_BIN = "/usr/bin/sing-box"
 TEST_URL = "https://www.gstatic.com/generate_204"
-MAX_WORKERS = 12
+LOCK_FILE = "/var/run/subparser.lock"
+CACHE_FILE = "/tmp/subparser_cache.json"
+METRICS_FILE = "/tmp/subparser_metrics.json"
+LAST_SELECTED_FILE = "/tmp/subparser_last_selected.json"
+PODKOP_BACKUP = "/tmp/subparser_podkop.bak"
 DEFAULT_HWID = "0123456789abcdef"
 
-UA_MAP = {
-    "v2rayN": "v2rayN/6.23",
-    "ClashMeta": "ClashMeta/1.18.0",
-    "clashmeta": "ClashMeta/1.18.0",
-    "SingBox": "sing-box/1.9.0",
-    "singbox": "sing-box/1.9.0",
-    "Shadowrocket": "Shadowrocket/2.2.0",
-    "shadowrocket": "Shadowrocket/2.2.0",
-    "NekoBox": "NekoBox/1.3.1",
-    "flclash": "ClashMeta/1.18.0",
-    "clash": "ClashforWindows/0.20.39",
-    "incy": "Incy/3.7.0 (Android)",
-    "happ": "Happ/1.0.0 (iOS)",
-    "curl": "curl/7.88.1"
-}
+try:
+    MAX_WORKERS = max(4, min(12, (os.cpu_count() or 2) * 2))
+except Exception:
+    MAX_WORKERS = 12
+
+UA_ALIASES = {k.lower(): v for k, v in UA_MAP.items()}
+
 
 PROGRESS_FILE = "/tmp/subparser_progress.json"
+_PROGRESS_LAST = {"ts": 0.0, "text": ""}
+
 
 def update_live_progress(step_title, step_desc):
     try:
@@ -46,8 +95,20 @@ def update_live_progress(step_title, step_desc):
         token = pdata.get("token")
         chat_id = pdata.get("chat_id")
         msg_id = pdata.get("msg_id")
+        started = int(pdata.get("started", 0) or 0)
         if not token or not chat_id or not msg_id:
             return
+        # Не редактируем «старое» окно от предыдущего ручного запуска.
+        if started and (time.time() - started) > 3600:
+            return
+        text_key = f"{step_title}|{step_desc}"
+        now = time.time()
+        if text_key == _PROGRESS_LAST["text"] and (now - _PROGRESS_LAST["ts"]) < 2.5:
+            return
+        if (now - _PROGRESS_LAST["ts"]) < 2.0:
+            return
+        _PROGRESS_LAST["ts"] = now
+        _PROGRESS_LAST["text"] = text_key
 
         url = f"https://api.telegram.org/bot{token}/editMessageText"
         body = (
@@ -65,10 +126,7 @@ def update_live_progress(step_title, step_desc):
         }).encode("utf-8")
 
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(req, timeout=3, context=ctx):
+        with urllib.request.urlopen(req, timeout=3, context=make_ssl_context()):
             pass
     except Exception:
         pass
@@ -80,18 +138,16 @@ def send_telegram_notify(text):
         if not token or not chat_id:
             return
 
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = make_ssl_context()
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode("utf-8")
 
         print("[*] Ожидание готовности сети для отправки отчета в Telegram...")
-        time.sleep(4)
+        time.sleep(3)
 
-        max_attempts = 20
-        retry_delay = 10
+        max_attempts = 6
+        retry_delay = 5
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -143,11 +199,9 @@ def get_target_sections() -> list:
     try:
         raw = subprocess.check_output(["uci", "-q", "get", f"{CONFIG_NAME}.settings.target_section"], text=True).strip()
         sections = [s.strip() for s in raw.split() if s.strip()]
+        # Не добавляем автоматически все секции: пользователь мог осознанно
+        # оставить только часть. Пустой список трактуем как «все».
         valid = [s for s in sections if s in real]
-        # Добавляем все обнаруженные секции Podkop, чтобы новые подхватывались автоматически
-        for s in real:
-            if s not in valid:
-                valid.append(s)
         return valid if valid else real
     except Exception:
         return real
@@ -218,7 +272,10 @@ def fetch_single_sub(sub_info: dict) -> list:
 
     ua_key = sub_info.get("user_agent", "v2rayN")
     custom_ua = sub_info.get("custom_ua", "").strip()
-    ua = custom_ua if (ua_key == "custom" and custom_ua) else UA_MAP.get(ua_key, UA_MAP["v2rayN"])
+    if ua_key == "custom" and custom_ua:
+        ua = custom_ua
+    else:
+        ua = UA_MAP.get(ua_key) or UA_ALIASES.get(str(ua_key).lower()) or UA_MAP["v2rayN"]
 
     headers = {
         "User-Agent": ua,
@@ -254,9 +311,7 @@ def fetch_single_sub(sub_info: dict) -> list:
 
     raw_data = None
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = make_ssl_context()
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
             raw_data = resp.read()
@@ -272,45 +327,67 @@ def fetch_single_sub(sub_info: dict) -> list:
         print(f"  [!] urllib error ({e}), пробуем curl...")
 
     if not raw_data:
+        header_file = None
         try:
+            fd, header_file = tempfile.mkstemp(prefix="subparser_hdr_", dir="/tmp")
+            os.close(fd)
             curl_cmd = [
-                "curl", "-sL", "-k", "-m", "15", "-D", "/tmp/sub_headers.tmp",
+                "curl", "-sL", "-m", "15", "-D", header_file,
                 "-H", f"User-Agent: {ua}"
             ]
+            if not get_uci_bool("allow_insecure_tls", False):
+                curl_cmd.insert(1, "--fail")
+            else:
+                curl_cmd.insert(1, "-k")
             if ua_key == "custom":
-                if sub_info.get("device_id"):
-                    curl_cmd.extend(["-H", f"device-id: {sub_info.get('device_id').strip()}"])
-                if sub_info.get("device_model"):
-                    curl_cmd.extend(["-H", f"x-device-model: {sub_info.get('device_model').strip()}"])
+                hwid = sub_info.get("device_id", "").strip()
+                dev_model_c = sub_info.get("device_model", "").strip()
+                dev_os_c = sub_info.get("device_os", "").strip() or "Android"
+                dev_ver_c = sub_info.get("os_version", "").strip()
+                if hwid:
+                    curl_cmd.extend(["-H", f"device-id: {hwid}", "-H", f"x-hwid: {hwid}", "-H", f"hwid: {hwid}"])
+                if dev_model_c:
+                    curl_cmd.extend(["-H", f"x-device-model: {dev_model_c}", "-H", f"device-model: {dev_model_c}"])
+                curl_cmd.extend(["-H", f"x-device-os: {dev_os_c}"])
+                if dev_ver_c:
+                    curl_cmd.extend(["-H", f"x-ver-os: {dev_ver_c}"])
             curl_cmd.extend(["--compressed", url])
             res = subprocess.run(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if res.returncode == 0 and res.stdout:
                 raw_data = res.stdout
-                if os.path.exists("/tmp/sub_headers.tmp"):
+                if header_file and os.path.exists(header_file):
                     try:
-                        with open("/tmp/sub_headers.tmp", "r", errors="ignore") as hf:
+                        with open(header_file, "r", errors="ignore") as hf:
                             for hline in hf:
                                 if "subscription-userinfo:" in hline.lower():
                                     u_val = hline.split(":", 1)[1].strip()
                                     GLOBAL_SUB_USERINFO[name] = parse_userinfo_header(u_val)
                                     break
-                        os.remove("/tmp/sub_headers.tmp")
                     except Exception:
                         pass
         except Exception:
             pass
+        finally:
+            if header_file:
+                try:
+                    os.remove(header_file)
+                except Exception:
+                    pass
 
     if not raw_data:
         print(f"  [!] Не удалось загрузить подписку {name}")
         return []
 
-    try:
-        pad = len(raw_data) % 4
-        if pad:
-            raw_data += b"=" * (4 - pad)
-        text = base64.b64decode(raw_data).decode('utf-8', errors='ignore')
-    except Exception:
-        text = raw_data.decode('utf-8', errors='ignore')
+    raw_text = raw_data.decode('utf-8', errors='ignore')
+    if "://" in raw_text or "proxies:" in raw_text:
+        text = raw_text
+    else:
+        try:
+            padded = raw_data + b"=" * ((4 - len(raw_data) % 4) % 4)
+            decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
+            text = decoded if ("://" in decoded or "proxies:" in decoded) else raw_text
+        except Exception:
+            text = raw_text
 
     t_low = text.lower()
     if "не поддерживается" in t_low or "update your client" in t_low:
@@ -339,7 +416,21 @@ def query_node_delay(api_port: int, tag: str, timeout_ms: int = 3500) -> int:
     except Exception:
         return -1
 
-VALID_FPS = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
+def query_group_delays(api_port: int, group_tag: str, timeout_ms: int = 3000) -> dict:
+    """Один запрос: sing-box сам параллельно опрашивает все узлы группы."""
+    encoded_tag = urllib.parse.quote(group_tag)
+    encoded_url = urllib.parse.quote(TEST_URL, safe="")
+    api_url = f"http://127.0.0.1:{api_port}/group/{encoded_tag}/delay?url={encoded_url}&timeout={timeout_ms}"
+    try:
+        req = urllib.request.Request(api_url)
+        with urllib.request.urlopen(req, timeout=(timeout_ms / 1000.0) + 25.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict):
+                return {str(k): int(v) for k, v in data.items() if isinstance(v, (int, float))}
+    except Exception:
+        pass
+    return {}
+
 
 VALID_FPS = {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}
 
@@ -374,6 +465,9 @@ def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     else:
         server = host_port
         port = 443
+
+    if scheme not in ("vless", "trojan", "hysteria2", "hy2"):
+        raise ValueError(f"unsupported scheme: {scheme}")
 
     outbound = {
         "type": "vless" if scheme == "vless" else ("trojan" if scheme == "trojan" else "hysteria2"),
@@ -486,7 +580,105 @@ def sanitize_podkop_link(link: str) -> str:
     except Exception:
         return link
 
-def main():
+
+def _acquire_lock():
+    try:
+        lock_fd = open(LOCK_FILE, "a+")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.seek(0)
+        lock_fd.truncate()
+        lock_fd.write(str(os.getpid()))
+        lock_fd.flush()
+        return lock_fd
+    except Exception:
+        return None
+
+
+def _release_lock(lock_fd):
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+    except Exception:
+        pass
+
+
+def _restore_podkop_backup():
+    try:
+        subprocess.run(["uci", "-q", "revert", "podkop"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(PODKOP_BACKUP):
+            shutil.copy2(PODKOP_BACKUP, "/etc/config/podkop")
+        subprocess.run(["uci", "commit", "podkop"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["/etc/init.d/podkop", "restart"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as e:
+        print(f"[!] Ошибка отката Podkop: {e}")
+        return False
+
+
+def _wait_podkop_ready(timeout=120):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            status = subprocess.run(["/etc/init.d/podkop", "status"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            pid = subprocess.run(["pidof", "sing-box"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, text=True).stdout.strip()
+            if status.returncode == 0 and pid:
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
+def _escape_uci_batch_value(value):
+    return (str(value).replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", " ").replace("\r", " "))
+
+
+def _write_section_links(section, links):
+    commands = [f"delete podkop.{section}.urltest_proxy_links"]
+    for link in links:
+        commands.append(
+            f'add_list podkop.{section}.urltest_proxy_links="{_escape_uci_batch_value(link)}"'
+        )
+    try:
+        proc = subprocess.Popen(["uci", "-q", "batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate(input="\n".join(commands) + "\n")
+        if proc.returncode != 0:
+            print(f"[!] uci batch ошибка для секции {section}: {err.strip()}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[!] Не удалось записать секцию {section}: {e}")
+        return False
+
+
+def _prepare_link(link, results, idx):
+    if "#" in link:
+        base_url, raw_name = link.split("#", 1)
+    else:
+        base_url = link
+        raw_name = results.get(link, {}).get("name", "")
+    unquoted_name = urllib.parse.unquote(raw_name).strip()
+    if not unquoted_name or unquoted_name.startswith("n_"):
+        parsed = urllib.parse.urlsplit(base_url)
+        host = parsed.hostname or f"Node-{idx+1}"
+        unquoted_name = f"{host} | {parsed.scheme.upper()}"
+    safe_name = urllib.parse.quote(unquoted_name, safe="")
+    return f"{sanitize_podkop_link(base_url)}#{safe_name}"
+
+
+def _link_set(links):
+    return {link_fingerprint(x) for x in links}
+
+
+def _run():
     enabled = get_uci("enabled", "0")
     if enabled != "1" and "--force" not in sys.argv:
         print("Сервис отключен в настройках.")
@@ -494,9 +686,10 @@ def main():
 
     subs = get_subscriptions()
     active_subs = [s for s in subs if s.get("enabled", "1") == "1" and s.get("url")]
-
     if not active_subs:
+        msg = "🔴 <b>SubParser Alert</b>\nНет активных подписок для парсинга. Конфигурация Podkop не изменена."
         print("Ошибка: Нет активных подписок для парсинга.")
+        send_telegram_notify(msg)
         return
 
     threshold = int(get_uci("ping_threshold", "350"))
@@ -504,11 +697,9 @@ def main():
     max_jitter = int(get_uci("max_jitter", "150"))
     filter_ru = get_uci("filter_ru", "1") == "1"
     per_section_config = get_uci("per_section_config", "0") == "1"
-    
-    # Словарь секций вида: { 'main': 'replace', 'test': 'append' }
+
     section_targets = {}
     if per_section_config:
-        # Считываем доступные секции podkop
         try:
             raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"], text=True)
             detected = set()
@@ -517,7 +708,8 @@ def main():
                     detected.add(line.split(".")[1].split("=")[0])
                 elif "urltest_proxy_links" in line:
                     detected.add(line.split(".")[1])
-            if not detected: detected = {"main"}
+            if not detected:
+                detected = {"main"}
         except Exception:
             detected = {"main"}
 
@@ -532,22 +724,33 @@ def main():
             section_targets[s] = g_mode
 
     if not section_targets:
-        section_targets["main"] = "replace" 
+        section_targets["main"] = "replace"
 
     start_time = time.time()
     all_links = []
     seen = set()
 
+    update_live_progress("⏳ [1/4] Загрузка подписок...", f"Источников: {len(active_subs)}")
+    sub_results = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(active_subs))) as pool:
+        futures = {pool.submit(fetch_single_sub, s): s for s in active_subs}
+        for future in as_completed(futures):
+            try:
+                sub_results[futures[future].get("name", "Подписка")] = future.result()
+            except Exception as e:
+                print(f"[!] Подписка не загружена: {e}")
+
     for s in active_subs:
-        links = fetch_single_sub(s)
-        for l in links:
+        for l in sub_results.get(s.get("name", "Подписка"), []):
             fp = link_fingerprint(l)
             if fp not in seen:
                 seen.add(fp)
                 all_links.append(l)
 
     if not all_links:
+        msg = "🔴 <b>SubParser Alert</b>\nБоевые узлы не найдены ни в одной подписке. Конфигурация Podkop не изменена."
         print("Ошибка: Боевые узлы не найдены ни в одной подписке.")
+        send_telegram_notify(msg)
         return
 
     print(f"\nВсего уникальных узлов для тестирования: {len(all_links)}")
@@ -561,112 +764,210 @@ def main():
             ob = parse_link_to_singbox_outbound(link, tag)
             outbounds.append(ob)
             tag_map[tag] = link
-        except Exception:
+        except Exception as e:
+            print(f"[SKIP] Неподдерживаемая или битая ссылка: {e}")
             continue
 
-    outbounds.append({"type": "direct", "tag": "direct"})
-    cfg = {
-        "log": {"level": "warn"},
-        "experimental": {
-            "clash_api": {
-                "external_controller": f"127.0.0.1:{api_port}"
-            }
-        },
-        "route": {
-            "auto_detect_interface": True
-        },
-        "outbounds": outbounds
-    }
-
-    tmp_cfg = f"/tmp/subparser_test_{api_port}.json"
-    with open(tmp_cfg, "w") as f:
-        json.dump(cfg, f, indent=2)
-
-    env_sb = os.environ.copy()
-    env_sb["ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER"] = "true"
-    env_sb["ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM"] = "true"
-    proc = subprocess.Popen([SINGBOX_BIN, "run", "-c", tmp_cfg], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env_sb)
-    time.sleep(2.5)
-
-    if proc.poll() is not None:
-        _, err = proc.communicate()
-        print(f"\n[ОШИБКА] sing-box не запустился на порту {api_port}:\n{err}")
-        if os.path.exists(tmp_cfg): os.remove(tmp_cfg)
+    if not tag_map:
+        msg = "🔴 <b>SubParser Alert</b>\nНи одну ссылку не удалось разобрать. Конфигурация Podkop не изменена."
+        print("Ошибка: не удалось разобрать ни одну ссылку.")
+        send_telegram_notify(msg)
         return
 
+    # Кэш результатов: не гоняем один и тот же пул при каждом запуске.
+    cache_key = hashlib.sha256(json.dumps({
+        "links": sorted(link_fingerprint(l) for l in tag_map.values()),
+        "threshold": threshold,
+        "max_jitter": max_jitter,
+        "fp": get_uci("override_fp", "as_is"),
+    }, sort_keys=True).encode("utf-8")).hexdigest()
+    cache_ttl = int(get_uci("cache_ttl", "900") or 900)
+    cached = read_json(CACHE_FILE, {})
     results = {}
-    total = len(tag_map)
-    try:
-        update_live_progress("🔍 [2/4] Скрининг узлов...", f"Проверка отклика {total} серверов..."); print(f"\n[Этап 1/2] Быстрый скрининг {total} узлов...")
-        stage1_candidates = []
-        def quick_probe(item):
-            tag, link = item
-            delays = []
-            for i in range(2):
-                d = query_node_delay(api_port, tag, timeout_ms=3000)
-                if d > 0: delays.append(d)
-                if i == 0: time.sleep(0.15)
-            return tag, link, delays
+    use_cache = ("--no-cache" not in sys.argv and cache_ttl > 0 and
+                 isinstance(cached, dict) and cached.get("key") == cache_key and
+                 (time.time() - float(cached.get("ts", 0) or 0)) < cache_ttl and
+                 isinstance(cached.get("results"), dict))
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
-            for future in as_completed(futures):
-                tag, link, delays = future.result()
-                name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                if delays:
-                    min_d = min(delays)
-                    if not (filter_ru and is_ru_node(name)):
-                        stage1_candidates.append((tag, link, min_d))
-                    results[link] = {"delay": min_d, "jitter": 0, "is_stable": False, "success_count": len(delays), "name": name}
-                    print(f"[ALIVE] {min_d:4d} ms | {name}")
-                else:
-                    print(f"[DEAD ]         | {name}")
+    group_tag = "__sp_group"
+    proc = None
+    tmp_cfg = None
+    if not use_cache:
+        outbounds.append({
+            "type": "urltest", "tag": group_tag,
+            "outbounds": list(tag_map.keys()),
+            "interval": "10m", "tolerance": 50,
+        })
+        outbounds.append({"type": "direct", "tag": "direct"})
+        cfg = {
+            "log": {"level": "error"},
+            "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}"}},
+            "route": {"auto_detect_interface": True},
+            "outbounds": outbounds,
+        }
 
-        print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
-        if stage1_candidates:
-            update_live_progress("📊 [3/4] Тест стабильности...", f"Анализ джиттера ({len(stage1_candidates)} канд.)..."); print(f"\n[Этап 2/2] Анализ стабильности (5 замеров, медиана)...")
-            def detailed_probe(cand):
-                tag, link, _ = cand
-                delays = []
-                for i in range(5):
-                    d = query_node_delay(api_port, tag, timeout_ms=3000)
-                    if d > 0: delays.append(d)
-                    if i < 4: time.sleep(0.2)
-                name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                succ = len(delays)
-                if succ < 4: return link, name, -1, -1, False, succ
-                delays.sort()
-                med = delays[succ // 2]
-                trimmed = delays[:-1]
-                eff_j = max(trimmed) - min(trimmed)
-                worst = delays[-1] - med
-                is_st = (eff_j <= max(max_jitter, int(med * 0.50)) and worst <= max(350, int(med * 2.0)))
-                return link, name, med, eff_j, is_st, succ
+        tmp_cfg = f"/tmp/subparser_test_{api_port}.json"
+        with open(tmp_cfg, "w") as f:
+            json.dump(cfg, f, indent=2)
 
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
-                for future in as_completed(futures):
-                    link, name, med_d, diff, is_stable, succ = future.result()
-                    if med_d > 0:
-                        results[link] = {"delay": med_d, "jitter": diff, "is_stable": is_stable, "success_count": succ, "name": name}
-                        label = f"[STABLE {succ}/5]" if is_stable else f"[UNSTABLE {succ}/5]"
-                        print(f"{label} {med_d:4d} ms (±{diff:3d}) | {name}")
+        check = subprocess.run([SINGBOX_BIN, "check", "-c", tmp_cfg],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if check.returncode != 0:
+            print(f"[!] sing-box check: {check.stderr.strip()[:300]}")
+            # Не прерываемся: некоторые сборки sing-box не поддерживают check.
+
+        env_sb = os.environ.copy()
+        env_sb["ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER"] = "true"
+        env_sb["ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM"] = "true"
+        proc = subprocess.Popen([SINGBOX_BIN, "run", "-c", tmp_cfg],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env_sb)
+        time.sleep(2.5)
+        if proc.poll() is not None:
+            _, err = proc.communicate()
+            print(f"\n[ОШИБКА] sing-box не запустился на порту {api_port}:\n{err}")
+            if tmp_cfg and os.path.exists(tmp_cfg):
+                os.remove(tmp_cfg)
+            send_telegram_notify(
+                f"🔴 <b>SubParser Alert</b>\nНе удалось запустить тестовое ядро sing-box.\n"
+                f"<code>{html.escape(str(err)[:400])}</code>"
+            )
+            return
+
+        try:
+            update_live_progress("🔍 [2/4] Скрининг узлов...",
+                                 f"Проверка отклика {len(tag_map)} серверов...")
+            print(f"\n[Этап 1/2] Быстрый скрининг {len(tag_map)} узлов...")
+            stage1_candidates = []
+
+            # Один запрос к группе: sing-box опрашивает узлы параллельно внутри ядра.
+            group_delays = query_group_delays(api_port, group_tag, timeout_ms=3000)
+            if group_delays:
+                print(f"  [i] Групповой замер вернул результаты по {len(group_delays)} узлам.")
+                for tag, link in tag_map.items():
+                    name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
+                    delay = int(group_delays.get(tag, -1))
+                    if delay > 0:
+                        if not (filter_ru and is_ru_node(name)):
+                            stage1_candidates.append((tag, link, delay))
+                        results[link] = {"delay": delay, "jitter": 0, "is_stable": False,
+                                         "success_count": 1, "name": name}
+                        print(f"[ALIVE] {delay:4d} ms | {name}")
                     else:
-                        print(f"[DROPPED {succ}/5] | {name}")
-    finally:
-        proc.terminate()
-        try: proc.wait(1.5)
-        except Exception: proc.kill()
-        if os.path.exists(tmp_cfg): os.remove(tmp_cfg)
+                        print(f"[DEAD ]         | {name}")
+            else:
+                def quick_probe(item):
+                    tag, link = item
+                    delays = []
+                    for i in range(2):
+                        d = query_node_delay(api_port, tag, timeout_ms=3000)
+                        if d > 0:
+                            delays.append(d)
+                        if i == 0:
+                            time.sleep(0.1)
+                    return tag, link, delays
 
-    best = [l for l, i in results.items() if i["delay"] < threshold and i["is_stable"] and not (filter_ru and is_ru_node(i["name"]))]
-    best.sort(key=lambda l: results[l]["delay"])
-    if not best and results:
-        print("\n[!] Применяем fallback без RU.")
-        fallback = [l for l, i in results.items() if not (filter_ru and is_ru_node(i["name"]))]
-        fallback.sort(key=lambda l: results[l]["delay"])
-        best = fallback[:10]
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
+                    for future in as_completed(futures):
+                        tag, link, delays = future.result()
+                        name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
+                        if delays:
+                            min_d = min(delays)
+                            if not (filter_ru and is_ru_node(name)):
+                                stage1_candidates.append((tag, link, min_d))
+                            results[link] = {"delay": min_d, "jitter": 0, "is_stable": False,
+                                             "success_count": len(delays), "name": name}
+                            print(f"[ALIVE] {min_d:4d} ms | {name}")
+                        else:
+                            print(f"[DEAD ]         | {name}")
 
+            print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
+            if stage1_candidates:
+                stress_top = int(get_uci("stress_top", "40") or 0)
+                stage1_candidates.sort(key=lambda c: c[2])
+                if stress_top > 0:
+                    stage1_candidates = stage1_candidates[:stress_top]
+
+                update_live_progress("📊 [3/4] Тест стабильности...",
+                                     f"Анализ джиттера ({len(stage1_candidates)} канд.)...")
+                print(f"\n[Этап 2/2] Анализ стабильности (5 замеров, медиана, топ-{len(stage1_candidates)})...")
+
+                def detailed_probe(cand):
+                    tag, link, _ = cand
+                    delays = []
+                    for _i in range(5):
+                        d = query_node_delay(api_port, tag, timeout_ms=3000)
+                        if d > 0:
+                            delays.append(d)
+                    name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
+                    succ = len(delays)
+                    if succ < 4:
+                        return link, name, -1, -1, False, succ
+                    delays.sort()
+                    med = delays[succ // 2]
+                    trimmed = delays[:-1]
+                    eff_j = max(trimmed) - min(trimmed)
+                    worst = delays[-1] - med
+                    is_st = (eff_j <= max(max_jitter, int(med * 0.50)) and
+                             worst <= max(350, int(med * 2.0)))
+                    return link, name, med, eff_j, is_st, succ
+
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
+                    for future in as_completed(futures):
+                        link, name, med_d, diff, is_stable, succ = future.result()
+                        if med_d > 0:
+                            results[link] = {"delay": med_d, "jitter": diff, "is_stable": is_stable,
+                                             "success_count": succ, "name": name}
+                            label = f"[STABLE {succ}/5]" if is_stable else f"[UNSTABLE {succ}/5]"
+                            print(f"{label} {med_d:4d} ms (±{diff:3d}) | {name}")
+                        else:
+                            print(f"[DROPPED {succ}/5] | {name}")
+        finally:
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(1.5)
+                except Exception:
+                    proc.kill()
+            if tmp_cfg and os.path.exists(tmp_cfg):
+                os.remove(tmp_cfg)
+
+        if any(v.get("delay", 0) > 0 for v in results.values()):
+            write_json_atomic(CACHE_FILE, {"key": cache_key, "ts": time.time(), "results": results})
+        else:
+            print("[i] Ни один узел не ответил — результаты не кэшируем.")
+    else:
+        results = {k: v for k, v in cached.get("results", {}).items() if k in tag_map.values()}
+        print(f"\n[i] Использован кэш результатов ({int(time.time() - float(cached.get('ts', 0)))} с назад).")
+
+    # Отбор: стабильные, затем расширенный порог, и только по явному разрешению — живые.
+    stable = [l for l, i in results.items()
+              if i.get("is_stable") and i.get("delay", 0) > 0 and not (filter_ru and is_ru_node(i.get("name", "")))]
+    best = [l for l in stable if results[l]["delay"] < threshold]
+    if not best and stable:
+        relaxed_limit = int(threshold * 1.5)
+        best = [l for l in stable if results[l]["delay"] < relaxed_limit]
+        if best:
+            print(f"[i] Порог {threshold} ms не дал результата, применяем расширенный порог {relaxed_limit} ms.")
+    if not best and get_uci_bool("allow_unstable_fallback", False):
+        best = [l for l, i in results.items()
+                if i.get("delay", 0) > 0 and not (filter_ru and is_ru_node(i.get("name", "")))]
+        if best:
+            print("[!] Применён fallback на живые (нестабильные) узлы: включена опция allow_unstable_fallback.")
+
+    previous = read_json(LAST_SELECTED_FILE, {}).get("links", [])
+    previous_set = {link_fingerprint(x) for x in previous} if isinstance(previous, list) else set()
+    hysteresis = max(0.0, min(50.0, float(get_uci("hysteresis_pct", "10") or 0))) / 100.0
+
+    def node_score(link):
+        info = results.get(link, {})
+        score = float(info.get("delay", 999999)) + float(info.get("jitter", 0)) * 0.3
+        if link_fingerprint(link) in previous_set:
+            score *= (1.0 - hysteresis)
+        return score
+
+    best.sort(key=lambda l: (node_score(l), results.get(l, {}).get("delay", 999999)))
     if max_best > 0 and len(best) > max_best:
         print(f"Применен лимит узлов: оставляем Топ-{max_best} из {len(best)}")
         best = best[:max_best]
@@ -674,130 +975,178 @@ def main():
     elapsed = round(time.time() - start_time, 1)
     MIN_REQUIRED_NODES = 2
 
-    if best and len(best) >= MIN_REQUIRED_NODES:
-        print(f"\nВыбрано лучших узлов: {len(best)} шт. (Время: {elapsed}с)")
+    write_json_atomic(METRICS_FILE, {
+        "ts": int(time.time()),
+        "elapsed": elapsed,
+        "total_links": len(all_links),
+        "parsed": len(tag_map),
+        "alive": len([1 for i in results.values() if i.get("delay", 0) > 0]),
+        "stable": len(stable),
+        "selected": len(best),
+        "used_cache": use_cache,
+        "threshold": threshold,
+    })
 
-        section_reports = []
-        for sec, mode in section_targets.items():
-            existing_links = []
-            try:
-                out = subprocess.check_output(["uci", "-q", "get", f"podkop.{sec}.urltest_proxy_links"], text=True).strip()
-                existing_links = [l.strip() for l in out.split() if l.strip()]
-            except Exception:
-                existing_links = []
-
-            before_cnt = len(existing_links)
-
-            if mode == "append":
-                existing_fps = {link_fingerprint(x) for x in existing_links}
-                merged = list(existing_links)
-                added = 0
-                for b in best:
-                    if link_fingerprint(b) not in existing_fps:
-                        merged.append(b)
-                        existing_fps.add(link_fingerprint(b))
-                        added += 1
-                target_links = merged
-                after_cnt = len(target_links)
-                print(f"Секция '{sec}': режим добавления (+{added} новых, было {before_cnt} -> стало {after_cnt})")
-                section_reports.append(f"  ▫️ <b>{sec}</b>: добавлено +{added} новых (было {before_cnt} → стало {after_cnt})")
-            else:
-                target_links = best
-                after_cnt = len(target_links)
-                print(f"Секция '{sec}': полная замена (было {before_cnt} -> стало {after_cnt})")
-                section_reports.append(f"  ▫️ <b>{sec}</b>: полная замена (было {before_cnt} -> стало {after_cnt})")
-
-            batch_cmds = [f"delete podkop.{sec}.urltest_proxy_links"]
-            for idx, raw_l in enumerate(target_links):
-                l_str = raw_l.strip()
-                if "#" in l_str:
-                    base_url, raw_name = l_str.split("#", 1)
-                else:
-                    base_url = l_str
-                    # Если имени нет в ссылке, достаем из результатов
-                    raw_name = results.get(raw_l, {}).get("name", "")
-                
-                # Декодируем и заново безопасно кодируем ТОЛЬКО фрагмент имени
-                unquoted_name = urllib.parse.unquote(raw_name).strip()
-                if not unquoted_name or unquoted_name.startswith("n_"):
-                    pr = urllib.parse.urlsplit(base_url).scheme.upper()
-                    host = urllib.parse.urlsplit(base_url).hostname or f"Node-{idx+1}"
-                    unquoted_name = f"{host} | {pr}"
-                
-                safe_encoded_name = urllib.parse.quote(unquoted_name)
-                # Передаем всю ссылку внутри двойных кавычек: uci batch не сочтет # комментарием
-                clean_base_url = sanitize_podkop_link(base_url)
-                batch_cmds.append(f"add_list podkop.{sec}.urltest_proxy_links=\"{clean_base_url}#{safe_encoded_name}\"")
-
-            p = subprocess.Popen(["uci", "-q", "batch"], stdin=subprocess.PIPE, text=True)
-            p.communicate(input="\n".join(batch_cmds) + "\n")
-
-        subprocess.run(["uci", "commit", "podkop"], check=False)
-        update_live_progress("♻️ [4/4] Обновление Podkop...", "Запись серверов в UCI и перезапуск службы...")
-        time.sleep(1)
-        subprocess.run(["/etc/init.d/podkop", "restart"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        # Адаптивное ожидание завершения работы Podkop (до 10 минут)
-        wait_cycles = 0
-        while wait_cycles < 300:
-            ps = subprocess.run(["pgrep", "-f", "podkop"], stdout=subprocess.PIPE, text=True)
-            if not ps.stdout.strip():
-                break
-            time.sleep(2)
-            wait_cycles += 1
-        print("Podkop успешно обновлен!")
-
-        proto_counts = {}
-        for l in best:
-            pr = urllib.parse.urlsplit(l).scheme.upper()
-            proto_counts[pr] = proto_counts.get(pr, 0) + 1
-        proto_str = " | ".join([f"{p}: {cnt}" for p, cnt in sorted(proto_counts.items())])
-
-        medals = ["🥇", "🥈", "🥉"]
-        top_lines = []
-        for i, l in enumerate(best[:3]):
-            info = results.get(l, {})
-            d = info.get("delay", 0)
-            jit = info.get("jitter", 0)
-            nm = info.get("name", "Proxy")
-            m = medals[i] if i < len(medals) else "•"
-            top_lines.append(f"{m} <code>{d} ms</code> (±{jit}) — {nm}")
-        top_text = "\n".join(top_lines)
-        sections_block = "\n".join(section_reports)
-
-        msg = (
-            f"🟢 <b>SubParser: Podkop обновлен</b>\n\n"
-            f"📊 <b>Статистика:</b>\n"
-            f"• Отобрано узлов: <b>{len(best)}</b> из {len(all_links)}\n"
-            f"• Порог задержки: &lt; {threshold} ms\n"
-            f"• Время анализа: <code>{elapsed}с</code>\n\n"
-            f"📁 <b>Секции Podkop:</b>\n{sections_block}\n\n"
-            f"⚡ <b>Топ-3 быстрых узла:</b>\n{top_text}\n\n"
-            f"🏷 <b>Протоколы:</b> <code>{proto_str}</code>"
-        )
-        if GLOBAL_SUB_USERINFO:
-            try:
-                with open("/tmp/subparser_subinfo.json", "w", encoding="utf-8") as s_file:
-                    json.dump(GLOBAL_SUB_USERINFO, s_file)
-            except Exception:
-                pass
-            sub_lines = []
-            for sname, sdata in GLOBAL_SUB_USERINFO.items():
-                used = sdata.get("upload", 0) + sdata.get("download", 0)
-                tot = sdata.get("total", 0)
-                exp = sdata.get("expire", 0)
-                exp_str = time.strftime('%d.%m.%Y', time.localtime(exp)) if exp else "бессрочно"
-                if tot > 0:
-                    sub_lines.append(f"• <b>{sname}</b>: {format_bytes(used)} / {format_bytes(tot)} (до {exp_str})")
-            if sub_lines:
-                msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
-        send_telegram_notify(msg)
-    else:
+    if not best or len(best) < MIN_REQUIRED_NODES:
         count = len(best) if best else 0
         print(f"\n[!] Предупреждение: найдено всего {count} узлов (требуется минимум {MIN_REQUIRED_NODES}).")
         print("[!] Конфигурация Podkop сохранена без изменений.")
-        msg = f"🔴 <b>SubParser Alert</b>!\n" \
-              f"Найдено всего {count} узлов. Конфигурация Podkop не изменена."
+        msg = (f"🔴 <b>SubParser Alert</b>!\n"
+               f"Найдено всего {count} узлов. Конфигурация Podkop не изменена.")
         send_telegram_notify(msg)
+        return
+
+    print(f"\nВыбрано лучших узлов: {len(best)} шт. (Время: {elapsed}с)")
+
+    if os.path.exists("/etc/config/podkop"):
+        try:
+            shutil.copy2("/etc/config/podkop", PODKOP_BACKUP)
+        except Exception as e:
+            print(f"[!] Не удалось сделать бэкап Podkop: {e}")
+
+    changed_sections = []
+    section_reports = []
+    write_failed = False
+    for sec, mode in section_targets.items():
+        existing_links = []
+        try:
+            out = subprocess.check_output(["uci", "-q", "get", f"podkop.{sec}.urltest_proxy_links"],
+                                          text=True, stderr=subprocess.DEVNULL).strip()
+            existing_links = [l.strip() for l in out.split() if l.strip()]
+        except Exception:
+            existing_links = []
+
+        if mode == "append":
+            existing_fps = {link_fingerprint(x) for x in existing_links}
+            merged = list(existing_links)
+            added = 0
+            for idx_b, b in enumerate(best):
+                if link_fingerprint(b) not in existing_fps:
+                    merged.append(_prepare_link(b, results, idx_b))
+                    existing_fps.add(link_fingerprint(b))
+                    added += 1
+            target_links = merged
+            before_cnt = len(existing_links)
+            after_cnt = len(target_links)
+            report = f"  ▫️ <b>{html.escape(sec)}</b>: добавлено +{added} новых (было {before_cnt} → стало {after_cnt})"
+        else:
+            target_links = [_prepare_link(b, results, idx_b) for idx_b, b in enumerate(best)]
+            before_cnt = len(existing_links)
+            after_cnt = len(target_links)
+            report = f"  ▫️ <b>{html.escape(sec)}</b>: полная замена (было {before_cnt} -> стало {after_cnt})"
+
+        if _link_set(target_links) == _link_set(existing_links):
+            print(f"Секция '{sec}': без изменений ({after_cnt} узлов).")
+            section_reports.append(f"  ▫️ <b>{html.escape(sec)}</b>: без изменений ({after_cnt})")
+            continue
+
+        print(f"Секция '{sec}': запись {after_cnt} узлов (было {before_cnt}).")
+        if not _write_section_links(sec, target_links):
+            write_failed = True
+            break
+        changed_sections.append(sec)
+        section_reports.append(report)
+
+    if write_failed:
+        _restore_podkop_backup()
+        send_telegram_notify("🔴 <b>SubParser Alert</b>\nНе удалось записать конфигурацию Podkop. "
+                             "Выполнен откат к предыдущей версии.")
+        return
+
+    podkop_restarted = False
+    if changed_sections:
+        update_live_progress("♻️ [4/4] Обновление Podkop...", "Запись серверов в UCI и перезапуск службы...")
+        commit = subprocess.run(["uci", "commit", "podkop"], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        if commit.returncode != 0:
+            print(f"[!] uci commit podkop: {commit.stderr.strip()}")
+            _restore_podkop_backup()
+            send_telegram_notify("🔴 <b>SubParser Alert</b>\nОшибка commit Podkop. Выполнен откат.")
+            return
+        subprocess.run(["/etc/init.d/podkop", "restart"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        podkop_restarted = True
+        if not _wait_podkop_ready(timeout=120):
+            print("[!] Podkop не поднялся после обновления — откатываем конфигурацию.")
+            _restore_podkop_backup()
+            send_telegram_notify(
+                "🔴 <b>SubParser Alert</b>\nPodkop не поднялся после обновления. "
+                "Выполнен автоматический откат к предыдущему списку узлов."
+            )
+            return
+        print("Podkop успешно обновлен!")
+        write_json_atomic(LAST_SELECTED_FILE, {"ts": int(time.time()), "links": best})
+    else:
+        print("Состав узлов не изменился — Podkop не перезапускался.")
+        write_json_atomic(LAST_SELECTED_FILE, {"ts": int(time.time()), "links": best})
+
+    proto_counts = {}
+    for l in best:
+        pr = urllib.parse.urlsplit(l).scheme.upper()
+        proto_counts[pr] = proto_counts.get(pr, 0) + 1
+    proto_str = " | ".join([f"{p}: {cnt}" for p, cnt in sorted(proto_counts.items())])
+
+    medals = ["🥇", "🥈", "🥉"]
+    top_lines = []
+    for i, l in enumerate(best[:3]):
+        info = results.get(l, {})
+        d = info.get("delay", 0)
+        jit = info.get("jitter", 0)
+        nm = html.escape(info.get("name", "Proxy"))
+        m = medals[i] if i < len(medals) else "•"
+        top_lines.append(f"{m} <code>{d} ms</code> (±{jit}) — {nm}")
+    top_text = "\n".join(top_lines)
+    sections_block = "\n".join(section_reports)
+    status_line = "🟢 <b>SubParser: Podkop обновлен</b>" if podkop_restarted else "⚪ <b>SubParser: состав узлов без изменений</b>"
+
+    msg = (
+        f"{status_line}\n\n"
+        f"📊 <b>Статистика:</b>\n"
+        f"• Отобрано узлов: <b>{len(best)}</b> из {len(all_links)}\n"
+        f"• Порог задержки: &lt; {threshold} ms\n"
+        f"• Время анализа: <code>{elapsed}с</code>\n"
+        f"• Кэш: <code>{'да' if use_cache else 'нет'}</code>\n\n"
+        f"📁 <b>Секции Podkop:</b>\n{sections_block}\n\n"
+        f"⚡ <b>Топ-3 быстрых узла:</b>\n{top_text}\n\n"
+        f"🏷 <b>Протоколы:</b> <code>{proto_str}</code>"
+    )
+    if GLOBAL_SUB_USERINFO:
+        try:
+            write_json_atomic("/tmp/subparser_subinfo.json", GLOBAL_SUB_USERINFO)
+        except Exception:
+            pass
+        sub_lines = []
+        for sname, sdata in GLOBAL_SUB_USERINFO.items():
+            used = sdata.get("upload", 0) + sdata.get("download", 0)
+            tot = sdata.get("total", 0)
+            exp = sdata.get("expire", 0)
+            exp_str = time.strftime('%d.%m.%Y', time.localtime(exp)) if exp else "бессрочно"
+            if tot > 0:
+                sub_lines.append(f"• <b>{html.escape(str(sname))}</b>: {format_bytes(used)} / {format_bytes(tot)} (до {exp_str})")
+        if sub_lines:
+            msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
+    send_telegram_notify(msg)
+
+
+def main():
+    lock_fd = _acquire_lock()
+    if lock_fd is None:
+        print("[!] Синхронизация уже запущена другим процессом.")
+        return
+    try:
+        _run()
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        traceback.print_exc()
+        try:
+            send_telegram_notify(
+                f"🔴 <b>SubParser: критическая ошибка</b>\n<code>{html.escape(str(e)[:400])}</code>"
+            )
+        except Exception:
+            pass
+    finally:
+        _release_lock(lock_fd)
+
 
 if __name__ == "__main__":
     main()

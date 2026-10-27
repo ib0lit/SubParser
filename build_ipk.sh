@@ -2,8 +2,10 @@
 set -e
 
 PKG_NAME="luci-app-subparser"
-# Версия пакета OpenWrt (начинаем с 1.0.0, первый релиз)
-PKG_VERSION="1.0.0-1"
+# Единый источник версии — root/etc/subparser_version
+PKG_VERSION="$(cat root/etc/subparser_version 2>/dev/null | tr -d '[:space:]')"
+[ -z "$PKG_VERSION" ] && PKG_VERSION="0.0.0"
+PKG_VERSION="${PKG_VERSION}-1"
 
 BUILD_DIR="/tmp/ipk_build_$$"
 OUT_DIR="./dist"
@@ -34,6 +36,7 @@ cat << 'EOF' > "$BUILD_DIR/control/postinst"
 
 /etc/init.d/subparser enable >/dev/null 2>&1 || true
 /etc/init.d/subparser-bot enable >/dev/null 2>&1 || true
+chmod 600 /etc/config/subparser 2>/dev/null || true
 
 # Регистрация watchdog в cron
 CRON_TMP="/tmp/cron_subparser_ipk.tmp"

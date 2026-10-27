@@ -59,6 +59,18 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 
 ```
 
+### 🧪 Обновление с тестовой ветки
+
+Любую ветку можно установить или обновить без изменения `main`:
+
+```sh
+SUBPARSER_BRANCH=fix/audit-2026-10 sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/fix/audit-2026-10/update.sh)"
+```
+
+Выбранная ветка сохраняется в `/etc/subparser_branch`, а в LuCI её можно указать в поле
+**«Ветка GitHub для обновлений»**. Чтобы вернуться на стабильную ветку, укажите `main`.
+Настройки, подписки и токен бота при обновлении не перезаписываются.
+
 ### 🗑 Удаление
 
 Полное удаление пакета, фоновых служб, записей crontab и кэша веб-интерфейса:

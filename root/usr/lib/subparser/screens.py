@@ -4,8 +4,8 @@ import html
 import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from .config import get_uci_val, UA_CHOICES, LOG_FILE
-from .subs import get_subscriptions
+from .config import get_ssl_ctx, get_uci_val, UA_CHOICES, LOG_FILE
+from .subs import get_subscriptions, resolve_subscription
 from .podkop import (
     get_all_podkop_sections, get_podkop_links, get_node_name,
     get_podkop_service_status, get_section_routing_state, CACHED_DELAYS
@@ -66,7 +66,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
             s_mode = get_uci_val(f"sec_mode_{s}", "replace")
             if s_en:
                 badge = "Замена" if s_mode == "replace" else "Добавление"
-                sec_parts.append(f"{s} ({badge})")
+                sec_parts.append(f"{html.escape(s)} ({badge})")
         sections_str = ", ".join(sec_parts) if sec_parts else "Все выключены"
     else:
         raw_targets = get_uci_val("target_section", "main").split()
@@ -77,7 +77,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         target_list = existing_valid if existing_valid else ["main"]
         g_mode = get_uci_val("update_mode", "replace")
         mode_label = "Замена" if g_mode == "replace" else "Добавление"
-        sections_str = f"{', '.join(target_list)} ({mode_label})"
+        sections_str = f"{', '.join(html.escape(s) for s in target_list)} ({mode_label})"
 
     text = (
         "⚙️ <b>Параметры парсера SubParser</b>\n\n"
@@ -176,20 +176,22 @@ def get_subs_list_screen():
     keyboard = []
     for s in subs:
         i = s["idx"]
+        sec_id = s["sec_name"]
         en_ico = "🟢" if s["enabled"] == "1" else "🔴"
-        ua_short = s["user_agent"]
-        lines.append(f"{i+1}. {en_ico} <b>{s['name']}</b>\n   └ UA: <code>{ua_short}</code>")
-        keyboard.append([{"text": f"⚙️ #{i+1} {s['name'][:20]}", "callback_data": f"sub_card:{i}"}])
+        ua_short = html.escape(s["user_agent"])
+        name_safe = html.escape(s["name"])
+        lines.append(f"{i+1}. {en_ico} <b>{name_safe}</b>\n   └ UA: <code>{ua_short}</code>")
+        keyboard.append([{"text": f"⚙️ #{i+1} {s['name'][:20]}", "callback_data": f"sub_card:{sec_id}"}])
 
     text = f"📋 <b>Источники подписок ({len(subs)} шт.)</b>\n\n" + "\n\n".join(lines) + "\n\n<i>Выберите подписку для настройки или удаления:</i>"
     keyboard.append([{"text": "🔄 Обновить", "callback_data": "subs_list"}, {"text": "◀️ В меню парсера", "callback_data": "parser_menu"}])
     return text, {"inline_keyboard": keyboard}
 
 def get_sub_card_screen(sub_idx):
-    subs = get_subscriptions()
-    target = next((s for s in subs if s["idx"] == sub_idx), None)
+    target = resolve_subscription(sub_idx)
     if not target:
         return get_subs_list_screen()
+    sec_id = target["sec_name"]
 
     is_en = target["enabled"] == "1"
     st_badge = "🟢 <b>Активна (участвует в парсинге)</b>" if is_en else "🔴 <b>Отключена (пропускается)</b>"
@@ -210,32 +212,32 @@ def get_sub_card_screen(sub_idx):
         url_preview = "⚠️ <i>URL не указан в настройках</i>"
 
     text = (
-        f"📋 <b>Управление подпиской #{sub_idx+1}</b>\n\n"
-        f"• <b>Название:</b> <code>{target['name']}</code>\n"
-        f"• <b>Сервер:</b> <code>{domain}</code>\n"
-        f"• <b>Клиент (UA):</b> <code>{ua_title}</code>\n"
+        f"📋 <b>Управление подпиской #{target['idx']+1}</b>\n\n"
+        f"• <b>Название:</b> <code>{html.escape(target['name'])}</code>\n"
+        f"• <b>Сервер:</b> <code>{html.escape(domain)}</code>\n"
+        f"• <b>Клиент (UA):</b> <code>{html.escape(ua_title)}</code>\n"
         f"• <b>Статус:</b> {st_badge}\n"
         f"• <b>URL:</b> <code>{url_preview}</code>\n"
     )
     kb = {"inline_keyboard": [
-        [{"text": btn_en_txt, "callback_data": f"sub_tgl:{sub_idx}"}],
-        [{"text": f"👤 Сменить UA: {target['user_agent']} ➔", "callback_data": f"sub_cycle_ua:{sub_idx}"}],
-        [{"text": "🗑 Удалить подписку", "callback_data": f"sub_del_ask:{sub_idx}"}],
+        [{"text": btn_en_txt, "callback_data": f"sub_tgl:{sec_id}"}],
+        [{"text": f"👤 Сменить UA: {target['user_agent']} ➔", "callback_data": f"sub_cycle_ua:{sec_id}"}],
+        [{"text": "🗑 Удалить подписку", "callback_data": f"sub_del_ask:{sec_id}"}],
         [{"text": "◀️ Назад к списку подписок", "callback_data": "subs_list"}]
     ]}
     return text, kb
 
 def get_sub_delete_confirm_screen(sub_idx):
-    subs = get_subscriptions()
-    target = next((s for s in subs if s["idx"] == sub_idx), None)
-    name = target["name"] if target else f"#{sub_idx+1}"
+    target = resolve_subscription(sub_idx)
+    sec_id = target["sec_name"] if target else str(sub_idx)
+    name = html.escape(target["name"]) if target else f"#{sub_idx}"
     text = (
         f"⚠️ <b>Удаление подписки</b>\n\n"
         f"Вы действительно хотите навсегда удалить подписку <b>«{name}»</b> из роутера?"
     )
     kb = {"inline_keyboard": [
-        [{"text": "❌ Да, удалить навсегда!", "callback_data": f"sub_del_do:{sub_idx}"}],
-        [{"text": "↩️ Отмена", "callback_data": f"sub_card:{sub_idx}"}]
+        [{"text": "❌ Да, удалить навсегда!", "callback_data": f"sub_del_do:{sec_id}"}],
+        [{"text": "↩️ Отмена", "callback_data": f"sub_card:{sec_id}"}]
     ]}
     return text, kb
 
@@ -299,7 +301,7 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
     all_secs = get_all_podkop_sections()
     back_btn = {"text": "◀️ К секциям", "callback_data": "servers"} if len(all_secs) > 1 else {"text": "◀️ В меню", "callback_data": "home"}
     if not links:
-        return f"🌐 В секции <b>{section}</b> нет серверов.", {"inline_keyboard": [[back_btn]]}
+        return f"🌐 В секции <b>{html.escape(section)}</b> нет серверов.", {"inline_keyboard": [[back_btn]]}
     if delays_map is not None:
         CACHED_DELAYS[section] = delays_map
     else:
@@ -348,7 +350,7 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
         keyboard.append([{"text": f"🗑 Подтвердить удаление ({cnt_sel})", "callback_data": f"apply_bdel:{section}:{page}"}])
         keyboard.append([{"text": "❌ Выбрать все [DEAD]", "callback_data": f"sel_dead:{section}:{page}"}])
         keyboard.append([{"text": "◀️ Отмена (выход)", "callback_data": f"exit_del_mode:{section}:{page}"}])
-        title = f"🌐 <b>Узлы Podkop [{section}] [Мультиудаление]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Отметьте узлы для удаления:</i>"
+        title = f"🌐 <b>Узлы Podkop [{html.escape(section)}] [Мультиудаление]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Отметьте узлы для удаления:</i>"
     else:
         auto_label = "✅ Режим: Авто (URL-Test)" if is_auto else "🔄 Включить Авто (URL-Test)"
         keyboard.append([{"text": auto_label, "callback_data": f"auto_mode:{section}:{page}"}])
@@ -357,7 +359,7 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
             {"text": "🗑 Мультиудаление", "callback_data": f"enter_del_mode:{section}:{page}"}
         ])
         keyboard.append([back_btn])
-        title = f"🌐 <b>Узлы Podkop [{section}]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Нажмите для управления:</i>"
+        title = f"🌐 <b>Узлы Podkop [{html.escape(section)}]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Нажмите для управления:</i>"
     return title, {"inline_keyboard": keyboard}
 
 def get_sections_selector_screen():
@@ -366,7 +368,7 @@ def get_sections_selector_screen():
     lines = []
     for s in all_secs:
         count = len(get_podkop_links(s))
-        lines.append(f"• <b>{s}</b>: <code>{count} узлов</code>")
+        lines.append(f"• <b>{html.escape(s)}</b>: <code>{count} узлов</code>")
         keyboard.append([{"text": f"📁 Секция: {s} ({count} шт.)", "callback_data": f"sec_view:{s}"}])
 
     keyboard.append([{"text": "◀️ В главное меню", "callback_data": "home"}])
@@ -440,7 +442,7 @@ def get_system_metrics():
     }
     return text, kb
 
-def get_clients_screen():
+def get_clients_screen(page=0):
     clients = {}
     lease_file = "/tmp/dhcp.leases"
     if os.path.exists(lease_file):
@@ -490,10 +492,14 @@ def get_clients_screen():
                 return [0, 0, 0, 0]
 
         sorted_ips = sorted(clients.keys(), key=ip_sort_key)
+        page_size = 8
+        total_pages = max(1, (len(sorted_ips) + page_size - 1) // page_size)
+        page = max(0, min(int(page), total_pages - 1))
+        page_ips = sorted_ips[page * page_size:(page + 1) * page_size]
         lines = []
         keyboard = []
 
-        for i, ip in enumerate(sorted_ips, 1):
+        for i, ip in enumerate(page_ips, start=page * page_size + 1):
             c = clients[ip]
             mac = c["mac"]
             is_bl = mac in blocked
@@ -507,18 +513,25 @@ def get_clients_screen():
                 conn_badge = "🔌 <b>LAN Кабель</b>"
 
             lines.append(
-                f"{i}. {bl_icon}<b>{c['name']}</b>\n"
-                f"   ├ IP: <code>{ip}</code> | MAC: <code>{mac}</code>\n"
+                f"{i}. {bl_icon}<b>{html.escape(c['name'])}</b>\n"
+                f"   ├ IP: <code>{html.escape(ip)}</code> | MAC: <code>{html.escape(mac)}</code>\n"
                 f"   └ Связь: {conn_badge}"
             )
             keyboard.append([{"text": f"⚙️ {bl_icon}{c['name'][:18]} ({ip})", "callback_data": f"dev:{mac}"}])
 
         text = (
-            f"👥 <b>Устройства в сети ({len(clients)} шт.)</b>\n\n"
+            f"👥 <b>Устройства в сети ({len(clients)} шт., стр. {page+1}/{total_pages})</b>\n\n"
             + "\n\n".join(lines) +
             "\n\n<i>Выберите устройство для управления доступом:</i>"
         )
-        keyboard.append([{"text": "🔄 Обновить список", "callback_data": "clients"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}])
+        nav = []
+        if page > 0:
+            nav.append({"text": "⬅️", "callback_data": f"clients_pg:{page-1}"})
+        nav.append({"text": f"📄 {page+1}/{total_pages}", "callback_data": "noop"})
+        if page < total_pages - 1:
+            nav.append({"text": "➡️", "callback_data": f"clients_pg:{page+1}"})
+        keyboard.append(nav)
+        keyboard.append([{"text": "🔄 Обновить список", "callback_data": f"clients_pg:{page}"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}])
         keyboard.append([{"text": "◀️ В главное меню", "callback_data": "home"}])
         kb = {"inline_keyboard": keyboard}
 
@@ -555,15 +568,15 @@ def get_device_action_screen(mac, force_blocked=None):
         action = f"blk:{mac_u}"
 
     text = (
-        f"📱 <b>Управление клиентом: {hname}</b>\n\n"
-        f"• <b>IP адрес:</b> <code>{ip}</code>\n"
-        f"• <b>MAC адрес:</b> <code>{mac_u}</code>\n"
+        f"📱 <b>Управление клиентом: {html.escape(hname)}</b>\n\n"
+        f"• <b>IP адрес:</b> <code>{html.escape(str(ip))}</code>\n"
+        f"• <b>MAC адрес:</b> <code>{html.escape(mac_u)}</code>\n"
         f"• <b>Статус:</b> {status_badge}\n"
     )
     kb = {
         "inline_keyboard": [
             [{"text": btn_text, "callback_data": action}],
-            [{"text": "◀️ Назад к списку устройств", "callback_data": "clients"}]
+            [{"text": "◀️ Назад к списку устройств", "callback_data": "clients_pg:0"}]
         ]
     }
     return text, kb
@@ -694,43 +707,6 @@ def get_reboot_confirm_screen():
     return text, kb
 
 
-def get_fp_menu_screen():
-    cur = get_uci_val("override_fp", "as_is").lower().strip()
-    fps = [
-        ("firefox", "🦊 Firefox (РФ)"),
-        ("chrome", "🌐 Chrome"),
-        ("safari", "🍏 Safari"),
-        ("ios", "📱 iOS"),
-        ("edge", "🔷 Edge"),
-        ("qq", "🐧 QQ"),
-        ("randomized", "🎲 Randomized"),
-        ("as_is", "↩️ Как в подписке")
-    ]
-    kb = {"inline_keyboard": []}
-    row = []
-    for val, label in fps:
-        mark = " 🔘" if cur == val else ""
-        row.append({"text": f"{label}{mark}", "callback_data": f"set_fp:{val}"})
-        if len(row) == 2:
-            kb["inline_keyboard"].append(row)
-            row = []
-    if row:
-        kb["inline_keyboard"].append(row)
-    kb["inline_keyboard"].append([{"text": "◀ Назад в параметры", "callback_data": "parser_menu"}])
-
-    mapping = {
-        "as_is": "Как в подписке", "firefox": "Firefox 🦊", "chrome": "Chrome 🌐",
-        "safari": "Safari 🍏", "ios": "iOS 📱", "edge": "Edge 🔷",
-        "qq": "QQ Browser 🐧", "randomized": "Randomized 🎲"
-    }
-    cur_label = mapping.get(cur, cur.capitalize())
-    text = (
-        "🎭 <b>uTLS Fingerprint (эмуляция браузера)</b>\n\n"
-        "Глобально заменяет TLS Client Hello для всех узлов во избежание блокировок по сигнатурам браузера.\n\n"
-        f"Текущий режим: <b>{cur_label}</b>"
-    )
-    return text, kb
-
 def get_update_screen():
     import urllib.request, json
     local_sha = ""
@@ -750,19 +726,25 @@ def get_update_screen():
     remote_sha = ""
     remote_ver = local_ver
     changelog = "Описание недоступно"
+    branch = get_uci_val("update_branch", "main") or "main"
+    branch = "".join(ch for ch in branch if ch.isalnum() or ch in "-_./") or "main"
 
     try:
-        req = urllib.request.Request("https://api.github.com/repos/ib0lit/SubParser/commits/main", headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/ib0lit/SubParser/commits/{branch}",
+            headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+        with urllib.request.urlopen(req, timeout=5, context=get_ssl_ctx()) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             remote_sha = data.get('sha', '').strip()
-            changelog = data.get('commit', {}).get('message', '').replace("<", "&lt;").replace(">", "&gt;")
+            changelog = html.escape(data.get('commit', {}).get('message', ''))
     except Exception:
         return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений на GitHub.", {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
 
     try:
-        req_v = urllib.request.Request("https://raw.githubusercontent.com/ib0lit/SubParser/main/root/etc/subparser_version", headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
-        with urllib.request.urlopen(req_v, timeout=5) as resp_v:
+        req_v = urllib.request.Request(
+            f"https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/root/etc/subparser_version",
+            headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+        with urllib.request.urlopen(req_v, timeout=5, context=get_ssl_ctx()) as resp_v:
             remote_ver = resp_v.read().decode('utf-8').strip()
     except Exception:
         pass
@@ -778,6 +760,7 @@ def get_update_screen():
         short_local_sha = local_sha[:7] if local_sha else "н/д"
         text = (
             f"🎉 <b>Доступно обновление!</b>\n\n"
+            f"• Ветка: <code>{html.escape(branch)}</code>\n"
             f"• Текущая версия: <code>v{local_ver}</code> (<code>{short_local_sha}</code>)\n"
             f"• Новая версия: <code>v{remote_ver}</code> (<code>{short_remote_sha}</code>)\n\n"
             f"📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"

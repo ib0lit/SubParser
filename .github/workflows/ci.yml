@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile all Python sources
+        run: |
+          python -m py_compile root/usr/bin/subparser.py root/usr/bin/subparser-bot.py root/usr/lib/subparser/*.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check shell scripts
+        run: |
+          for f in install.sh update.sh uninstall.sh build_ipk.sh build_apk.sh sync-pull.sh root/usr/bin/*.sh root/etc/init.d/* root/etc/hotplug.d/uci/*; do
+            echo "checking $f"
+            sh -n "$f"
+          done
+      - name: Validate JSON/ACL files
+        run: |
+          python -c "import glob,json; [json.load(open(p, encoding='utf-8')) for p in glob.glob('root/usr/share/rpcd/acl.d/*.json')]; print('acl json ok')"

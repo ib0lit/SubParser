@@ -1,11 +1,9 @@
 {
     "luci-app-subparser": {
-        "description": "Grant access to SubParser RPC methods",
+        "description": "Grant access to SubParser helper and status files",
         "read": {
             "file": {
-                "/usr/bin/subparser.py": [ "exec" ],
                 "/usr/bin/subparser-helper.sh": [ "exec" ],
-                "/tmp/subparser_selected.txt": [ "read" ],
                 "/tmp/subparser_sync.log": [ "read" ]
             },
             "uci": [ "subparser", "podkop" ]
@@ -14,7 +12,7 @@
             "file": {
                 "/tmp/subparser_selected.txt": [ "write" ]
             },
-            "uci": [ "subparser", "podkop" ],
+            "uci": [ "subparser" ],
             "exec": {
                 "/usr/bin/subparser-helper.sh": [ "*" ],
                 "/etc/init.d/subparser": [ "restart" ]

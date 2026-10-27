@@ -16,6 +16,9 @@ return view.extend({
             return fs.exec('/usr/bin/subparser-helper.sh', ['get_links', initialSec]);
         }).then(function(res) {
             try { return JSON.parse(res.stdout.trim() || '[]'); } catch(e) { return []; }
+        }).catch(function() {
+            self.availableSections = ['main'];
+            return [];
         });
     },
 
@@ -77,6 +80,7 @@ return view.extend({
         s.tab('sections', _('📁 Секции Podkop'));
         s.tab('telegram', _('💬 Telegram'));
         s.tab('subscriptions', _('📋 Подписки'));
+        s.tab('advanced', _('🛠 Дополнительно'));
 
         var o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
         o.rmempty = false;
@@ -175,7 +179,10 @@ return view.extend({
                             clearInterval(poll);
                             setTimeout(function() {
                                 ui.hideModal();
-                                window.location.reload();
+                                self.reloadSections(secSelect, dashboardContainer, currentSec).then(function(newSec) {
+                                    currentSec = newSec;
+                                    ui.addNotification(null, E('p', _('Синхронизация завершена. Список узлов обновлён.')), 'info');
+                                });
                             }, 800);
                         } else if (st.indexOf('"error"') !== -1) {
                             clearInterval(poll);
@@ -217,6 +224,53 @@ return view.extend({
             sec_m.default = 'replace';
             sec_m.depends('per_section_config', '1');
         });
+
+        o = s.taboption('advanced', form.Value, 'cache_ttl', _('Время жизни кэша результатов (сек)'));
+        o.datatype = 'uinteger';
+        o.default = '900';
+        o.description = _('Повторный запуск с теми же подписками и настройками возьмёт результаты из кэша. 0 — отключить кэш.');
+
+        o = s.taboption('advanced', form.Value, 'stress_top', _('Сколько кандидатов проверять на стабильность'));
+        o.datatype = 'uinteger';
+        o.default = '40';
+        o.description = _('Ограничивает второй этап тестирования. 0 — проверять всех кандидатов (медленнее и больше нагрузка на CPU).');
+
+        o = s.taboption('advanced', form.Value, 'hysteresis_pct', _('Гистерезис выбора узлов (%)'));
+        o.datatype = 'range(0, 50)';
+        o.default = '10';
+        o.description = _('Уже выбранные узлы получают бонус к оценке, чтобы состав не менялся из-за случайных колебаний задержки.');
+
+        o = s.taboption('advanced', form.Flag, 'allow_unstable_fallback', _('Разрешить fallback на нестабильные узлы'));
+        o.default = '0';
+        o.description = _('Если стабильных узлов не нашлось, использовать живые, но нестабильные. По умолчанию выключено: лучше сохранить старый список, чем залить плохой.');
+
+        o = s.taboption('advanced', form.Flag, 'allow_insecure_tls', _('Отключить проверку TLS-сертификатов'));
+        o.default = '0';
+        o.description = _('⚠️ Небезопасно. Включайте только если подписка использует самоподписанный сертификат.');
+
+        o = s.taboption('advanced', form.Flag, 'allow_local_diag', _('Разрешить диагностику локальных адресов'));
+        o.default = '0';
+        o.description = _('Разрешает проверять 127.0.0.1 и LAN-адреса через диагностику маршрута. По умолчанию запрещено (защита от SSRF).');
+
+        o = s.taboption('advanced', form.Value, 'podkop_api', _('Clash API Podkop (host:port или URL)'));
+        o.placeholder = '127.0.0.1:9090';
+        o.rmempty = true;
+        o.description = _('Оставьте пустым для автоопределения по LAN IP. Пример: <code>http://192.168.1.1:9090</code>.');
+
+        o = s.taboption('advanced', form.Value, 'podkop_api_secret', _('Clash API secret'));
+        o.password = true;
+        o.rmempty = true;
+        o.description = _('Секрет Clash API, если он включён в Podkop.');
+
+        o = s.taboption('advanced', form.Value, 'speedtest_proxy', _('Прокси для теста скорости'));
+        o.placeholder = 'socks5h://127.0.0.1:4534';
+        o.default = 'socks5h://127.0.0.1:4534';
+        o.rmempty = true;
+
+        o = s.taboption('advanced', form.Value, 'update_branch', _('Ветка GitHub для обновлений'));
+        o.placeholder = 'main';
+        o.default = 'main';
+        o.description = _('Позволяет обновляться с тестовой ветки. Для стабильной работы оставьте <code>main</code>.');
 
         o = s.taboption('telegram', form.Value, 'tg_bot_token', _('Telegram Bot Token'));
         o.placeholder = '123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ';
@@ -372,6 +426,16 @@ return view.extend({
         var toolbar = E('div', { 'style': 'display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;' }, [
             secSelect,
             E('button', {
+                'class': 'btn cbi-button-neutral',
+                'click': function(ev) {
+                    ev.preventDefault();
+                    self.reloadSections(secSelect, dashboardContainer, currentSec).then(function(newSec) {
+                        currentSec = newSec;
+                        ui.addNotification(null, E('p', _('Список секций Podkop обновлён.')), 'info');
+                    });
+                }
+            }, _('🔄 Обновить секции')),
+            E('button', {
                 'class': 'btn cbi-button-action',
                 'click': function(ev) { ev.preventDefault(); self.refreshPings(dashboardContainer, currentSec); }
             }, _('⚡ Обновить пинги')),
@@ -389,52 +453,123 @@ return view.extend({
                 }
             }, _('Выделить все / Снять'))
         ]);
+        var pingSummary = E('div', {
+            'id': 'subparser_ping_summary',
+            'style': 'font-size: 12px; color: #888; margin-bottom: 8px;'
+        }, '');
 
         var dummy = s2.option(form.DummyValue, '_dashboard');
         dummy.rawhtml = true;
-        dummy.render = function() { return E('div', {}, [hintBox, toolbar, dashboardContainer]); };
+        dummy.render = function() { return E('div', {}, [hintBox, toolbar, pingSummary, dashboardContainer]); };
         self.renderCards(dashboardContainer, currentSec);
 
         return m.render();
     },
 
+    reloadLinks: function(container, sec) {
+        var self = this;
+        var s = sec || 'main';
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_links', s]).then(function(res) {
+            try { self.serverLinks = JSON.parse(res.stdout.trim() || '[]'); } catch(e) { self.serverLinks = []; }
+            self.renderCards(container, s);
+            var summary = document.getElementById('subparser_ping_summary');
+            if (summary) summary.textContent = _('Секция ') + s + ': ' + self.serverLinks.length + _(' узлов.');
+            return self.serverLinks;
+        });
+    },
+
+    reloadSections: function(selectEl, container, currentSec) {
+        var self = this;
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_podkop_sections']).then(function(res) {
+            var sections = ['main'];
+            try {
+                var parsed = JSON.parse(res.stdout.trim() || '["main"]');
+                if (Array.isArray(parsed) && parsed.length > 0) sections = parsed;
+            } catch(e) {}
+            self.availableSections = sections;
+            var keep = (sections.indexOf(currentSec) !== -1) ? currentSec : sections[0];
+            while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+            sections.forEach(function(sname) {
+                var optAttrs = { 'value': sname };
+                if (sname === keep) optAttrs.selected = 'selected';
+                selectEl.appendChild(E('option', optAttrs, _('Секция: ') + sname));
+            });
+            return self.reloadLinks(container, keep).then(function() { return keep; });
+        });
+    },
+
     refreshPings: function(container, sec) {
         var s = sec || 'main';
-        var badges = container.querySelectorAll('.node-delay-badge');
+        var badges = Array.from(container.querySelectorAll('.node-delay-badge'));
         badges.forEach(function(b) { b.innerText = '...'; b.style.color = '#888'; });
+        var summary = document.getElementById('subparser_ping_summary');
+        if (summary) summary.textContent = _('Измерение задержек...');
+
+        var setBadge = function(b, delay) {
+            if (typeof delay === 'number' && delay > 0) {
+                b.innerText = delay + ' ms';
+                b.style.color = delay < 180 ? '#00e676' : (delay < 350 ? '#ffb300' : '#ff5252');
+                return true;
+            }
+            b.innerText = 'timeout';
+            b.style.color = '#ff5252';
+            return false;
+        };
 
         fs.exec('/usr/bin/subparser-helper.sh', ['ping_group', s]).then(function(res) {
             var groupDelays = {};
             try { groupDelays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+            var okCount = 0;
+            var missing = [];
 
             badges.forEach(function(b) {
                 var tag = b.getAttribute('data-tag');
-                var d = groupDelays[tag];
-                if (typeof d === 'number' && d > 0) {
-                    b.innerText = d + ' ms';
-                    b.style.color = d < 180 ? '#00e676' : (d < 350 ? '#ffb300' : '#ff5252');
+                if (Object.prototype.hasOwnProperty.call(groupDelays, tag) && setBadge(b, groupDelays[tag])) {
+                    okCount++;
                 } else {
-                    fs.exec('/usr/bin/subparser-helper.sh', ['ping_node', tag]).then(function(nodeRes) {
-                        try {
-                            var data = JSON.parse(nodeRes.stdout.trim());
-                            if (data.delay && data.delay > 0) {
-                                b.innerText = data.delay + ' ms';
-                                b.style.color = data.delay < 180 ? '#00e676' : (data.delay < 350 ? '#ffb300' : '#ff5252');
-                            } else {
-                                b.innerText = 'timeout';
-                                b.style.color = '#ff5252';
-                            }
-                        } catch(err) {
-                            b.innerText = 'timeout';
-                            b.style.color = '#ff5252';
-                        }
-                    });
+                    b.innerText = '...';
+                    missing.push(b);
                 }
             });
+
+            // Ограничиваем параллелизм: роутер не любит десятки одновременных
+            // вызовов uci/curl, а зависшие узлы ждут таймаут.
+            var CONCURRENCY = 4;
+            var index = 0;
+            var failed = 0;
+
+            var next = function() {
+                if (index >= missing.length) {
+                    if (summary) {
+                        summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length +
+                            _(' узлов отвечают') + (failed ? _(' (') + failed + _(' с таймаутом)') : '');
+                    }
+                    return;
+                }
+                var b = missing[index++];
+                var tag = b.getAttribute('data-tag');
+                fs.exec('/usr/bin/subparser-helper.sh', ['ping_node', tag]).then(function(nodeRes) {
+                    var data = {};
+                    try { data = JSON.parse(nodeRes.stdout.trim()); } catch(err) {}
+                    if (setBadge(b, data.delay)) okCount++; else failed++;
+                }).catch(function() {
+                    setBadge(b, -1);
+                    failed++;
+                }).then(next);
+            };
+
+            if (missing.length === 0) {
+                if (summary) {
+                    summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length + _(' узлов отвечают');
+                }
+            } else {
+                for (var i = 0; i < Math.min(CONCURRENCY, missing.length); i++) next();
+            }
         });
     },
 
     saveSelectedNodes: function(container, sec) {
+        var self = this;
         var s = sec || 'main';
         var checkboxes = container.querySelectorAll('input[type="checkbox"]:checked');
         var selectedLinks = [];
@@ -453,13 +588,16 @@ return view.extend({
 
         fs.write('/tmp/subparser_selected.txt', payload).then(function() {
             return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', s]);
-        }).then(function() {
+        }).then(function(res) {
+            var data = {};
+            try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+            if (data.status && data.status !== 'ok') throw new Error(data.message || _('Ошибка записи'));
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Серверы успешно сохранены в Podkop! (' + selectedLinks.length + ' шт.)')), 'info');
-            setTimeout(function() { window.location.reload(); }, 800);
+            return self.reloadLinks(container, s);
         }).catch(function(err) {
             ui.hideModal();
-            ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + err), 'danger');
+            ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + (err.message || err)), 'danger');
         });
     }
 });
