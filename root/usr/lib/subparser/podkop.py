@@ -327,26 +327,25 @@ def delete_nodes_batch(indices, section="main", restart=False):
     return True, removed_count
 
 
-def delete_dead_from_all_sections():
-    """Проверяет все секции и удаляет мёртвые узлы за один перезапуск Podkop.
+def scan_dead_in_all_sections():
+    """Пингует все секции и возвращает план удаления, не меняя конфигурацию.
 
-    Узлы, которых нет в текущем runtime Podkop, не удаляются: проверить их
-    невозможно, а массовое удаление по ошибке API недопустимо.
+    Узлы, которых нет в текущем runtime Podkop, не проверяются и в план не
+    попадают: удалять непроверенное по ошибке API недопустимо.
     """
     sections = get_all_podkop_sections()
     proxies = get_proxies()
     details = []
-    total_deleted = 0
+    total_dead = 0
 
     if not proxies:
-        return {"total": 0, "changed": False, "restarted": False,
-                "error": "Podkop API недоступен", "details": []}
+        return {"total": 0, "error": "Podkop API недоступен", "details": []}
 
     for section in sections:
         links = get_podkop_links(section)
         if not links:
             details.append({"section": section, "total": 0, "dead": 0,
-                            "deleted": 0, "skipped": 0, "status": "empty"})
+                            "skipped": 0, "status": "empty", "indices": []})
             continue
 
         delays = batch_ping_nodes(links, section=section, force=True)
@@ -361,24 +360,57 @@ def delete_dead_from_all_sections():
             if isinstance(delay, int) and delay <= 0:
                 dead.append(i)
 
-        if not dead:
+        if dead:
+            status = "dead"
+            total_dead += len(dead)
+        else:
             status = "no_data" if skipped == len(links) else "clean"
-            details.append({"section": section, "total": len(links), "dead": 0,
-                            "deleted": 0, "skipped": skipped, "status": status})
+        details.append({"section": section, "total": len(links),
+                        "dead": len(dead), "skipped": skipped,
+                        "status": status, "indices": dead,
+                        "links": list(links)})
+
+    return {"total": total_dead, "error": "", "details": details}
+
+
+def delete_dead_plan(plan_details):
+    """Удаляет узлы из готового плана и перезапускает Podkop один раз."""
+    total_deleted = 0
+    details = []
+
+    for item in plan_details or []:
+        section = item.get("section")
+        indices = list(item.get("indices") or [])
+        total = int(item.get("total", 0))
+        skipped = int(item.get("skipped", 0))
+
+        result = {"section": section, "total": total,
+                  "dead": int(item.get("dead", 0)), "deleted": 0,
+                  "skipped": skipped, "status": item.get("status", "clean")}
+        if not indices:
+            details.append(result)
             continue
 
-        ok, deleted = delete_nodes_batch(dead, section=section, restart=False)
+        # Пока пользователь читал подтверждение, парсер мог переписать секцию.
+        # Индексы в этом случае уже не соответствуют узлам — ничего не удаляем.
+        links = get_podkop_links(section)
+        expected = item.get("links")
+        if len(links) != total or (expected is not None and list(expected) != links):
+            result["status"] = "stale"
+            details.append(result)
+            continue
+
+        ok, deleted = delete_nodes_batch(indices, section=section, restart=False)
         if not ok:
-            details.append({"section": section, "total": len(links),
-                            "dead": len(dead), "deleted": 0,
-                            "skipped": skipped, "status": "error"})
+            result["status"] = "error"
+            details.append(result)
             continue
 
-        del_set = set(dead)
+        del_set = set(indices)
         old_delays = CACHED_DELAYS.get(section, {})
         new_delays = {}
         new_idx = 0
-        for old_idx in range(len(links)):
+        for old_idx in range(total):
             if old_idx not in del_set:
                 if old_idx in old_delays:
                     new_delays[new_idx] = old_delays[old_idx]
@@ -386,13 +418,11 @@ def delete_dead_from_all_sections():
         CACHED_DELAYS[section] = new_delays
 
         total_deleted += deleted
-        details.append({"section": section, "total": len(links),
-                        "dead": len(dead), "deleted": deleted,
-                        "skipped": skipped, "status": "deleted"})
+        result["deleted"] = deleted
+        result["status"] = "deleted"
+        details.append(result)
 
-    restarted = False
-    if total_deleted:
-        restarted = restart_podkop()
+    restarted = restart_podkop() if total_deleted else False
 
     return {"total": total_deleted, "changed": bool(total_deleted),
             "restarted": restarted, "error": "", "details": details}

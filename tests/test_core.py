@@ -109,8 +109,8 @@ class TestRunParserProgress(unittest.TestCase):
                 self.assertEqual(f.read(), '{"old": true}')
 
 
-class TestDeleteDeadAllSections(unittest.TestCase):
-    def _run(self, sections, links_map, proxies, delays_map):
+class TestDeadScanAndDelete(unittest.TestCase):
+    def _scan(self, sections, links_map, proxies, delays_map):
         def fake_links(section):
             return list(links_map.get(section, []))
 
@@ -121,15 +121,13 @@ class TestDeleteDeadAllSections(unittest.TestCase):
                 mock.patch.object(podkop, "get_proxies", return_value=proxies), \
                 mock.patch.object(podkop, "get_podkop_links", side_effect=fake_links), \
                 mock.patch.object(podkop, "batch_ping_nodes", side_effect=fake_ping), \
-                mock.patch.object(podkop, "delete_nodes_batch",
-                                  return_value=(True, 1)) as delete, \
-                mock.patch.object(podkop, "restart_podkop",
-                                  return_value=True) as restart:
-            result = podkop.delete_dead_from_all_sections()
+                mock.patch.object(podkop, "delete_nodes_batch") as delete, \
+                mock.patch.object(podkop, "restart_podkop") as restart:
+            result = podkop.scan_dead_in_all_sections()
         return result, delete, restart
 
-    def test_deletes_dead_and_restarts_once(self):
-        result, delete, restart = self._run(
+    def test_scan_builds_plan_without_changes(self):
+        result, delete, restart = self._scan(
             ["main", "gemini", "empty"],
             {"main": ["a", "b"], "gemini": ["c"], "empty": []},
             {"main-1-out": {}, "main-2-out": {},
@@ -138,42 +136,90 @@ class TestDeleteDeadAllSections(unittest.TestCase):
         )
         self.assertEqual(result["total"], 2)
         self.assertFalse(result["error"])
+        main, gemini, empty = result["details"]
+        self.assertEqual(main["status"], "dead")
+        self.assertEqual(main["indices"], [1])
+        self.assertEqual(gemini["indices"], [0])
+        self.assertEqual(empty["status"], "empty")
+        delete.assert_not_called()
+        restart.assert_not_called()
+
+    def test_delete_plan_deletes_and_restarts_once(self):
+        details = [
+            {"section": "main", "total": 2, "dead": 1, "skipped": 0,
+             "status": "dead", "indices": [1]},
+            {"section": "gemini", "total": 1, "dead": 1, "skipped": 0,
+             "status": "dead", "indices": [0]},
+        ]
+        links = {"main": ["a", "b"], "gemini": ["c"]}
+        with mock.patch.object(podkop, "get_podkop_links",
+                               side_effect=lambda s: list(links[s])), \
+                mock.patch.object(podkop, "delete_nodes_batch",
+                                  return_value=(True, 1)) as delete, \
+                mock.patch.object(podkop, "restart_podkop",
+                                  return_value=True) as restart:
+            result = podkop.delete_dead_plan(details)
+        self.assertEqual(result["total"], 2)
         self.assertTrue(result["restarted"])
         self.assertEqual(delete.call_count, 2)
         delete.assert_any_call([1], section="main", restart=False)
         delete.assert_any_call([0], section="gemini", restart=False)
         restart.assert_called_once()
 
+    def test_plan_is_skipped_when_section_changed(self):
+        details = [{"section": "main", "total": 3, "dead": 1, "skipped": 0,
+                    "status": "dead", "indices": [2]}]
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "b"]), \
+                mock.patch.object(podkop, "delete_nodes_batch") as delete, \
+                mock.patch.object(podkop, "restart_podkop") as restart:
+            result = podkop.delete_dead_plan(details)
+        self.assertEqual(result["total"], 0)
+        self.assertFalse(result["restarted"])
+        self.assertEqual(result["details"][0]["status"], "stale")
+        delete.assert_not_called()
+        restart.assert_not_called()
+
+    def test_plan_is_skipped_when_links_changed(self):
+        details = [{"section": "main", "total": 2, "dead": 1, "skipped": 0,
+                    "status": "dead", "indices": [1], "links": ["a", "b"]}]
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a", "c"]), \
+                mock.patch.object(podkop, "delete_nodes_batch") as delete, \
+                mock.patch.object(podkop, "restart_podkop") as restart:
+            result = podkop.delete_dead_plan(details)
+        self.assertEqual(result["details"][0]["status"], "stale")
+        delete.assert_not_called()
+        restart.assert_not_called()
+
     def test_restart_failure_is_reported(self):
-        with mock.patch.object(podkop, "get_all_podkop_sections",
-                               return_value=["main"]), \
-                mock.patch.object(podkop, "get_proxies",
-                                  return_value={"main-1-out": {}}), \
-                mock.patch.object(podkop, "get_podkop_links",
-                                  return_value=["a"]), \
-                mock.patch.object(podkop, "batch_ping_nodes",
-                                  return_value={0: -1}), \
+        details = [{"section": "main", "total": 1, "dead": 1, "skipped": 0,
+                    "status": "dead", "indices": [0]}]
+        with mock.patch.object(podkop, "get_podkop_links",
+                               return_value=["a"]), \
                 mock.patch.object(podkop, "delete_nodes_batch",
                                   return_value=(True, 1)), \
                 mock.patch.object(podkop, "restart_podkop",
                                   return_value=False) as restart:
-            result = podkop.delete_dead_from_all_sections()
+            result = podkop.delete_dead_plan(details)
         self.assertEqual(result["total"], 1)
         self.assertFalse(result["restarted"])
         restart.assert_called_once()
 
-    def test_api_unavailable_does_not_touch_uci(self):
-        result, delete, restart = self._run(
+    def test_api_unavailable_returns_error(self):
+        result, delete, restart = self._scan(
             ["main"], {"main": ["a"]}, {}, {"main": {0: -1}})
         self.assertIn("API", result["error"])
+        self.assertEqual(result["details"], [])
         delete.assert_not_called()
         restart.assert_not_called()
 
-    def test_unknown_nodes_are_not_deleted(self):
-        result, delete, restart = self._run(
+    def test_unknown_nodes_are_skipped(self):
+        result, delete, restart = self._scan(
             ["gemini"], {"gemini": ["a"]}, {"main-1-out": {}},
             {"gemini": {0: -1}})
         self.assertEqual(result["details"][0]["status"], "no_data")
+        self.assertEqual(result["total"], 0)
         delete.assert_not_called()
         restart.assert_not_called()
 

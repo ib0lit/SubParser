@@ -377,22 +377,47 @@ def get_sections_selector_screen():
     return text, {"inline_keyboard": keyboard}
 
 
-def get_del_dead_all_confirm_screen():
-    all_secs = get_all_podkop_sections()
-    names = ", ".join(html.escape(s) for s in all_secs) or "—"
-    text = (
-        "🧹 <b>Удалить DEAD из всех секций</b>\n\n"
-        f"Секции: <code>{names}</code>\n\n"
-        "Будет выполнен принудительный пинг всех узлов. Не ответившие узлы "
-        "будут удалены, после чего Podkop перезапустится <b>один раз</b>.\n\n"
-        "Секции, которые сейчас не активны в Podkop и не имеют данных для "
-        "проверки, будут пропущены.\n\n"
-        "Продолжить?"
-    )
-    kb = {"inline_keyboard": [
-        [{"text": "✅ Да, проверить и удалить", "callback_data": "del_dead_all_do"}],
-        [{"text": "❌ Отмена", "callback_data": "servers"}],
-    ]}
+def get_del_dead_all_confirm_screen(details, total_dead):
+    lines = []
+    for item in details or []:
+        sec = html.escape(str(item.get("section", "?")))
+        status = item.get("status")
+        total = int(item.get("total", 0))
+        dead = int(item.get("dead", 0))
+        skipped = int(item.get("skipped", 0))
+        if status == "empty":
+            lines.append(f"• <b>{sec}</b>: нет узлов")
+        elif status == "no_data":
+            lines.append(f"• <b>{sec}</b>: пропущено (нет данных Podkop)")
+        elif status == "dead":
+            lines.append(f"• <b>{sec}</b>: мёртвых <b>{dead}</b> из {total}")
+        else:
+            lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
+        if skipped and status != "no_data":
+            lines.append(f"   <i>не проверено: {skipped}</i>")
+
+    if total_dead:
+        text = (
+            "🧹 <b>Проверка завершена</b>\n\n"
+            + "\n".join(lines) +
+            f"\n\nБудет удалено узлов: <b>{total_dead}</b>.\n"
+            "После удаления Podkop перезапустится <b>один раз</b>.\n\n"
+            "Удалить?"
+        )
+        kb = {"inline_keyboard": [
+            [{"text": f"✅ Удалить {total_dead}", "callback_data": "del_dead_all_do"}],
+            [{"text": "❌ Отмена", "callback_data": "servers"}],
+        ]}
+    else:
+        text = (
+            "✅ <b>Мёртвых узлов не найдено</b>\n\n"
+            + "\n".join(lines) +
+            "\n\n<i>Podkop не изменялся.</i>"
+        )
+        kb = {"inline_keyboard": [
+            [{"text": "◀️ К секциям", "callback_data": "servers"}],
+            [{"text": "🏠 В главное меню", "callback_data": "home"}],
+        ]}
     return text, kb
 
 def get_system_metrics():
