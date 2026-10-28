@@ -101,13 +101,7 @@ def check_post_update_notification(token):
                     ver = vf.read().strip()
             except Exception:
                 pass
-            pkg_ver = ""
-            try:
-                with open("/etc/subparser_pkg_version", "r") as pf:
-                    pkg_ver = pf.read().strip()
-            except Exception:
-                pass
-            display_ver = f"{ver} (пакет {pkg_ver})" if pkg_ver else ver
+            display_ver = ver
             msg = f"🚀 <b>Сервис успешно обновлен до версии v{display_ver}!</b>\nВсе компоненты работают в штатном режиме."
             kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
             edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)

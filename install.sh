@@ -18,8 +18,8 @@ COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
 BRANCH_FILE="/etc/subparser_branch"
 
-# Локальный режим для портативного архива из GitHub Releases:
-#   tar -xzf subparser-1.0.0.tar.gz && cd subparser-1.0.0 && sh install.sh --local
+# Локальный режим для установки из локальной копии репозитория:
+#   sh install.sh --local
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 LOCAL_SRC=""
 for arg in "$@"; do
@@ -207,7 +207,6 @@ cp -f "${SRC_PATH}/usr/share/luci/menu.d/"* /usr/share/luci/menu.d/ 2>/dev/null 
 cp -f "${SRC_PATH}/usr/share/rpcd/acl.d/"* /usr/share/rpcd/acl.d/ 2>/dev/null || true
 cp -f "${SRC_PATH}/www/luci-static/resources/view/"* /www/luci-static/resources/view/ 2>/dev/null || true
 [ -f "${SRC_PATH}/etc/subparser_version" ] && cp -f "${SRC_PATH}/etc/subparser_version" /etc/subparser_version
-[ -f "${SRC_PATH}/etc/subparser_pkg_version" ] && cp -f "${SRC_PATH}/etc/subparser_pkg_version" /etc/subparser_pkg_version
 [ -d "${SRC_PATH}/etc/hotplug.d/uci" ] && cp -f "${SRC_PATH}/etc/hotplug.d/uci/"* /etc/hotplug.d/uci/ 2>/dev/null || true
 
 # Удаление устаревшего ACL-дубликата

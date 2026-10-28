@@ -781,14 +781,7 @@ def get_update_screen():
     except Exception:
         pass
 
-    local_pkg_ver = ""
-    try:
-        with open('/etc/subparser_pkg_version', 'r') as f:
-            local_pkg_ver = f.read().strip()
-    except Exception:
-        pass
-    local_display_ver = (f"{local_ver} (пакет {local_pkg_ver})"
-                         if local_pkg_ver else local_ver)
+    local_display_ver = local_ver
 
     remote_sha = ""
     remote_ver = local_ver

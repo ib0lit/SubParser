@@ -6,7 +6,6 @@
   <img src="https://img.shields.io/badge/sing--box-1.8+-E34F26?style=flat-square" alt="sing-box" />
   <img src="https://img.shields.io/badge/Telegram_Bot-Ready-24A1DE?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
   <img src="https://img.shields.io/badge/LuCI-Integrated-00D26A?style=flat-square" alt="LuCI" />
-  <img src="https://img.shields.io/badge/Package-v1.0.0-blueviolet?style=flat-square" alt="Package version" />
   <img src="https://img.shields.io/badge/Core-v2.1.9-informational?style=flat-square" alt="Core version" />
 </p>
 
@@ -31,7 +30,6 @@
 
 - [Быстрый старт](#быстрый-старт)
 - [Возможности](#возможности)
-- [Пакеты и портативный архив](#пакеты-и-портативный-архив)
 - [Slim-сборка sing-box](#slim-сборка-sing-box)
 - [Протестированные конфигурации](#протестированные-конфигурации)
 - [Структура проекта](#структура-проекта)
@@ -61,7 +59,7 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 
 ### Удаление
 
-Полное удаление пакета, фоновых служб, записей crontab и кэша веб-интерфейса:
+Полное удаление SubParser, фоновых служб, записей crontab и кэша веб-интерфейса:
 
 ```sh
 sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninstall.sh)"
@@ -164,77 +162,6 @@ SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit
 
 ---
 
-## Пакеты и портативный архив
-
-В релизах проекта публикуются три варианта установки. У пакета своя версия
-(`1.0.0`), а версия ядра парсера остаётся отдельной (`2.1.9`): пакет можно
-пересобирать и обновлять, не меняя версию ядра.
-
-| OpenWrt | Формат | Файл |
-| :--- | :--- | :--- |
-| 19.07 – 24.10 | `opkg` / IPK | `luci-app-subparser_1.0.0-1_all.ipk` |
-| 25.12+ | `apk` v3 | `luci-app-subparser-1.0.0-r1.apk` |
-| Любая версия | tar.gz + `install.sh` | `subparser-1.0.0.tar.gz` |
-
-<details>
-<summary><b>📦 IPK, APK, архив и особенности пакетной установки</b></summary>
-
-<br>
-
-### IPK (OpenWrt 19.07 – 24.10)
-
-```sh
-wget -O /tmp/luci-app-subparser.ipk \
-  https://github.com/ib0lit/SubParser/releases/download/v1.0.0/luci-app-subparser_1.0.0-1_all.ipk
-opkg install /tmp/luci-app-subparser.ipk
-```
-
-### APK (OpenWrt 25.12+)
-
-```sh
-wget -O /tmp/luci-app-subparser.apk \
-  https://github.com/ib0lit/SubParser/releases/download/v1.0.0/luci-app-subparser-1.0.0-r1.apk
-apk add --allow-untrusted /tmp/luci-app-subparser.apk
-```
-
-Пакеты пока не подписаны, поэтому для APK нужен `--allow-untrusted`.
-
-### Портативный архив (любая версия OpenWrt)
-
-Если пакетный менеджер недоступен или не хочется ставить пакет, можно
-распаковать архив прямо в `/tmp` и запустить локальный установщик:
-
-```sh
-cd /tmp
-wget -O subparser-1.0.0.tar.gz \
-  https://github.com/ib0lit/SubParser/releases/download/v1.0.0/subparser-1.0.0.tar.gz
-tar -xzf subparser-1.0.0.tar.gz
-cd subparser-1.0.0
-sh install.sh --local
-```
-
-Скрипт разложит файлы из `root/`, сохранит существующий
-`/etc/config/subparser` и настроит службы так же, как обычная установка.
-Для удаления используйте `uninstall.sh` из архива.
-
-### Что даёт пакетная установка
-
-* Автоматическая проверка и установка зависимостей (`python3`, `curl`, `ca-bundle`, `conntrack`, `luci-base`);
-* учёт установленных файлов: `opkg remove` / `apk del` удаляют пакет без ручной чистки;
-* `/etc/config/subparser` помечен как conffile и не перезаписывается при обновлении;
-* `postinst`/`postrm` включают, перезапускают и останавливают службы, обновляют cron и кэш LuCI;
-* одинаковые артефакты и `SHA256SUMS` для каждого релиза — удобно проверять целостность и ставить на несколько роутеров.
-
-> [!IMPORTANT]
-> Пакет **не обновляет себя сам** из git. Если вы ставили пакет,
-> обновляйтесь через `opkg upgrade` / `apk upgrade` (или новым файлом из релиза).
-> Если вы ставили скриптом или архивом — используйте `update.sh`.
-> Смешивать эти способы не рекомендуется.
-
-</details>
-
----
-
 ## Slim-сборка sing-box
 
 `sing-box-extended` из фида занимает **~95 МБ** и на устройствах с флеш-памятью 128 МБ и меньше
@@ -299,7 +226,7 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
 <br>
 
 ```text
-├── install.sh                                # Скрипт чистой установки (--local для архива)
+├── install.sh                                # Скрипт чистой установки
 ├── update.sh                                 # Скрипт бесшовного обновления
 ├── uninstall.sh                              # Скрипт полного удаления
 └── root/                                     # Системная структура файлов
@@ -309,8 +236,7 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
     │   ├── init.d/
     │   │   ├── subparser                     # Служба управления cron-задачами
     │   │   └── subparser-bot                 # procd-демон Telegram-бота
-    │   ├── subparser_version                 # Версия ядра/парсера (2.1.9)
-    │   └── subparser_pkg_version             # Версия пакета/релиза (1.0.0)
+    │   └── subparser_version                 # Версия ядра/парсера (2.1.9)
     ├── usr/
     │   ├── bin/
     │   │   ├── subparser.py                  # Ядро парсинга и стресс-тестирования
