@@ -168,7 +168,6 @@ set_default_uci "override_fp" "as_is"
 set_default_uci "allow_insecure_tls" "0"
 set_default_uci "allow_local_diag" "0"
 set_default_uci "allow_unstable_fallback" "0"
-set_default_uci "cache_ttl" "900"
 set_default_uci "stress_top" "40"
 set_default_uci "hysteresis_pct" "10"
 set_default_uci "update_branch" "$BRANCH"
@@ -180,6 +179,7 @@ fi
 
 uci -q delete subparser.settings.cron_interval 2>/dev/null || true
 uci -q delete subparser.settings.custom_interval_min 2>/dev/null || true
+uci -q delete subparser.settings.cache_ttl 2>/dev/null || true
 uci commit subparser
 
 # Конфиг содержит токен бота — не даём читать его всем подряд.
