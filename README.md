@@ -316,10 +316,6 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
 ├── install.sh                                # Скрипт чистой установки (--local для архива)
 ├── update.sh                                 # Скрипт бесшовного обновления
 ├── uninstall.sh                              # Скрипт полного удаления
-├── build_ipk.sh                              # Сборка IPK для opkg
-├── build_apk.sh                              # Сборка APK v3 для OpenWrt 25.12+
-├── build_archive.sh                          # Сборка портативного tar.gz
-├── build-release.sh                          # Сборка всех артефактов + SHA256SUMS
 └── root/                                     # Системная структура файлов
     ├── etc/
     │   ├── config/subparser                  # Конфигурационный файл UCI
