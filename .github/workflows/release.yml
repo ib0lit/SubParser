@@ -2,6 +2,8 @@ name: Build and Release Packages
 
 on:
   push:
+    branches:
+      - beta
     tags:
       - 'v*'
   workflow_dispatch:
@@ -28,6 +30,10 @@ jobs:
           python -m py_compile root/usr/bin/subparser.py root/usr/bin/subparser-bot.py root/usr/lib/subparser/*.py
           python -m unittest discover -s tests -v
 
+      - name: Set beta package release
+        if: github.ref == 'refs/heads/beta'
+        run: echo "PKG_RELEASE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
       - name: Build packages and portable archive
         run: |
           chmod +x build-release.sh build_ipk.sh build_apk.sh build_archive.sh
@@ -36,7 +42,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: subparser-packages
+          name: subparser-packages-${{ github.ref_name }}
           path: dist/*
           if-no-files-found: error
 
