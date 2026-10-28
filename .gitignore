@@ -7,3 +7,12 @@ __pycache__/
 SubParser.zip
 # Build artifacts
 dist/
+
+# Developer-only files (kept locally, not published)
+CONTRIBUTING.md
+build-release.sh
+build_ipk.sh
+build_apk.sh
+build_archive.sh
+tests/
+.github/
