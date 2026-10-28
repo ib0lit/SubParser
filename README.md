@@ -59,19 +59,29 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 
 ```
 
-### 🧪 Обновление с ветки `old`
+### 📦 Установка и обновление с ветки `old`
 
-Любую ветку можно установить или обновить без изменения `main`:
+Ветка `old` — архив предыдущей реализации парсера **v2.1.9**
+(VLESS/Trojan/Hysteria2, без Shadowsocks и SOCKS). Скрипты в ней по умолчанию работают
+с самой веткой `old`:
 
 ```sh
-SUBPARSER_BRANCH=old sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
+# установка версии из ветки old
+sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/install.sh)"
+
+# обновление в пределах ветки old
+sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
 ```
 
-Ветка `old` — архив предыдущей реализации парсера (VLESS/Trojan/Hysteria2, без Shadowsocks и SOCKS).
+Вернуться на актуальную версию:
+
+```sh
+SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+```
 
 Выбранная ветка сохраняется в `/etc/subparser_branch`, а в LuCI её можно указать в поле
-**«Ветка GitHub для обновлений»**. Чтобы вернуться на стабильную ветку, укажите `main`.
-Настройки, подписки и токен бота при обновлении не перезаписываются.
+**«Ветка GitHub для обновлений»**. Настройки, подписки и токен бота при обновлении
+не перезаписываются.
 
 ### 🗑 Удаление
 
