@@ -127,7 +127,6 @@ cp -f "${SRC_PATH}/usr/share/luci/menu.d/"* /usr/share/luci/menu.d/
 cp -f "${SRC_PATH}/usr/share/rpcd/acl.d/"* /usr/share/rpcd/acl.d/
 cp -f "${SRC_PATH}/www/luci-static/resources/view/"* /www/luci-static/resources/view/
 [ -f "${SRC_PATH}/etc/subparser_version" ] && cp -f "${SRC_PATH}/etc/subparser_version" /etc/subparser_version
-[ -f "${SRC_PATH}/etc/subparser_pkg_version" ] && cp -f "${SRC_PATH}/etc/subparser_pkg_version" /etc/subparser_pkg_version
 [ -d "${SRC_PATH}/etc/hotplug.d/uci" ] && cp -f "${SRC_PATH}/etc/hotplug.d/uci/"* /etc/hotplug.d/uci/ 2>/dev/null || true
 
 # Удаление устаревшего ACL-дубликата
