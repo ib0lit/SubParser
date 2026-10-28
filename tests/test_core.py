@@ -502,6 +502,15 @@ class TestUAAndConfig(unittest.TestCase):
         import ssl
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
 
+    def test_uci_list_parsing_accepts_spaces_and_commas(self):
+        with mock.patch.object(config, "get_uci_val", return_value="vless, trojan  ss"):
+            self.assertEqual(config.get_uci_list("exclude_protocols"),
+                             ["vless", "trojan", "ss"])
+
+    def test_protocol_alias_normalization(self):
+        self.assertEqual(config.normalize_protocol("HY2"), "hysteria2")
+        self.assertEqual(config.normalize_protocol("VLESS"), "vless")
+
 
 class TestPodkopSections(unittest.TestCase):
     """Podkop хранит секции как `config section` — их нельзя искать по `=podkop`."""

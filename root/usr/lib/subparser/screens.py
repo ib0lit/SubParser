@@ -4,7 +4,8 @@ import html
 import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from .config import get_ssl_ctx, get_uci_val, UA_CHOICES, LOG_FILE
+from .config import (get_ssl_ctx, get_uci_val, get_uci_list, normalize_protocol,
+                     UA_CHOICES, PROTOCOL_CHOICES, LOG_FILE)
 from .subs import get_subscriptions, resolve_subscription
 from .podkop import (
     get_all_podkop_sections, get_podkop_links, get_node_name,
@@ -59,6 +60,10 @@ def get_parser_menu_screen(prompt_custom_ping=False):
     }
     fp_badge = fp_map.get(fp_val, fp_val.capitalize())
 
+    excluded_protocols = [normalize_protocol(p) for p in get_uci_list("exclude_protocols") if p]
+    proto_badge = ("Все" if not excluded_protocols
+                   else ", ".join(PROTOCOL_CHOICES.get(p, p) for p in excluded_protocols))
+
     if per_sec:
         sec_parts = []
         for s in all_secs:
@@ -88,6 +93,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         f"⏰ <b>Расписание:</b> <code>{cron_badge}</code>\n"
         f"🇷🇺 <b>Фильтр RU:</b> <code>{ru_badge}</code>\n"
         f"🎭 <b>uTLS Fingerprint:</b> <code>{fp_badge}</code>\n"
+        f"🚫 <b>Исключённые протоколы:</b> <code>{html.escape(proto_badge)}</code>\n"
     )
     if prompt_custom_ping:
         text += "\n✏️ <b>Введите желаемый пинг (например, 280) в ответном сообщении:</b>"
@@ -115,6 +121,9 @@ def get_parser_menu_screen(prompt_custom_ping=False):
                 {"text": f"🎭 Фингерпринт: {fp_badge}", "callback_data": "menu_fp"}
             ],
             [
+                {"text": f"🚫 Протоколы: {proto_badge}", "callback_data": "menu_proto"}
+            ],
+            [
                 {"text": "🚀 Запустить парсер сейчас", "callback_data": "run_parser"}
             ],
             [
@@ -123,6 +132,35 @@ def get_parser_menu_screen(prompt_custom_ping=False):
             ]
         ]
     }
+    return text, kb
+
+
+def get_protocols_menu_screen():
+    excluded = {normalize_protocol(p) for p in get_uci_list("exclude_protocols") if p}
+    kb = {"inline_keyboard": []}
+    row = []
+    for proto, label in PROTOCOL_CHOICES.items():
+        mark = "🚫" if proto in excluded else "✅"
+        row.append({"text": f"{mark} {label}", "callback_data": f"tgl_proto:{proto}"})
+        if len(row) == 2:
+            kb["inline_keyboard"].append(row)
+            row = []
+    if row:
+        kb["inline_keyboard"].append(row)
+    if excluded:
+        kb["inline_keyboard"].append([
+            {"text": "🧹 Сбросить фильтр", "callback_data": "reset_proto"}
+        ])
+    kb["inline_keyboard"].append([{"text": "◀ Назад в параметры", "callback_data": "parser_menu"}])
+
+    text = (
+        "🚫 <b>Фильтр протоколов</b>\n\n"
+        "Отмеченные протоколы исключаются сразу после загрузки подписки — "
+        "они не попадают ни в дедупликацию, ни на первый этап скрининга.\n\n"
+        f"Исключено сейчас: <b>{len(excluded)}</b>"
+    )
+    if not excluded:
+        text += "\n\n<i>Фильтр пуст: обрабатываются все протоколы.</i>"
     return text, kb
 
 

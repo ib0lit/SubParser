@@ -132,6 +132,17 @@ return view.extend({
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
 
+        var excludedProtos = s.taboption('general', form.DynamicList, 'exclude_protocols', _('Исключаемые протоколы'));
+        excludedProtos.description = _('Узлы выбранных протоколов отбрасываются сразу после загрузки подписки — до дедупликации и первого этапа скрининга.');
+        excludedProtos.value('vless', 'VLESS');
+        excludedProtos.value('trojan', 'Trojan');
+        excludedProtos.value('hysteria2', 'Hysteria2 (hy2)');
+        excludedProtos.value('ss', 'Shadowsocks (ss)');
+        excludedProtos.value('socks4', 'SOCKS4');
+        excludedProtos.value('socks4a', 'SOCKS4a');
+        excludedProtos.value('socks5', 'SOCKS5');
+        excludedProtos.default = [];
+
         var fpHint = s.taboption('general', form.DummyValue, '_fp_hint');
         fpHint.rawhtml = true;
         fpHint.render = function() {

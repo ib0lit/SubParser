@@ -15,6 +15,7 @@ from subparser.config import (
     CONFIG_NAME, UA_CHOICES, check_credentials,
     get_uci_val, set_uci_val, get_user_state, set_user_state,
     clear_user_state, get_bot_offset, set_bot_offset,
+    get_uci_list, set_uci_list, PROTOCOL_CHOICES, normalize_protocol,
 )
 from subparser.telegram import tg_api, send_msg, edit_msg, delete_msg, answer_callback
 from subparser.subs import (
@@ -34,6 +35,7 @@ from subparser.screens import (
     get_clients_screen, get_device_action_screen, get_dmesg_screen,
     get_log_screen, get_logread_screen, get_main_screen, get_update_screen,
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
+    get_protocols_menu_screen,
     get_sections_menu_screen, get_sections_selector_screen,
     get_del_dead_all_confirm_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
@@ -292,6 +294,35 @@ def main():
                         set_uci_val("override_fp", target_fp)
                         answer_callback(token, cb_id, f"Установлен: {target_fp}")
                         t, kb = get_fp_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "menu_proto":
+                        clear_user_state(user_id)
+                        answer_callback(token, cb_id)
+                        t, kb = get_protocols_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("tgl_proto:"):
+                        proto = normalize_protocol(data.split("tgl_proto:", 1)[1])
+                        if proto not in PROTOCOL_CHOICES:
+                            answer_callback(token, cb_id, "Неизвестный протокол")
+                            continue
+                        excluded = {normalize_protocol(p) for p in get_uci_list("exclude_protocols")}
+                        if proto in excluded:
+                            excluded.discard(proto)
+                            answer_callback(token, cb_id, f"{PROTOCOL_CHOICES[proto]}: включён")
+                        else:
+                            excluded.add(proto)
+                            answer_callback(token, cb_id, f"{PROTOCOL_CHOICES[proto]}: исключён")
+                        ordered = [p for p in PROTOCOL_CHOICES if p in excluded]
+                        set_uci_list("exclude_protocols", ordered)
+                        t, kb = get_protocols_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "reset_proto":
+                        set_uci_list("exclude_protocols", [])
+                        answer_callback(token, cb_id, "Фильтр протоколов сброшен")
+                        t, kb = get_protocols_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "check_update":

@@ -74,6 +74,47 @@ def get_uci_bool(opt, default=False):
     return val in ("1", "true", "yes", "on")
 
 
+# Протоколы, которые умеет разбирать парсер. Ключи используются в UCI-списке
+# `exclude_protocols`, значения — в меню бота и LuCI.
+PROTOCOL_CHOICES = {
+    "vless": "VLESS",
+    "trojan": "Trojan",
+    "hysteria2": "Hysteria2",
+    "ss": "Shadowsocks",
+    "socks4": "SOCKS4",
+    "socks4a": "SOCKS4a",
+    "socks5": "SOCKS5",
+}
+PROTOCOL_ALIASES = {"hy2": "hysteria2"}
+
+
+def normalize_protocol(name):
+    """Приводит схему ссылки/значение UCI к каноническому имени протокола."""
+    value = str(name or "").strip().lower()
+    return PROTOCOL_ALIASES.get(value, value)
+
+
+def get_uci_list(opt):
+    """Читает UCI-список (значения через пробел) в виде списка строк."""
+    raw = get_uci_val(opt, "")
+    return [item for item in raw.replace(",", " ").split() if item]
+
+
+def set_uci_list(opt, values):
+    """Полностью заменяет UCI-список значений."""
+    try:
+        subprocess.run(["uci", "-q", "delete", f"{CONFIG_NAME}.settings.{opt}"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for value in values:
+            subprocess.run(["uci", "add_list", f"{CONFIG_NAME}.settings.{opt}={value}"],
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["uci", "commit", CONFIG_NAME], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
 def check_credentials():
     token = get_uci_val("tg_bot_token")
     admin_id = get_uci_val("tg_chat_id")

@@ -24,7 +24,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, "/usr/lib")
 try:
-    from subparser.config import UA_MAP, make_ssl_context, get_uci_bool, read_json, write_json_atomic
+    from subparser.config import (UA_MAP, make_ssl_context, get_uci_bool,
+                                  read_json, write_json_atomic,
+                                  PROTOCOL_CHOICES, normalize_protocol, get_uci_list)
 except Exception:
     UA_MAP = {
         "v2rayN": "v2rayN/6.42",
@@ -66,6 +68,20 @@ except Exception:
             return True
         except Exception:
             return False
+
+    PROTOCOL_CHOICES = {
+        "vless": "VLESS", "trojan": "Trojan", "hysteria2": "Hysteria2",
+        "ss": "Shadowsocks", "socks4": "SOCKS4", "socks4a": "SOCKS4a",
+        "socks5": "SOCKS5",
+    }
+    PROTOCOL_ALIASES = {"hy2": "hysteria2"}
+
+    def normalize_protocol(name):
+        value = str(name or "").strip().lower()
+        return PROTOCOL_ALIASES.get(value, value)
+
+    def get_uci_list(opt):
+        return []
 
 try:
     from subparser.podkop import (capture_selection, restore_selection,
@@ -328,6 +344,33 @@ def get_uci(option, default=""):
         return out if out else default
     except Exception:
         return default
+
+
+def link_protocol(link):
+    """Каноническое имя протокола ссылки (hy2 -> hysteria2)."""
+    try:
+        return normalize_protocol(urllib.parse.urlsplit(link).scheme)
+    except Exception:
+        return ""
+
+
+def get_excluded_protocols():
+    """Протоколы из UCI-списка exclude_protocols."""
+    return {normalize_protocol(item) for item in get_uci_list("exclude_protocols") if item}
+
+
+def filter_excluded_protocols(links, excluded):
+    """Убирает ссылки исключённых протоколов до дедупликации и скрининга."""
+    if not excluded:
+        return list(links), 0
+    kept = []
+    dropped = 0
+    for link in links:
+        if link_protocol(link) in excluded:
+            dropped += 1
+        else:
+            kept.append(link)
+    return kept, dropped
 
 def get_real_podkop_sections() -> list:
     # Единая реализация с ботом и LuCI: подкоп хранит секции как `config section`,
@@ -1087,6 +1130,7 @@ def _run():
     max_jitter = int(get_uci("max_jitter", "150"))
     filter_ru = get_uci("filter_ru", "1") == "1"
     per_section_config = get_uci("per_section_config", "0") == "1"
+    excluded_protocols = get_excluded_protocols()
 
     section_targets = {}
     if per_section_config:
@@ -1119,16 +1163,25 @@ def _run():
             except Exception as e:
                 print(f"[!] Подписка не загружена: {e}")
 
+    excluded_total = 0
     for s in active_subs:
         for l in sub_results.get(s.get("name", "Подписка"), []):
+            if link_protocol(l) in excluded_protocols:
+                excluded_total += 1
+                continue
             fp = link_fingerprint(l)
             if fp not in seen:
                 seen.add(fp)
                 all_links.append(l)
 
+    if excluded_total:
+        print(f"[i] Исключено фильтром протоколов: {excluded_total}")
+
     if not all_links:
-        msg = "🔴 <b>SubParser Alert</b>\nБоевые узлы не найдены ни в одной подписке. Конфигурация Podkop не изменена."
-        print("Ошибка: Боевые узлы не найдены ни в одной подписке.")
+        extra = f" Исключено фильтром протоколов: {excluded_total}." if excluded_total else ""
+        msg = ("🔴 <b>SubParser Alert</b>\nБоевые узлы не найдены ни в одной подписке."
+               f"{extra} Конфигурация Podkop не изменена.")
+        print(f"Ошибка: Боевые узлы не найдены ни в одной подписке.{extra}")
         send_telegram_notify(msg)
         return
 

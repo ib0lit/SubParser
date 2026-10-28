@@ -121,5 +121,39 @@ class TestLinkHelpers(unittest.TestCase):
         self.assertEqual(out["server_port"], 8389)
 
 
+class TestProtocolFilter(unittest.TestCase):
+    def test_link_protocol_normalizes_hy2(self):
+        self.assertEqual(parser.link_protocol("hy2://pass@example.com:443#HY2"), "hysteria2")
+
+    def test_link_protocol_case_insensitive(self):
+        self.assertEqual(parser.link_protocol("VLESS://uuid@example.com:443#N"), "vless")
+
+    def test_filter_excluded_protocols(self):
+        links = [
+            "vless://uuid@example.com:443#V",
+            "trojan://pass@example.com:443#T",
+            "hysteria2://pass@example.com:443#H",
+            "hy2://pass@example.com:8443#H2",
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388#SS",
+            "socks5://example.com:1080#S5",
+        ]
+        kept, dropped = parser.filter_excluded_protocols(
+            links, {"vless", "hysteria2", "socks5"})
+        self.assertEqual(dropped, 4)
+        self.assertEqual(kept, [links[1], links[4]])
+
+    def test_filter_empty_keeps_all(self):
+        links = ["vless://uuid@example.com:443#V", "trojan://pass@example.com:443#T"]
+        kept, dropped = parser.filter_excluded_protocols(links, set())
+        self.assertEqual(dropped, 0)
+        self.assertEqual(kept, links)
+
+    def test_unknown_protocol_not_filtered(self):
+        kept, dropped = parser.filter_excluded_protocols(
+            ["vmess://abc@example.com:443#X"], {"vless"})
+        self.assertEqual(dropped, 0)
+        self.assertEqual(len(kept), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
