@@ -4,7 +4,10 @@ START=95
 STOP=10
 
 CRON_TMP="/tmp/cron_subparser.tmp"
-WATCHDOG_CRON="*/5 * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1"
+# Watchdog запускается раз в минуту всегда, пока включён сам сервис:
+# фактическую частоту задаёт настройка watchdog_interval внутри скрипта,
+# поэтому её изменение не требует перезаписи crontab.
+WATCHDOG_CRON="* * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1"
 
 get_cron_schedule() {
     local interval="$1"
