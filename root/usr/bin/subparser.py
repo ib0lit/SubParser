@@ -10,7 +10,6 @@ import gzip
 import base64
 import gc
 import fcntl
-import hashlib
 import html
 import shutil
 import subprocess
@@ -88,7 +87,6 @@ CONFIG_NAME = "subparser"
 SINGBOX_BIN = "/usr/bin/sing-box"
 TEST_URL = "https://www.gstatic.com/generate_204"
 LOCK_FILE = "/var/run/subparser.lock"
-CACHE_FILE = "/tmp/subparser_cache.json"
 METRICS_FILE = "/tmp/subparser_metrics.json"
 LAST_SELECTED_FILE = "/tmp/subparser_last_selected.json"
 PODKOP_BACKUP = "/tmp/subparser_podkop.bak"
@@ -1153,153 +1151,131 @@ def _run():
         send_telegram_notify(msg)
         return
 
-    # Кэш результатов: не гоняем один и тот же пул при каждом запуске.
-    cache_key = hashlib.sha256(json.dumps({
-        "links": sorted(link_fingerprint(l) for l in tag_map.values()),
-        "threshold": threshold,
-        "max_jitter": max_jitter,
-        "fp": get_uci("override_fp", "as_is"),
-    }, sort_keys=True).encode("utf-8")).hexdigest()
-    cache_ttl = int(get_uci("cache_ttl", "900") or 900)
-    cached = read_json(CACHE_FILE, {})
     results = {}
-    use_cache = ("--no-cache" not in sys.argv and cache_ttl > 0 and
-                 isinstance(cached, dict) and cached.get("key") == cache_key and
-                 (time.time() - float(cached.get("ts", 0) or 0)) < cache_ttl and
-                 isinstance(cached.get("results"), dict))
 
     proc = None
     tmp_cfg = None
-    if not use_cache:
-        gc.collect()
-        outbounds.append({"type": "direct", "tag": "direct"})
-        cfg = {
-            "log": {"level": "error"},
-            "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}"}},
-            "route": {"auto_detect_interface": True},
-            "outbounds": outbounds,
-        }
+    gc.collect()
+    outbounds.append({"type": "direct", "tag": "direct"})
+    cfg = {
+        "log": {"level": "error"},
+        "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}"}},
+        "route": {"auto_detect_interface": True},
+        "outbounds": outbounds,
+    }
 
-        tmp_cfg = f"/tmp/subparser_test_{api_port}.json"
-        with open(tmp_cfg, "w") as f:
-            json.dump(cfg, f, indent=2)
+    tmp_cfg = f"/tmp/subparser_test_{api_port}.json"
+    with open(tmp_cfg, "w") as f:
+        json.dump(cfg, f, indent=2)
 
-        check = subprocess.run([SINGBOX_BIN, "check", "-c", tmp_cfg],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if check.returncode != 0:
-            print(f"[!] sing-box check: {check.stderr.strip()[:300]}")
-            # Не прерываемся: некоторые сборки sing-box не поддерживают check.
+    check = subprocess.run([SINGBOX_BIN, "check", "-c", tmp_cfg],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if check.returncode != 0:
+        print(f"[!] sing-box check: {check.stderr.strip()[:300]}")
+        # Не прерываемся: некоторые сборки sing-box не поддерживают check.
 
-        env_sb = os.environ.copy()
-        env_sb["ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER"] = "true"
-        env_sb["ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM"] = "true"
-        proc = subprocess.Popen([SINGBOX_BIN, "run", "-c", tmp_cfg],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env_sb)
-        time.sleep(2.5)
-        if proc.poll() is not None:
-            _, err = proc.communicate()
-            print(f"\n[ОШИБКА] sing-box не запустился на порту {api_port}:\n{err}")
-            if tmp_cfg and os.path.exists(tmp_cfg):
-                os.remove(tmp_cfg)
-            send_telegram_notify(
-                f"🔴 <b>SubParser Alert</b>\nНе удалось запустить тестовое ядро sing-box.\n"
-                f"<code>{html.escape(str(err)[:400])}</code>"
-            )
-            return
+    env_sb = os.environ.copy()
+    env_sb["ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER"] = "true"
+    env_sb["ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM"] = "true"
+    proc = subprocess.Popen([SINGBOX_BIN, "run", "-c", tmp_cfg],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env_sb)
+    time.sleep(2.5)
+    if proc.poll() is not None:
+        _, err = proc.communicate()
+        print(f"\n[ОШИБКА] sing-box не запустился на порту {api_port}:\n{err}")
+        if tmp_cfg and os.path.exists(tmp_cfg):
+            os.remove(tmp_cfg)
+        send_telegram_notify(
+            f"🔴 <b>SubParser Alert</b>\nНе удалось запустить тестовое ядро sing-box.\n"
+            f"<code>{html.escape(str(err)[:400])}</code>"
+        )
+        return
 
-        try:
-            update_live_progress("🔍 [2/4] Скрининг узлов...",
-                                 f"Проверка отклика {len(tag_map)} серверов...")
-            print(f"\n[Этап 1/2] Быстрый скрининг {len(tag_map)} узлов...")
-            stage1_candidates = []
+    try:
+        update_live_progress("🔍 [2/4] Скрининг узлов...",
+                             f"Проверка отклика {len(tag_map)} серверов...")
+        print(f"\n[Этап 1/2] Быстрый скрининг {len(tag_map)} узлов...")
+        stage1_candidates = []
 
-            def quick_probe(item):
-                tag, link = item
+        def quick_probe(item):
+            tag, link = item
+            delays = []
+            for i in range(2):
+                d = query_node_delay(api_port, tag, timeout_ms=3000)
+                if d > 0:
+                    delays.append(d)
+                if i == 0:
+                    time.sleep(0.1)
+            return tag, link, delays
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
+            for future in as_completed(futures):
+                tag, link, delays = future.result()
+                name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
+                if delays:
+                    min_d = min(delays)
+                    if not (filter_ru and is_ru_node(name)):
+                        stage1_candidates.append((tag, link, min_d))
+                    results[link] = {"delay": min_d, "jitter": 0, "is_stable": False,
+                                     "success_count": len(delays), "name": name}
+                    print(f"[ALIVE] {min_d:4d} ms | {name}")
+                else:
+                    print(f"[DEAD ]         | {name}")
+
+        print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
+        if stage1_candidates:
+            stress_top = int(get_uci("stress_top", "40") or 0)
+            stage1_candidates.sort(key=lambda c: c[2])
+            if stress_top > 0:
+                stage1_candidates = stage1_candidates[:stress_top]
+
+            update_live_progress("📊 [3/4] Тест стабильности...",
+                                 f"Анализ джиттера ({len(stage1_candidates)} канд.)...")
+            print(f"\n[Этап 2/2] Анализ стабильности (5 замеров, медиана, топ-{len(stage1_candidates)})...")
+
+            def detailed_probe(cand):
+                tag, link, _ = cand
                 delays = []
-                for i in range(2):
+                for _i in range(5):
                     d = query_node_delay(api_port, tag, timeout_ms=3000)
                     if d > 0:
                         delays.append(d)
-                    if i == 0:
-                        time.sleep(0.1)
-                return tag, link, delays
+                    if _i < 4:
+                        time.sleep(0.15)
+                name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
+                succ = len(delays)
+                if succ < 4:
+                    return link, name, -1, -1, False, succ
+                delays.sort()
+                med = delays[succ // 2]
+                trimmed = delays[:-1]
+                eff_j = max(trimmed) - min(trimmed)
+                worst = delays[-1] - med
+                is_st = (eff_j <= max(max_jitter, int(med * 0.50)) and
+                         worst <= max(350, int(med * 2.0)))
+                return link, name, med, eff_j, is_st, succ
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(quick_probe, item) for item in tag_map.items()]
+                futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
                 for future in as_completed(futures):
-                    tag, link, delays = future.result()
-                    name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                    if delays:
-                        min_d = min(delays)
-                        if not (filter_ru and is_ru_node(name)):
-                            stage1_candidates.append((tag, link, min_d))
-                        results[link] = {"delay": min_d, "jitter": 0, "is_stable": False,
-                                         "success_count": len(delays), "name": name}
-                        print(f"[ALIVE] {min_d:4d} ms | {name}")
+                    link, name, med_d, diff, is_stable, succ = future.result()
+                    if med_d > 0:
+                        results[link] = {"delay": med_d, "jitter": diff, "is_stable": is_stable,
+                                         "success_count": succ, "name": name}
+                        label = f"[STABLE {succ}/5]" if is_stable else f"[UNSTABLE {succ}/5]"
+                        print(f"{label} {med_d:4d} ms (±{diff:3d}) | {name}")
                     else:
-                        print(f"[DEAD ]         | {name}")
-
-            print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
-            if stage1_candidates:
-                stress_top = int(get_uci("stress_top", "40") or 0)
-                stage1_candidates.sort(key=lambda c: c[2])
-                if stress_top > 0:
-                    stage1_candidates = stage1_candidates[:stress_top]
-
-                update_live_progress("📊 [3/4] Тест стабильности...",
-                                     f"Анализ джиттера ({len(stage1_candidates)} канд.)...")
-                print(f"\n[Этап 2/2] Анализ стабильности (5 замеров, медиана, топ-{len(stage1_candidates)})...")
-
-                def detailed_probe(cand):
-                    tag, link, _ = cand
-                    delays = []
-                    for _i in range(5):
-                        d = query_node_delay(api_port, tag, timeout_ms=3000)
-                        if d > 0:
-                            delays.append(d)
-                        if _i < 4:
-                            time.sleep(0.15)
-                    name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or tag
-                    succ = len(delays)
-                    if succ < 4:
-                        return link, name, -1, -1, False, succ
-                    delays.sort()
-                    med = delays[succ // 2]
-                    trimmed = delays[:-1]
-                    eff_j = max(trimmed) - min(trimmed)
-                    worst = delays[-1] - med
-                    is_st = (eff_j <= max(max_jitter, int(med * 0.50)) and
-                             worst <= max(350, int(med * 2.0)))
-                    return link, name, med, eff_j, is_st, succ
-
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    futures = [executor.submit(detailed_probe, cand) for cand in stage1_candidates]
-                    for future in as_completed(futures):
-                        link, name, med_d, diff, is_stable, succ = future.result()
-                        if med_d > 0:
-                            results[link] = {"delay": med_d, "jitter": diff, "is_stable": is_stable,
-                                             "success_count": succ, "name": name}
-                            label = f"[STABLE {succ}/5]" if is_stable else f"[UNSTABLE {succ}/5]"
-                            print(f"{label} {med_d:4d} ms (±{diff:3d}) | {name}")
-                        else:
-                            print(f"[DROPPED {succ}/5] | {name}")
-        finally:
-            if proc is not None:
-                proc.terminate()
-                try:
-                    proc.wait(1.5)
-                except Exception:
-                    proc.kill()
-            if tmp_cfg and os.path.exists(tmp_cfg):
-                os.remove(tmp_cfg)
-
-        if any(v.get("delay", 0) > 0 for v in results.values()):
-            write_json_atomic(CACHE_FILE, {"key": cache_key, "ts": time.time(), "results": results})
-        else:
-            print("[i] Ни один узел не ответил — результаты не кэшируем.")
-    else:
-        results = {k: v for k, v in cached.get("results", {}).items() if k in tag_map.values()}
-        print(f"\n[i] Использован кэш результатов ({int(time.time() - float(cached.get('ts', 0)))} с назад).")
+                        print(f"[DROPPED {succ}/5] | {name}")
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(1.5)
+            except Exception:
+                proc.kill()
+        if tmp_cfg and os.path.exists(tmp_cfg):
+            os.remove(tmp_cfg)
 
     # Отбор: стабильные, затем расширенный порог, и только по явному разрешению — живые.
     stable = [l for l, i in results.items()
@@ -1343,7 +1319,6 @@ def _run():
         "alive": len([1 for i in results.values() if i.get("delay", 0) > 0]),
         "stable": len(stable),
         "selected": len(best),
-        "used_cache": use_cache,
         "threshold": threshold,
     })
 
@@ -1487,7 +1462,6 @@ def _run():
         f"• Отобрано узлов: <b>{len(best)}</b> из {len(all_links)}\n"
         f"• Порог задержки: &lt; {threshold} ms\n"
         f"• Время анализа: <code>{elapsed}с</code>\n"
-        f"• Кэш: <code>{'да' if use_cache else 'нет'}</code>\n\n"
         f"📁 <b>Секции Podkop:</b>\n{sections_block}\n\n"
         f"⚡ <b>Топ-3 быстрых узла:</b>\n{top_text}\n\n"
         f"🏷 <b>Протоколы:</b> <code>{proto_str}</code>"

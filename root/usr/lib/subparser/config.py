@@ -11,7 +11,6 @@ LOCK_FILE = "/var/run/subparser.lock"
 SINGBOX_BIN = "/usr/bin/sing-box"
 LOG_FILE = "/tmp/subparser_sync.log"
 STATE_FILE = "/tmp/subparser_bot_state.json"
-CACHE_FILE = "/tmp/subparser_cache.json"
 METRICS_FILE = "/tmp/subparser_metrics.json"
 TEST_URL_GLOBAL = "https://www.gstatic.com/generate_204"
 
