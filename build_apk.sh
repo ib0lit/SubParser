@@ -78,6 +78,12 @@ chmod 755 \
     "$DATA_DIR/etc/hotplug.d/uci/99-subparser"
 chmod 600 "$DATA_DIR/etc/config/subparser"
 
+# apk mkpkg сохраняет uid/gid файлов, поэтому в пакете должен быть root:root.
+if ! chown -R 0:0 "$DATA_DIR" 2>/dev/null; then
+    echo "[!] Не удалось выставить владельца root:root. Запустите сборку через Docker или от root." >&2
+    exit 1
+fi
+
 # apk-tools 3 хранит conffiles в служебных файлах пакета (так делает и
 # OpenWrt package-pack.mk). Благодаря этому конфиг не затирается при upgrade.
 mkdir -p "$DATA_DIR/lib/apk/packages"

@@ -25,6 +25,16 @@ case "$PKG_RELEASE" in
         ;;
 esac
 
+# Файлы пакета должны принадлежать root:root. GNU tar умеет переопределять
+# владельца при упаковке; BusyBox tar — нет, поэтому в контейнере делаем chown.
+TAR_OWNER=""
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+    TAR_OWNER="--owner=0 --group=0 --numeric-owner"
+elif [ "$(id -u)" != "0" ]; then
+    echo "[!] Нужен root или GNU tar, иначе в пакет попадут чужие uid/gid." >&2
+    exit 1
+fi
+
 [ -d "$ROOT_DIR" ] || {
     echo "[!] Не найден каталог $ROOT_DIR (запускайте скрипт из корня репозитория)." >&2
     exit 1
@@ -58,6 +68,9 @@ chmod 755 \
     "$DATA_DIR/etc/hotplug.d/uci/99-subparser"
 # В конфиге хранится токен Telegram-бота.
 chmod 600 "$DATA_DIR/etc/config/subparser"
+if [ "$(id -u)" = "0" ]; then
+    chown -R 0:0 "$DATA_DIR"
+fi
 
 # Фиксируем mtime, чтобы повторная сборка из того же коммита давала тот же пакет.
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
@@ -157,12 +170,15 @@ exit 0
 EOF
 
 chmod 755 "$CONTROL_DIR/postinst" "$CONTROL_DIR/prerm"
+if [ "$(id -u)" = "0" ]; then
+    chown -R 0:0 "$CONTROL_DIR"
+fi
 find "$CONTROL_DIR" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} + 2>/dev/null || true
 printf '2.0\n' > "$BUILD_DIR/debian-binary"
 
 echo "[*] Упаковка tar-архивов..."
-( cd "$DATA_DIR" && tar -czf "$BUILD_DIR/data.tar.gz" . )
-( cd "$CONTROL_DIR" && tar -czf "$BUILD_DIR/control.tar.gz" . )
+( cd "$DATA_DIR" && tar $TAR_OWNER -czf "$BUILD_DIR/data.tar.gz" . )
+( cd "$CONTROL_DIR" && tar $TAR_OWNER -czf "$BUILD_DIR/control.tar.gz" . )
 
 # Внешний tar тоже должен содержать фиксированные mtime.
 touch -h -d "@$SOURCE_DATE_EPOCH" \
@@ -171,7 +187,7 @@ touch -h -d "@$SOURCE_DATE_EPOCH" \
 IPK_FILE="$OUT_DIR/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
 OUT_ABS="$(cd "$OUT_DIR" && pwd)"
 echo "[*] Сборка итогового пакета: $IPK_FILE"
-( cd "$BUILD_DIR" && tar -czf "$OUT_ABS/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" \
+( cd "$BUILD_DIR" && tar $TAR_OWNER -czf "$OUT_ABS/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" \
     debian-binary control.tar.gz data.tar.gz )
 
 echo "[OK] IPK создан: $IPK_FILE ($(du -h "$IPK_FILE" | awk '{print $1}'))"
