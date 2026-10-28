@@ -7,7 +7,19 @@
   <img src="https://img.shields.io/badge/Telegram_Bot-Ready-24A1DE?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
   <img src="https://img.shields.io/badge/LuCI-Integrated-00D26A?style=flat-square" alt="LuCI" />
   <img src="https://img.shields.io/badge/Version-v2.1.9-blueviolet?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/Branch-old-lightgrey?style=flat-square" alt="Branch" />
 </p>
+
+> [!IMPORTANT]
+> ### 📦 Архивная ветка `old`
+>
+> Это ветка предыдущей реализации SubParser **v2.1.9**. Парсер здесь поддерживает только
+> **VLESS, Trojan и Hysteria2** — Shadowsocks и SOCKS в ней нет.
+>
+> Актуальная версия развивается в ветке
+> [`main`](https://github.com/ib0lit/SubParser/tree/main): там добавлены Shadowsocks
+> (SIP002 и legacy), SOCKS4/4a/5, slim-сборка sing-box и текущие исправления.
+> Все команды установки и обновления ниже используют файлы именно этой ветки (`old`).
 
 > [!CAUTION]
 > ### ⚠ Дисклеймер
@@ -44,7 +56,7 @@
 Подключитесь к роутеру по SSH и выполните команду чистой установки:
 
 ```sh
-sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/install.sh)"
+sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/install.sh)"
 
 ```
 
@@ -52,11 +64,24 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/instal
 
 ### 🔄 Обновление
 
-Обновление до актуальной версии без потери подписок, настроек и токенов:
+Обновление версии `old` без потери подписок, настроек и токенов:
 
 ```sh
-sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
 
+```
+
+Ветку можно указать явно — она сохраняется в `/etc/subparser_branch` и доступна в LuCI
+в поле **«Ветка GitHub для обновлений»**:
+
+```sh
+SUBPARSER_BRANCH=old sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
+```
+
+Чтобы перейти на актуальную версию, укажите ветку `main`:
+
+```sh
+SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
 ```
 
 ### 🗑 Удаление
@@ -64,7 +89,7 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 Полное удаление пакета, фоновых служб, записей crontab и кэша веб-интерфейса:
 
 ```sh
-sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninstall.sh)"
+sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/uninstall.sh)"
 
 ```
 
@@ -115,7 +140,7 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/uninst
   - *Быстрый скрининг*: первичная проверка доступности серверов подписок через HTTP 204.
   - *Тест стабильности (Jitter Analysis)*: серия из 5 контрольных замеров для отсева серверов с потерями пакетов и нестабильной задержкой.
 
-* **Поддерживаемые протоколы**: VLESS (Reality, TLS, WebSocket, gRPC, XHTTP), Trojan, Hysteria2.
+* **Поддерживаемые протоколы**: VLESS (Reality, TLS, WebSocket, gRPC, XHTTP), Trojan, Hysteria2. Shadowsocks и SOCKS появились только в ветке [`main`](https://github.com/ib0lit/SubParser/tree/main).
 * **Интеллектуальный фильтр RU**: автоматическое отсеивание серверов для обхода белых списков (отключается в настройках).
 * **Лимитирование пула (Top-N)**: Возможность ограничить выгрузку в Podkop только Топ-3/5/10 самых стабильных серверов или выгрузка полного пула, прошедшего проверку.
 * **Защита от потери связи (Smart Fallback)**: если ни один сервер не уложился в заданный в настройках пинг, выбираются наименее медленные серверы; если пул проверенных серверов полностью недоступен (менее 2 рабочих), конфигурация Podkop остаётся нетронутой с алертом администратору в боте.
