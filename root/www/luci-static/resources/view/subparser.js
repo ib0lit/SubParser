@@ -246,11 +246,6 @@ return view.extend({
             sec_m.depends('per_section_config', '1');
         });
 
-        o = s.taboption('advanced', form.Value, 'cache_ttl', _('Время жизни кэша результатов (сек)'));
-        o.datatype = 'uinteger';
-        o.default = '900';
-        o.description = _('Повторный запуск с теми же подписками и настройками возьмёт результаты из кэша. 0 — отключить кэш.');
-
         o = s.taboption('advanced', form.Value, 'stress_top', _('Сколько кандидатов проверять на стабильность'));
         o.datatype = 'uinteger';
         o.default = '40';
