@@ -221,11 +221,17 @@ for SEC in $SECTION_LIST; do
     fi
 done
 
-# Все секции живы: сбрасываем состояние и сообщаем о восстановлении, если был сбой.
+# Все секции живы. О восстановлении сообщаем только если авария была
+# подтверждена и watchdog уже запускал экстренный отбор узлов: одиночный
+# кратковременный провал замера не повод для уведомления.
 if [ -z "$FAILED_SECTIONS" ]; then
     if [ -f "$STATE_FILE" ]; then
-        notify "✅ <b>Проксирование Podkop восстановлено</b>
+        PREV_STAGE=$(sed -n '1p' "$STATE_FILE" 2>/dev/null)
+        case "$PREV_STAGE" in ''|*[!0-9]*) PREV_STAGE=0 ;; esac
+        if [ "$PREV_STAGE" -ge 2 ]; then
+            notify "✅ <b>Проксирование Podkop восстановлено</b>
 Все секции снова отвечают на тестовый запрос."
+        fi
         rm -f "$STATE_FILE" 2>/dev/null
     fi
     exit 0
