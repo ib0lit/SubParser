@@ -642,10 +642,180 @@ def sanitize_link_fp(link: str, target_fp: str) -> str:
     except Exception:
         return link
 
+# Методы Shadowsocks, которые понимает sing-box. Неизвестный метод ломает
+# `sing-box check` целиком, поэтому список проверяем заранее.
+SS_METHODS = {
+    "none",
+    "aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
+    "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305",
+    "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+    "aes-128-ctr", "aes-192-ctr", "aes-256-ctr",
+    "rc4-md5",
+    "aes-128-cfb", "aes-192-cfb", "aes-256-cfb",
+    "chacha20-ietf", "xchacha20",
+}
+
+# Схемы SOCKS и соответствующие им значения `version` в sing-box.
+SOCKS_SCHEMES = {"socks4": "4", "socks4a": "4a", "socks5": "5"}
+
+
+def _split_host_port(host_port: str, default_port: int = 443):
+    host_port = (host_port or "").strip()
+    if host_port.startswith("["):
+        host, _, rest = host_port.partition("]")
+        port_str = rest[1:] if rest.startswith(":") else ""
+        return host[1:], int(port_str) if port_str.isdigit() else default_port
+    if ":" in host_port:
+        host, _, port_str = host_port.rpartition(":")
+        if port_str.isdigit():
+            return host, int(port_str)
+        return host_port, default_port
+    return host_port, default_port
+
+
+def _b64_decode_text(value: str) -> str:
+    value = urllib.parse.unquote(value).strip()
+    value = value.replace("-", "+").replace("_", "/")
+    value += "=" * ((4 - len(value) % 4) % 4)
+    try:
+        return base64.b64decode(value).decode("utf-8")
+    except Exception:
+        raise ValueError("invalid base64")
+
+
+def _ss_credentials(parsed):
+    """Разбирает ss-ссылку в (method, password, host, port).
+
+    Поддержаны SIP002 (`ss://userinfo@host:port`, userinfo — base64 или
+    `method:password`) и legacy (`ss://base64(method:password@host:port)`).
+    """
+    netloc = parsed.netloc
+
+    if "@" in netloc:
+        userinfo, host_port = netloc.rsplit("@", 1)
+        userinfo = urllib.parse.unquote(userinfo)
+        if ":" in userinfo:
+            method, password = userinfo.split(":", 1)
+        else:
+            decoded_userinfo = _b64_decode_text(userinfo)
+            if ":" not in decoded_userinfo:
+                raise ValueError("invalid ss userinfo")
+            method, password = decoded_userinfo.split(":", 1)
+        server, port = _split_host_port(host_port)
+    else:
+        token = netloc + parsed.path
+        try:
+            decoded = _b64_decode_text(token)
+        except ValueError:
+            decoded = ""
+        if "@" not in decoded:
+            token = token.rstrip("/")
+            decoded = _b64_decode_text(token) if token else ""
+        if "@" not in decoded:
+            raise ValueError("invalid ss link")
+        userinfo, host_port = decoded.rsplit("@", 1)
+        method, password = userinfo.split(":", 1)
+        server, port = _split_host_port(host_port)
+
+    return (method or "").strip().lower(), password or "", server, port
+
+
+# Символы, которые Podkop разбирает в userinfo без base64.
+_SS_PLAIN_CHARS = set("abcdefghijklmnopqrstuvwxyz"
+                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                      "0123456789._~-:")
+
+
+def _normalize_ss_link(parsed):
+    """Приводит ss-ссылку к виду SIP002, который понимает Podkop.
+
+    Podkop умеет только `ss://userinfo@host:port`, поэтому legacy-ссылки
+    (`ss://base64(method:password@host:port)`) нужно переписать, иначе он
+    примет base64-строку за хост. `+` в base64 экранируем: Podkop сначала
+    делает url-decode и иначе превратит его в пробел.
+    """
+    method, password, server, port = _ss_credentials(parsed)
+    userinfo = f"{method}:{password}"
+    if all(c in _SS_PLAIN_CHARS for c in userinfo):
+        encoded = userinfo
+    else:
+        encoded = base64.b64encode(userinfo.encode("utf-8")).decode("ascii")
+        encoded = encoded.replace("+", "%2B")
+    host = f"[{server}]" if ":" in server else server
+    return f"ss://{encoded}@{host}:{port}"
+
+
+def _parse_ss_outbound(parsed, query, tag: str) -> dict:
+    """Shadowsocks: SIP002 (`ss://userinfo@host:port`) и legacy (`ss://base64`)."""
+    method, password, server, port = _ss_credentials(parsed)
+    password = password or ""
+    if not server or not password:
+        raise ValueError("invalid ss link")
+    if method not in SS_METHODS:
+        raise ValueError(f"unsupported shadowsocks method: {method}")
+
+    plugin = query.get("plugin", [""])[0]
+    if plugin:
+        # Podkop не умеет пробрасывать plugin/plugin_opts в outbound, поэтому
+        # такой узел после записи в Podkop просто не заработает.
+        raise ValueError(f"ss plugin is not supported: {plugin.split(';')[0]}")
+
+    if method.startswith("2022-blake3"):
+        try:
+            key = base64.b64decode(password + "=" * (-len(password) % 4))
+        except Exception:
+            key = b""
+        if len(key) not in (16, 32):
+            raise ValueError("invalid 2022-blake3 key")
+
+    return {
+        "type": "shadowsocks",
+        "tag": tag,
+        "server": server,
+        "server_port": port,
+        "method": method,
+        "password": password,
+    }
+
+
+def _parse_socks_outbound(parsed, tag: str) -> dict:
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    userinfo = ""
+    if "@" in netloc:
+        userinfo, host_port = netloc.rsplit("@", 1)
+        userinfo = urllib.parse.unquote(userinfo)
+    else:
+        host_port = netloc
+    server, port = _split_host_port(host_port, default_port=1080)
+    if not server:
+        raise ValueError("invalid socks link")
+
+    outbound = {
+        "type": "socks",
+        "tag": tag,
+        "server": server,
+        "server_port": port,
+        "version": SOCKS_SCHEMES[scheme],
+    }
+    if SOCKS_SCHEMES[scheme] == "5" and userinfo:
+        username, _, password = userinfo.partition(":")
+        outbound["username"] = username
+        if password:
+            outbound["password"] = password
+    return outbound
+
+
 def parse_link_to_singbox_outbound(link: str, tag: str) -> dict:
     parsed = urllib.parse.urlsplit(link)
     scheme = parsed.scheme.lower()
     query = urllib.parse.parse_qs(parsed.query)
+
+    if scheme == "ss":
+        return _parse_ss_outbound(parsed, query, tag)
+    if scheme in SOCKS_SCHEMES:
+        return _parse_socks_outbound(parsed, tag)
 
     netloc = parsed.netloc
     auth, host_port = "", netloc
@@ -749,6 +919,16 @@ def sanitize_podkop_link(link: str) -> str:
         parsed = urllib.parse.urlsplit(link)
         scheme = parsed.scheme.lower()
         query = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+
+        # Shadowsocks приводим к SIP002 (иначе Podkop примет base64 за хост),
+        # SOCKS не трогаем: им не нужны type/security.
+        if scheme == "ss":
+            try:
+                return _normalize_ss_link(parsed)
+            except Exception:
+                return link
+        if scheme in SOCKS_SCHEMES:
+            return link
 
         if scheme in ("hysteria2", "hy2"):
             # Для Hysteria 2 нельзя ставить security=none или type=tcp!
