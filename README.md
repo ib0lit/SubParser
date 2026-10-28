@@ -71,17 +71,17 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.
 
 ```
 
-Ветку можно указать явно — она сохраняется в `/etc/subparser_branch` и доступна в LuCI
-в поле **«Ветка GitHub для обновлений»**:
+Ветку можно переопределить переменной `SUBPARSER_BRANCH` (по умолчанию скрипты этой
+ветки используют `old`):
 
 ```sh
 SUBPARSER_BRANCH=old sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
 ```
 
-Чтобы перейти на актуальную версию, укажите ветку `main`:
+Чтобы перейти на актуальную версию с Shadowsocks и SOCKS, укажите ветку `main`:
 
 ```sh
-SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/update.sh)"
 ```
 
 ### 🗑 Удаление

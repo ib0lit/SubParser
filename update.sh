@@ -3,7 +3,9 @@ set -e
 
 REPO_USER="ib0lit"
 REPO_NAME="SubParser"
-BRANCH="main"
+# Эта ветка — архивная (old), поэтому по умолчанию обновляем именно её.
+# Переопределить можно так: SUBPARSER_BRANCH=main sh update.sh
+BRANCH="${SUBPARSER_BRANCH:-old}"
 COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
 
