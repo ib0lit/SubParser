@@ -210,7 +210,7 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
 | **Устройство** | Xiaomi Mi Router AX3000T |
 | **Версия OpenWrt** | `24.10.8` (r29233-443ec4032a), `25.12.5` (r33051-f5dae5ece4) |
 | **Podkop & LuCI App** | `v0.7.22` |
-| **sing-box (extended)** | `1.14.0-extended-2.7.0`, `1.14.1-extended-2.7.1`, `1.14.1-extended-2.7.2` |
+| **sing-box (extended)** | `1.14.0-extended-2.7.0`, `1.14.1-extended-2.7.1`, `1.14.1-extended-2.7.2`, `1.14.3-extended-slim` |
 
 > 💬 Если вы протестировали SubParser на другом роутере, архитектуре или версии OpenWrt — напишите об этом в ветке **«Репорты работоспособности»** [Telegram-чата](https://t.me/SubParserChat).
 
