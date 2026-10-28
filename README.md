@@ -88,7 +88,7 @@ SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit
 
 ### 🗑 Удаление
 
-Полное удаление пакета, фоновых служб, записей crontab и кэша веб-интерфейса:
+Полное удаление SubParser, фоновых служб, записей crontab и кэша веб-интерфейса:
 
 ```sh
 sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/old/uninstall.sh)"
