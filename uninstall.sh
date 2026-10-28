@@ -25,7 +25,7 @@ rm -f /usr/bin/subparser*
 rm -rf /usr/lib/subparser
 rm -f /etc/init.d/subparser /etc/init.d/subparser-bot
 rm -f /etc/hotplug.d/uci/99-subparser 2>/dev/null || true
-rm -f /etc/subparser_version /etc/subparser_commit /etc/subparser_branch 2>/dev/null || true
+rm -f /etc/subparser_version /etc/subparser_pkg_version /etc/subparser_commit /etc/subparser_branch 2>/dev/null || true
 rm -rf /etc/subparser 2>/dev/null || true
 rm -f /tmp/subparser* /tmp/bot_blocked_macs.json /tmp/subparser_bot_state.json 2>/dev/null || true
 rm -f /var/run/subparser.lock 2>/dev/null || true

@@ -781,6 +781,15 @@ def get_update_screen():
     except Exception:
         pass
 
+    local_pkg_ver = ""
+    try:
+        with open('/etc/subparser_pkg_version', 'r') as f:
+            local_pkg_ver = f.read().strip()
+    except Exception:
+        pass
+    local_display_ver = (f"{local_ver} (пакет {local_pkg_ver})"
+                         if local_pkg_ver else local_ver)
+
     remote_sha = ""
     remote_ver = local_ver
     changelog = "Описание недоступно"
@@ -819,7 +828,7 @@ def get_update_screen():
         text = (
             f"🎉 <b>Доступно обновление!</b>\n\n"
             f"• Ветка: <code>{html.escape(branch)}</code>\n"
-            f"• Текущая версия: <code>v{local_ver}</code> (<code>{short_local_sha}</code>)\n"
+            f"• Текущая версия: <code>v{local_display_ver}</code> (<code>{short_local_sha}</code>)\n"
             f"• Новая версия: <code>v{remote_ver}</code> (<code>{short_remote_sha}</code>)\n\n"
             f"📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"
         )
@@ -828,7 +837,7 @@ def get_update_screen():
             [{"text": "◀ Главное меню", "callback_data": "home"}]
         ]}
     else:
-        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>v{local_ver}</code>"
+        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>v{local_display_ver}</code>"
         if local_sha:
             text += f" (<code>{local_sha[:7]}</code>)"
         kb = {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}

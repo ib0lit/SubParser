@@ -18,6 +18,21 @@ COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
 BRANCH_FILE="/etc/subparser_branch"
 
+# Локальный режим для портативного архива из GitHub Releases:
+#   tar -xzf subparser-1.0.0.tar.gz && cd subparser-1.0.0 && sh install.sh --local
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LOCAL_SRC=""
+for arg in "$@"; do
+    case "$arg" in
+        --local|--local-archive) LOCAL_SRC="$SCRIPT_DIR/root" ;;
+    esac
+done
+
+if [ -n "$LOCAL_SRC" ] && [ ! -d "$LOCAL_SRC" ]; then
+    echo "[!] Не найден локальный каталог root рядом со скриптом: $LOCAL_SRC"
+    exit 1
+fi
+
 echo "=== [1/7] Проверка дискового пространства устройства ==="
 
 MIN_KB_WITHOUT_PYTHON=20480  # ~20 MB
@@ -94,36 +109,46 @@ fi
 
 set -e
 
-echo "=== [3/7] Загрузка компонентов с GitHub (ветка: ${BRANCH}) ==="
-TMP_DIR="/tmp/subparser-install"
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR"
+TMP_DIR=""
+SRC_PATH=""
+if [ -n "$LOCAL_SRC" ]; then
+    echo "=== [3/7] Локальная установка из портативного архива ==="
+    SRC_PATH="$LOCAL_SRC"
+else
+    echo "=== [3/7] Загрузка компонентов с GitHub (ветка: ${BRANCH}) ==="
+    TMP_DIR="/tmp/subparser-install"
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
 
-TARBALL="${TMP_DIR}/subparser.tar.gz"
-if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
-        "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
-        -o "$TARBALL"; then
-    echo "[!] Не удалось скачать архив ветки ${BRANCH}."
-    rm -rf "$TMP_DIR"
-    exit 1
+    TARBALL="${TMP_DIR}/subparser.tar.gz"
+    if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
+            "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
+            -o "$TARBALL"; then
+        echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    if ! gzip -t "$TARBALL" 2>/dev/null; then
+        echo "[!] Архив повреждён (проверка gzip не пройдена). Установка отменена."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
+        echo "[!] Не удалось распаковать архив. Установка отменена."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    # GitHub заменяет слэши в имени ветки при формировании каталога архива,
+    # поэтому ищем распакованный корень, а не собираем имя вручную.
+    SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
+    SRC_PATH="${SRC_PARENT}/root"
 fi
-if ! gzip -t "$TARBALL" 2>/dev/null; then
-    echo "[!] Архив повреждён (проверка gzip не пройдена). Установка отменена."
-    rm -rf "$TMP_DIR"
-    exit 1
-fi
-if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
-    echo "[!] Не удалось распаковать архив. Установка отменена."
-    rm -rf "$TMP_DIR"
-    exit 1
-fi
-# GitHub заменяет слэши в имени ветки при формировании каталога архива,
-# поэтому ищем распакованный корень, а не собираем имя вручную.
-SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
-SRC_PATH="${SRC_PARENT}/root"
+
 if [ ! -d "$SRC_PATH" ]; then
-    echo "[!] В архиве не найдена ожидаемая структура ${SRC_PATH}."
-    rm -rf "$TMP_DIR"
+    echo "[!] Не найдена ожидаемая структура ${SRC_PATH}."
+    if [ -n "$TMP_DIR" ]; then
+        rm -rf "$TMP_DIR"
+    fi
     exit 1
 fi
 
@@ -182,6 +207,7 @@ cp -f "${SRC_PATH}/usr/share/luci/menu.d/"* /usr/share/luci/menu.d/ 2>/dev/null 
 cp -f "${SRC_PATH}/usr/share/rpcd/acl.d/"* /usr/share/rpcd/acl.d/ 2>/dev/null || true
 cp -f "${SRC_PATH}/www/luci-static/resources/view/"* /www/luci-static/resources/view/ 2>/dev/null || true
 [ -f "${SRC_PATH}/etc/subparser_version" ] && cp -f "${SRC_PATH}/etc/subparser_version" /etc/subparser_version
+[ -f "${SRC_PATH}/etc/subparser_pkg_version" ] && cp -f "${SRC_PATH}/etc/subparser_pkg_version" /etc/subparser_pkg_version
 [ -d "${SRC_PATH}/etc/hotplug.d/uci" ] && cp -f "${SRC_PATH}/etc/hotplug.d/uci/"* /etc/hotplug.d/uci/ 2>/dev/null || true
 
 # Удаление устаревшего ACL-дубликата
@@ -202,10 +228,18 @@ crontab "$CRON_TMP" 2>/dev/null || true
 rm -f "$CRON_TMP"
 /etc/init.d/cron restart >/dev/null 2>&1 || true
 
-REMOTE_SHA=$(curl -sL \
-  -H "User-Agent: OpenWrt-SubParser-Installer" \
-  "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${BRANCH}" \
-  | grep '"sha":' | head -n 1 | cut -d '"' -f 4)
+REMOTE_SHA=""
+if [ -n "$LOCAL_SRC" ]; then
+    # В архив кладётся COMMIT, чтобы update.sh понимал, какая ревизия стоит.
+    if [ -f "$SCRIPT_DIR/COMMIT" ]; then
+        REMOTE_SHA=$(cat "$SCRIPT_DIR/COMMIT" 2>/dev/null || true)
+    fi
+else
+    REMOTE_SHA=$(curl -sL \
+      -H "User-Agent: OpenWrt-SubParser-Installer" \
+      "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${BRANCH}" \
+      | grep '"sha":' | head -n 1 | cut -d '"' -f 4 || true)
+fi
 
 if [ -n "$REMOTE_SHA" ]; then
     echo "$REMOTE_SHA" > "$COMMIT_FILE"
@@ -224,7 +258,9 @@ echo "=== [7/7] Обновление кэша LuCI ==="
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 
-rm -rf "$TMP_DIR"
+if [ -n "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+fi
 
 echo ""
 echo "=========================================================="
