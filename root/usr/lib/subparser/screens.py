@@ -50,7 +50,7 @@ def get_main_screen():
         "<li>посмотреть статус, логи и обновить Podkop.</li>"
         "</ul></details>"
         "<p>Выберите необходимое действие:</p>",
-        "🎛 <b>Панель управления SubParser & OpenWrt</b>\n\n"
+        "🎛 <b>Панель управления SubParser &amp; OpenWrt</b>\n\n"
         f"• <b>Подписки:</b> <code>{subs_count}</code>\n"
         f"• <b>Секции Podkop:</b> <code>{sections_str}</code>\n"
         f"• <b>Podkop:</b> {podkop_badge}\n"
