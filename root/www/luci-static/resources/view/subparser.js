@@ -91,6 +91,7 @@ return view.extend({
         s.tab('telegram', _('💬 Telegram'));
         s.tab('subscriptions', _('📋 Подписки'));
         s.tab('advanced', _('🛠 Дополнительно'));
+        s.tab('watchdog', _('🛡 Watchdog'));
 
         var o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
         o.rmempty = false;
@@ -131,6 +132,17 @@ return view.extend({
 
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
+
+        var excludedProtos = s.taboption('general', form.DynamicList, 'exclude_protocols', _('Исключаемые протоколы'));
+        excludedProtos.description = _('Узлы выбранных протоколов отбрасываются сразу после загрузки подписки — до дедупликации и первого этапа скрининга.');
+        excludedProtos.value('vless', 'VLESS');
+        excludedProtos.value('trojan', 'Trojan');
+        excludedProtos.value('hysteria2', 'Hysteria2 (hy2)');
+        excludedProtos.value('ss', 'Shadowsocks (ss)');
+        excludedProtos.value('socks4', 'SOCKS4');
+        excludedProtos.value('socks4a', 'SOCKS4a');
+        excludedProtos.value('socks5', 'SOCKS5');
+        excludedProtos.default = [];
 
         var fpHint = s.taboption('general', form.DummyValue, '_fp_hint');
         fpHint.rawhtml = true;
@@ -281,6 +293,124 @@ return view.extend({
         });
         o.default = 'main';
         o.description = _('Список веток загружается из GitHub. Для стабильной работы выберите <code>main</code>.');
+
+        var wdHint = s.taboption('watchdog', form.DummyValue, '_watchdog_hint');
+        wdHint.rawhtml = true;
+        wdHint.render = function() {
+            return E('details', {
+                'class': 'alert-message info',
+                'style': 'margin-bottom: 12px; font-size: 13px; cursor: pointer;'
+            }, [
+                E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Как работает watchdog (нажмите, чтобы раскрыть)')),
+                E('div', { 'style': 'margin: 10px 0 0 10px; line-height: 1.5; cursor: default;' }, [
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Watchdog периодически проверяет процесс <b>sing-box</b> и доступность секций Podkop через Clash API. Если процесс отсутствует — перезапускает Podkop. Если секции не отвечают — после подтверждения запускает внеочередной отбор узлов.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Защита от ложных тревог: ожидание запуска ядра, grace-период после старта, проверка WAN, повторный замер группы и кулдаун между экстренными отборами.')),
+                    E('p', { 'style': 'margin: 0; color: #ffb300;' }, _('⚠️ Значения по умолчанию соответствуют штатному поведению. Меняйте их только если понимаете последствия: слишком маленькие таймауты дают ложные срабатывания, слишком большие — замедляют реакцию.'))
+                ])
+            ]);
+        };
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_enabled', _('Включить watchdog'));
+        o.default = '1';
+        o.rmempty = false;
+        o.description = _('Полностью включает или выключает watchdog. При выключении скрипт не выполняет никаких проверок и не отправляет уведомлений, даже если сервис SubParser включён.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_interval', _('Интервал проверки (минут)'));
+        o.datatype = 'range(1, 60)';
+        o.default = '5';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Как часто проверять Podkop. Меньшие значения ускоряют реакцию, но чаще нагружают API и CPU. Значение 5 минут — как раньше.');
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_sub_limits', _('Следить за лимитами подписок'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Предупреждать в Telegram, если до окончания подписки осталось меньше 3 дней или израсходовано более 90% трафика. Не чаще одного раза в сутки на подписку.');
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_wan_check', _('Не лечить Podkop при падении WAN'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Перед перезапуском и экстренным отбором проверять интернет через независимые DNS. Если WAN недоступен, watchdog ничего не делает. Отключайте только если ping блокируется вашим провайдером.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_down_wait', _('Ожидание запуска sing-box (сек)'));
+        o.datatype = 'range(2, 600)';
+        o.default = '10';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Сколько ждать появления процесса sing-box, прежде чем считать, что Podkop упал. Проверка идёт каждые 2 секунды. Увеличьте на медленном роутере или при большом конфиге Podkop, чтобы не ловить момент перезапуска.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_restart_wait', _('Ожидание после перезапуска Podkop (сек)'));
+        o.datatype = 'range(2, 600)';
+        o.default = '15';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Сколько ждать подъёма sing-box после принудительного перезапуска Podkop. На слабых устройствах с большим числом секций и узлов имеет смысл увеличить до 60–120 секунд.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_young_sec', _('Grace-период после старта ядра (сек)'));
+        o.datatype = 'range(0, 3600)';
+        o.default = '35';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Не проверять секции, пока sing-box работает меньше указанного времени. Защищает от ложных срабатываний во время старта и перезапуска Podkop. Для больших конфигов рекомендуется 90–180 секунд.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_cooldown', _('Кулдаун между экстренными отборами (минут)'));
+        o.datatype = 'range(1, 10080)';
+        o.default = '45';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('После первого зафиксированного сбоя watchdog ждёт указанное время, прежде чем подтвердить аварию и запустить внеочередной отбор. Защита от лишних запусков парсера. По умолчанию 45 минут.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_http_timeout', _('Таймаут запросов к Clash API (сек)'));
+        o.datatype = 'range(2, 60)';
+        o.default = '8';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Сколько ждать ответа Clash API при проверке задержки секции. На перегруженном роутере можно увеличить.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_test_timeout', _('Таймаут проверки узла (мс)'));
+        o.datatype = 'range(500, 30000)';
+        o.default = '4000';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Лимит на один тестовый запрос через выбранный узел. Слишком маленькое значение даёт ложные «сбои» на медленных, но живых узлах.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_group_timeout', _('Таймаут теста всей группы (мс)'));
+        o.datatype = 'range(500, 30000)';
+        o.default = '3000';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Лимит на принудительный тест urltest-группы, который выполняется перед повторным замером. Больше узлов в секции — больше времени нужно.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_group_retry', _('Пауза перед повторным замером (сек)'));
+        o.datatype = 'range(0, 60)';
+        o.default = '3';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Сколько ждать после принудительного теста группы, прежде чем повторить замер. Даёт urltest время переключиться на живой узел.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_test_url', _('URL для проверки секций'));
+        o.placeholder = 'https://www.gstatic.com/generate_204';
+        o.default = 'https://www.gstatic.com/generate_204';
+        o.rmempty = true;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Адрес, который должен отвечать кодом 204. Смените, если ваши узлы блокируют Google или конкретный домен: иначе watchdog будет считать секции мёртвыми.');
+
+        o = s.taboption('watchdog', form.Value, 'watchdog_max_run', _('Максимальное время проверки (сек)'));
+        o.datatype = 'range(30, 3600)';
+        o.default = '600';
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Предохранитель для больших конфигураций: если проверка всех секций не уложилась в это время, она прерывается без выводов о сбое и без экстренного отбора.');
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_restart_podkop', _('Перезапускать Podkop при падении sing-box'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Если процесс sing-box пропал, перезапускать службу Podkop. При выключении watchdog только пришлёт уведомление.');
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_emergency', _('Запускать экстренный отбор при подтверждённом сбое'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('После подтверждённой аварии запускать subparser.py --force для внеочередного отбора узлов. При выключении watchdog ограничится уведомлением.');
+
+        o = s.taboption('watchdog', form.Flag, 'watchdog_notify_recovery', _('Сообщать о восстановлении'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_enabled', '1');
+        o.description = _('Отправлять в Telegram сообщения «Podkop восстановлен» и «Проксирование Podkop восстановлено». Уведомления о сбоях остаются включёнными.');
 
         o = s.taboption('telegram', form.Value, 'tg_bot_token', _('Telegram Bot Token'));
         o.placeholder = '123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ';

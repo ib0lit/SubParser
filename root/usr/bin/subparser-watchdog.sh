@@ -1,13 +1,73 @@
 #!/bin/sh
-# SubParser watchdog: следит за Podkop и при длительной аварии запускает
-# внеочередной отбор узлов. Скрипт не удаляет lock-файл парсера: блокировку
-# держит flock внутри subparser.py.
+# SubParser watchdog: следит за Podkop и при длительном сбое запускает
+# внеочередной отбор узлов. Все пороги настраиваются в LuCI на вкладке
+# «Watchdog»; значения по умолчанию повторяют прежнее поведение.
+# Скрипт не удаляет lock-файл парсера: блокировку держит flock внутри
+# subparser.py.
 
-ENABLED=$(uci -q get subparser.settings.enabled)
-[ "$ENABLED" = "1" ] || exit 0
+# Чтение настройки с запасным значением по умолчанию.
+cfg() {
+    _wd_cfg=$(uci -q get "subparser.settings.$1")
+    [ -n "$_wd_cfg" ] || _wd_cfg="$2"
+    printf '%s' "$_wd_cfg"
+}
+
+# Приведение числа к диапазону: значение, дефолт, минимум, максимум.
+num() {
+    _wd_num="$1"
+    case "$_wd_num" in ''|*[!0-9]*) _wd_num="$2" ;; esac
+    [ "$_wd_num" -lt "$3" ] && _wd_num="$3"
+    [ "$_wd_num" -gt "$4" ] && _wd_num="$4"
+    printf '%s' "$_wd_num"
+}
+
+[ "$(cfg enabled 0)" = "1" ] || exit 0
+[ "$(cfg watchdog_enabled 1)" = "1" ] || exit 0
+
+# Podkop может быть выключен намеренно — тогда это не авария.
+[ "$(uci -q get podkop.settings.enabled)" = "0" ] && exit 0
 
 LOCK_FILE="/var/run/subparser.lock"
+WD_LOCK="/var/run/subparser-watchdog.lock"
 STATE_FILE="/tmp/subparser_watchdog.state"
+LAST_RUN_FILE="/tmp/subparser_watchdog.last"
+DOWN_FILE="/tmp/subparser_watchdog.down"
+
+# Собственный lock: долгая проверка не должна накладываться на следующий запуск.
+if command -v flock >/dev/null 2>&1; then
+    exec 8>"$WD_LOCK"
+    flock -n 8 2>/dev/null || exit 0
+fi
+
+# Cron запускает скрипт каждую минуту, а фактическую частоту задаёт
+# watchdog_interval. Так настройка применяется без перезаписи crontab.
+INTERVAL=$(num "$(cfg watchdog_interval 5)" 5 1 60)
+NOW=$(date +%s)
+if [ -f "$LAST_RUN_FILE" ]; then
+    LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null)
+    case "$LAST_RUN" in ''|*[!0-9]*) LAST_RUN=0 ;; esac
+    if [ "$LAST_RUN" -gt 0 ] && [ $((NOW - LAST_RUN)) -ge 0 ] &&
+       [ $((NOW - LAST_RUN)) -lt $((INTERVAL * 60)) ]; then
+        exit 0
+    fi
+fi
+printf '%s\n' "$NOW" > "$LAST_RUN_FILE"
+
+DOWN_WAIT=$(num "$(cfg watchdog_down_wait 10)" 10 2 600)
+RESTART_WAIT=$(num "$(cfg watchdog_restart_wait 15)" 15 2 600)
+YOUNG_SEC=$(num "$(cfg watchdog_young_sec 35)" 35 0 3600)
+COOLDOWN_MIN=$(num "$(cfg watchdog_cooldown 45)" 45 1 10080)
+HTTP_TIMEOUT=$(num "$(cfg watchdog_http_timeout 8)" 8 2 60)
+TEST_TIMEOUT=$(num "$(cfg watchdog_test_timeout 4000)" 4000 500 30000)
+GROUP_TIMEOUT=$(num "$(cfg watchdog_group_timeout 3000)" 3000 500 30000)
+GROUP_RETRY=$(num "$(cfg watchdog_group_retry 3)" 3 0 60)
+MAX_RUN=$(num "$(cfg watchdog_max_run 600)" 600 30 3600)
+WAN_CHECK=$(cfg watchdog_wan_check 1)
+RESTART_PODKOP=$(cfg watchdog_restart_podkop 1)
+EMERGENCY=$(cfg watchdog_emergency 1)
+NOTIFY_RECOVERY=$(cfg watchdog_notify_recovery 1)
+SUB_LIMITS=$(cfg watchdog_sub_limits 1)
+TEST_URL_RAW=$(cfg watchdog_test_url "https://www.gstatic.com/generate_204")
 
 # Парсер или синхронизация уже работают — не вмешиваемся. Проверяем именно
 # flock, а не факт существования файла (файл остаётся после завершения).
@@ -99,26 +159,53 @@ except Exception:
     pass
 PYEOF
 }
-check_sub_limits
+[ "$SUB_LIMITS" = "1" ] && check_sub_limits
 
 # --- Проверка процесса sing-box --------------------------------------------------
-SB_WAS_DOWN=0
+# Процесс может отсутствовать во время перезапуска Podkop или на медленном
+# роутере с большим конфигом, поэтому ждём появления, а не одну фиксированную паузу.
 if ! pidof sing-box >/dev/null 2>&1; then
-    sleep 10
-    if ! pidof sing-box >/dev/null 2>&1; then
-        check_wan_alive || exit 0
-        SB_WAS_DOWN=1
-        notify "🚨 <b>Внимание: Podkop упал!</b>
+    WAITED=0
+    while [ "$WAITED" -lt "$DOWN_WAIT" ]; do
+        sleep 2
+        WAITED=$((WAITED + 2))
+        pidof sing-box >/dev/null 2>&1 && exit 0
+    done
+
+    [ "$WAN_CHECK" = "1" ] && { check_wan_alive || exit 0; }
+
+    if [ ! -f "$DOWN_FILE" ]; then
+        : > "$DOWN_FILE"
+        if [ "$RESTART_PODKOP" = "1" ]; then
+            notify "🚨 <b>Внимание: Podkop упал!</b>
 Служба sing-box не активна. Перезапускаю Podkop..."
-        /etc/init.d/podkop restart >/dev/null 2>&1
-        sleep 15
+        else
+            notify "🚨 <b>Внимание: Podkop упал!</b>
+Служба sing-box не активна. Автоперезапуск отключён в настройках watchdog."
+        fi
+    fi
+    [ "$RESTART_PODKOP" = "1" ] || exit 0
+
+    /etc/init.d/podkop restart >/dev/null 2>&1
+    WAITED=0
+    while [ "$WAITED" -lt "$RESTART_WAIT" ]; do
+        sleep 2
+        WAITED=$((WAITED + 2))
         if pidof sing-box >/dev/null 2>&1; then
-            notify "✅ <b>Podkop восстановлен</b>
+            rm -f "$DOWN_FILE" 2>/dev/null
+            [ "$NOTIFY_RECOVERY" = "1" ] && notify "✅ <b>Podkop восстановлен</b>
 Служба sing-box снова запущена."
             exit 0
         fi
-        exit 0
-    fi
+    done
+    exit 0
+fi
+
+# Процесс поднялся сам (procd, пользователь, LuCI) — снимаем отметку аварии.
+if [ -f "$DOWN_FILE" ]; then
+    rm -f "$DOWN_FILE" 2>/dev/null
+    [ "$NOTIFY_RECOVERY" = "1" ] && notify "✅ <b>Podkop восстановлен</b>
+Служба sing-box снова запущена."
 fi
 
 # Защита от переходных процессов: только что запущенное ядро не проверяем.
@@ -130,7 +217,7 @@ if [ -n "$SB_PID" ] && [ -d "/proc/$SB_PID" ]; then
     CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
     PROC_START_SEC=$((START_TIME_TICKS / CLK_TCK))
     PROC_AGE=$((UPTIME_SYS - PROC_START_SEC))
-    if [ "$PROC_AGE" -ge 0 ] && [ "$PROC_AGE" -lt 35 ]; then
+    if [ "$PROC_AGE" -ge 0 ] && [ "$PROC_AGE" -lt "$YOUNG_SEC" ]; then
         exit 0
     fi
 fi
@@ -172,13 +259,13 @@ api_get() {
     fi
 }
 
-if ! api_get "/proxies" 2 | grep -q '"proxies"'; then
+if ! api_get "/proxies" 3 | grep -q '"proxies"'; then
     # API может быть недоступен при живом sing-box — не считаем это аварией.
     exit 0
 fi
 
 # --- Проверка управляемых секций Podkop -----------------------------------------
-SECTION_LIST=$(python3 - <<'PYEOF'
+SECTION_LIST=$(python3 - 2>/dev/null <<'PYEOF'
 import sys
 
 sys.path.insert(0, "/usr/lib")
@@ -191,11 +278,23 @@ PYEOF
 )
 [ -z "$SECTION_LIST" ] && SECTION_LIST="main"
 
-TEST_URL="https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
+# URL проверки кодируется один раз; при сбое python3 используем gstatic.
+TEST_URL=$(TEST_URL_RAW="$TEST_URL_RAW" python3 -c \
+    'import os, urllib.parse; print(urllib.parse.quote(os.environ.get("TEST_URL_RAW", ""), safe=""))' 2>/dev/null)
+[ -n "$TEST_URL" ] || TEST_URL="https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
+
 FAILED_SECTIONS=""
 HEALTHY_SECTIONS=""
+RUN_START=$(date +%s)
+ABORTED=0
 
 for SEC in $SECTION_LIST; do
+    if [ $(( $(date +%s) - RUN_START )) -ge "$MAX_RUN" ]; then
+        # Не укладываемся в бюджет: прерываемся, не делая выводов о сбое.
+        ABORTED=1
+        break
+    fi
+
     GROUP_TAG="${SEC}-urltest-out"
     PROXIES=$(api_get "/proxies" 3)
     if ! echo "$PROXIES" | grep -q "\"${GROUP_TAG}\""; then
@@ -206,12 +305,12 @@ for SEC in $SECTION_LIST; do
         continue
     fi
 
-    DELAY=$(api_get "/proxies/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=4000" 8 | grep -o '"delay":[0-9]*' | cut -d':' -f2)
+    DELAY=$(api_get "/proxies/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=${TEST_TIMEOUT}" "$HTTP_TIMEOUT" | grep -o '"delay":[0-9]*' | cut -d':' -f2)
     if [ -z "$DELAY" ] || [ "$DELAY" -le 0 ]; then
         # Принудительный тест всей группы, затем повторный контрольный замер.
-        api_get "/group/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=3000" 10 >/dev/null
-        sleep 3
-        DELAY=$(api_get "/proxies/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=4000" 8 | grep -o '"delay":[0-9]*' | cut -d':' -f2)
+        api_get "/group/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=${GROUP_TIMEOUT}" "$((HTTP_TIMEOUT + 2))" >/dev/null
+        [ "$GROUP_RETRY" -gt 0 ] && sleep "$GROUP_RETRY"
+        DELAY=$(api_get "/proxies/${GROUP_TAG}/delay?url=${TEST_URL}&timeout=${TEST_TIMEOUT}" "$HTTP_TIMEOUT" | grep -o '"delay":[0-9]*' | cut -d':' -f2)
     fi
 
     if [ -n "$DELAY" ] && [ "$DELAY" -gt 0 ]; then
@@ -221,6 +320,8 @@ for SEC in $SECTION_LIST; do
     fi
 done
 
+[ "$ABORTED" = "1" ] && exit 0
+
 # Все секции живы. О восстановлении сообщаем только если авария была
 # подтверждена и watchdog уже запускал экстренный отбор узлов: одиночный
 # кратковременный провал замера не повод для уведомления.
@@ -228,7 +329,7 @@ if [ -z "$FAILED_SECTIONS" ]; then
     if [ -f "$STATE_FILE" ]; then
         PREV_STAGE=$(sed -n '1p' "$STATE_FILE" 2>/dev/null)
         case "$PREV_STAGE" in ''|*[!0-9]*) PREV_STAGE=0 ;; esac
-        if [ "$PREV_STAGE" -ge 2 ]; then
+        if [ "$PREV_STAGE" -ge 2 ] && [ "$NOTIFY_RECOVERY" = "1" ]; then
             notify "✅ <b>Проксирование Podkop восстановлено</b>
 Все секции снова отвечают на тестовый запрос."
         fi
@@ -238,7 +339,7 @@ if [ -z "$FAILED_SECTIONS" ]; then
 fi
 
 # Если упал интернет провайдера — не трогаем прокси.
-check_wan_alive || exit 0
+[ "$WAN_CHECK" = "1" ] && { check_wan_alive || exit 0; }
 
 # --- Двухэтапное подтверждение аварии -------------------------------------------
 NOW=$(date +%s)
@@ -257,17 +358,23 @@ if [ "$FAIL_COUNT" -lt 1 ]; then
     exit 0
 fi
 
-# Кулдаун 45 минут между экстренными парсингами.
+# Кулдаун между экстренными парсингами.
 ELAPSED=$((NOW - LAST_RETRY))
-if [ "$ELAPSED" -lt 2700 ] && [ "$ELAPSED" -ge 0 ]; then
+if [ "$ELAPSED" -lt $((COOLDOWN_MIN * 60)) ] && [ "$ELAPSED" -ge 0 ]; then
     exit 0
 fi
 
 printf "%s\n%s\n%s\n" "2" "$NOW" "$FAILED_SECTIONS" > "$STATE_FILE"
 
 FAILED_NAMES=$(echo "$FAILED_SECTIONS" | sed 's/^ *//; s/ /, /g')
-notify "⚠️ <b>Сбой проксирования Podkop!</b>
+if [ "$EMERGENCY" = "1" ]; then
+    notify "⚠️ <b>Сбой проксирования Podkop!</b>
 Секции [${FAILED_NAMES}] не отвечают. Запускаю экстренный отбор узлов..."
+else
+    notify "⚠️ <b>Сбой проксирования Podkop!</b>
+Секции [${FAILED_NAMES}] не отвечают. Экстренный отбор отключён в настройках watchdog."
+    exit 0
+fi
 
 # Lock-файл НЕ удаляем: subparser.py сам берёт flock. Если парсер уже
 # запущен, новый экземпляр просто завершится без повреждения конфигурации.
