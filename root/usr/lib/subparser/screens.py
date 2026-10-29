@@ -12,9 +12,51 @@ from .podkop import (
     get_podkop_service_status, get_section_routing_state, CACHED_DELAYS
 )
 from .system import get_blocked_macs, get_wifi_stations, get_ip_by_mac, check_single_service
+from .rich import RichText
+
+
+def _parser_running():
+    """Идёт ли сейчас синхронизация SubParser."""
+    try:
+        res = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True)
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
+
 
 def get_main_screen():
-    text = "🎛 <b>Панель управления SubParser & OpenWrt</b>\n\nВыберите необходимое действие:"
+    subs_count = len(get_subscriptions())
+    sections = get_all_podkop_sections()
+    sections_str = ", ".join(html.escape(s) for s in sections) if sections else "main"
+    svc_ok, _pid, _ram_mb, _mode_str = get_podkop_service_status()
+    podkop_badge = "🟢 Запущен" if svc_ok else "🔴 Остановлен"
+    parser_badge = "⏳ Выполняется" if _parser_running() else "💤 В ожидании"
+
+    text = RichText(
+        "<h3>🎛 Панель управления SubParser &amp; OpenWrt</h3>"
+        "<table bordered striped compact>"
+        "<tr><th>Компонент</th><th>Состояние</th></tr>"
+        f"<tr><td>Подписки</td><td>{subs_count}</td></tr>"
+        f"<tr><td>Секции Podkop</td><td>{sections_str}</td></tr>"
+        f"<tr><td>Podkop</td><td>{podkop_badge}</td></tr>"
+        f"<tr><td>Синхронизация</td><td>{parser_badge}</td></tr>"
+        "</table>"
+        "<details><summary>Что можно сделать</summary>"
+        "<ul>"
+        "<li>запустить парсер и изменить его параметры;</li>"
+        "<li>посмотреть узлы Podkop, замерить пинг и удалить мёртвые;</li>"
+        "<li>проверить ресурсы роутера, клиентов сети и доступность сервисов;</li>"
+        "<li>посмотреть статус, логи и обновить Podkop.</li>"
+        "</ul></details>"
+        "<p>Выберите необходимое действие:</p>",
+        "🎛 <b>Панель управления SubParser & OpenWrt</b>\n\n"
+        f"• <b>Подписки:</b> <code>{subs_count}</code>\n"
+        f"• <b>Секции Podkop:</b> <code>{sections_str}</code>\n"
+        f"• <b>Podkop:</b> {podkop_badge}\n"
+        f"• <b>Синхронизация:</b> {parser_badge}\n\n"
+        "Выберите необходимое действие:"
+    )
     kb = {"inline_keyboard": [
         [{"text": "⚙️ Меню парсера", "callback_data": "parser_menu"}, {"text": "📋 Серверы и пинг", "callback_data": "servers"}],
             [{"text": "🔄 Проверить обновления", "callback_data": "check_update"}],
@@ -522,7 +564,16 @@ def get_system_metrics():
     except Exception:
         pass
 
-    text = (
+    text = RichText(
+        "<h3>📟 Системные ресурсы роутера</h3>"
+        "<table bordered striped compact>"
+        "<tr><th>Показатель</th><th>Значение</th></tr>"
+        f"<tr><td>Время работы</td><td><code>{uptime_str}</code></td></tr>"
+        f"<tr><td>Температура SoC</td><td><code>{temp_str}</code></td></tr>"
+        f"<tr><td>Load Average</td><td><code>{load_str}</code></td></tr>"
+        f"<tr><td>Память RAM</td><td><code>{ram_str}</code></td></tr>"
+        f"<tr><td>Загрузка RAM</td><td><code>{ram_bar}</code></td></tr>"
+        "</table>",
         "📟 <b>Системные ресурсы роутера</b>\n\n"
         f"• <b>Время работы:</b> <code>{uptime_str}</code>\n"
         f"• <b>Температура SoC:</b> <code>{temp_str}</code>\n"
@@ -716,15 +767,23 @@ def get_status_screen():
     links = get_podkop_links("main")
     svc_ok, pid, ram_mb, mode_str = get_podkop_service_status()
     st_badge = "🟢 Запущена" if svc_ok else "🔴 Остановлена"
+    is_sync = "⏳ Выполняется" if _parser_running() else "💤 В ожидании"
+    core_badge = f"🟢 PID {pid} (RAM: <code>{ram_mb}</code>)" if pid else "🔴 Остановлен"
 
-    ps_check = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE, text=True)
-    is_sync = "⏳ Выполняется" if ps_check.stdout.strip() else "💤 В ожидании"
-
-    text = (
+    text = RichText(
+        "<h3>📊 Статус системы и Podkop</h3>"
+        "<table bordered striped compact>"
+        "<tr><th>Параметр</th><th>Значение</th></tr>"
+        f"<tr><td>Служба Podkop</td><td>{st_badge}</td></tr>"
+        f"<tr><td>Ядро sing-box</td><td>{core_badge}</td></tr>"
+        f"<tr><td>Режим трафика</td><td><code>{html.escape(mode_str)}</code></td></tr>"
+        f"<tr><td>Серверов в секции main</td><td><code>{len(links)} шт.</code></td></tr>"
+        f"<tr><td>Синхронизация SubParser</td><td>{is_sync}</td></tr>"
+        "</table>",
         "📊 <b>Детальный статус системы и Podkop</b>\n\n"
         f"• <b>Служба Podkop:</b> {st_badge}\n"
-        f"• <b>Ядро sing-box:</b> " + (f"🟢 PID {pid} (RAM: <code>{ram_mb}</code>)" if pid else "🔴 Остановлен") + "\n"
-        f"• <b>Режим трафика:</b> <code>{mode_str}</code>\n"
+        f"• <b>Ядро sing-box:</b> {core_badge}\n"
+        f"• <b>Режим трафика:</b> <code>{html.escape(mode_str)}</code>\n"
         f"• <b>Серверов в секции main:</b> <code>{len(links)} шт.</code>\n"
         f"• <b>Синхронизация SubParser:</b> {is_sync}\n"
     )
@@ -748,7 +807,12 @@ def get_log_screen():
             log_text = f"Ошибка чтения лога: {e}"
 
     safe_log = html.escape(log_text[-3000:])
-    text = f"📄 <b>Последние 25 строк лога парсера:</b>\n\n<pre>{safe_log}</pre>"
+    text = RichText(
+        "<h3>📄 Лог парсера</h3>"
+        "<p>Последние 25 строк.</p>"
+        f"<details open><summary>Показать лог</summary><pre>{safe_log}</pre></details>",
+        f"📄 <b>Последние 25 строк лога парсера:</b>\n\n<pre>{safe_log}</pre>"
+    )
     kb = {
         "inline_keyboard": [
             [{"text": "🔄 Обновить лог", "callback_data": "view_log"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
@@ -768,7 +832,12 @@ def get_logread_screen():
         out = f"Ошибка чтения logread: {e}"
 
     safe_out = html.escape(out[-3000:])
-    text = f"📜 <b>Системный лог (последние 25 строк):</b>\n\n<pre>{safe_out}</pre>"
+    text = RichText(
+        "<h3>📜 Системный лог</h3>"
+        "<p>logread, последние 25 строк.</p>"
+        f"<details open><summary>Показать лог</summary><pre>{safe_out}</pre></details>",
+        f"📜 <b>Системный лог (последние 25 строк):</b>\n\n<pre>{safe_out}</pre>"
+    )
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить logread", "callback_data": "log_sys"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
         [{"text": "◀️ Назад к статусу", "callback_data": "status"}]
@@ -785,7 +854,12 @@ def get_dmesg_screen():
         out = f"Ошибка чтения dmesg: {e}"
 
     safe_out = html.escape(out[-3000:])
-    text = f"🖨 <b>Лог ядра dmesg (последние 20 строк):</b>\n\n<pre>{safe_out}</pre>"
+    text = RichText(
+        "<h3>🖨 Лог ядра</h3>"
+        "<p>dmesg, последние 20 строк.</p>"
+        f"<details open><summary>Показать лог</summary><pre>{safe_out}</pre></details>",
+        f"🖨 <b>Лог ядра dmesg (последние 20 строк):</b>\n\n<pre>{safe_out}</pre>"
+    )
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить dmesg", "callback_data": "log_dmesg"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
         [{"text": "◀️ Назад к статусу", "callback_data": "status"}]

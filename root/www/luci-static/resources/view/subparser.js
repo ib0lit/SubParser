@@ -433,6 +433,13 @@ return view.extend({
                           'Укажите ID членов семьи или доверенных лиц, предварительно узнав их через <code>@userinfobot</code>.');
         o.rmempty = true;
 
+        o = s.taboption('telegram', form.Flag, 'tg_rich_messages', _('Rich-сообщения в боте'));
+        o.default = '1';
+        o.rmempty = false;
+        o.description = _('Оформлять меню бота таблицами, заголовками и раскрывающимися блоками (Telegram Rich Messages). ' +
+                          'Логи и статусы становятся компактнее, а длинные сообщения больше не разбиваются на части. ' +
+                          'Если клиент или Bot API не поддерживает rich-разметку, бот автоматически отправит обычный HTML.');
+
         o = s.taboption('telegram', form.Button, '_test_tg', _('Проверка связи'));
         o.inputtitle = _('Отправить тест в Telegram');
         o.inputstyle = 'action';
