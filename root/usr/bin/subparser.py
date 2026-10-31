@@ -84,7 +84,7 @@ except Exception:
 
 try:
     from subparser.podkop import (capture_selection, restore_selection,
-                                  fetch_proxies,
+                                  fetch_proxies, restart_podkop,
                                   get_proxies as get_podkop_proxies)
 except Exception:
     def get_podkop_proxies():
@@ -92,6 +92,14 @@ except Exception:
 
     def fetch_proxies():
         return {}, None
+
+    def restart_podkop(timeout=60):
+        try:
+            subprocess.run(["/etc/init.d/podkop", "restart"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            return True
+        except Exception:
+            return False
 
     def capture_selection(section, links, proxies=None):
         return "unknown", None
@@ -1045,7 +1053,7 @@ def _wait_podkop_ready(timeout=240):
     рано, и получается ложное «не удалось вернуть активный узел».
     """
     deadline = time.time() + timeout
-    process_seen = False
+    process_seen_count = 0
     while time.time() < deadline:
         try:
             status = subprocess.run(["/etc/init.d/podkop", "status"],
@@ -1054,16 +1062,23 @@ def _wait_podkop_ready(timeout=240):
                                  stderr=subprocess.DEVNULL, text=True).stdout.strip()
             service_running = bool(pid) or (status.returncode == 0) or ("running" in (status.stdout or "").lower())
             if service_running:
-                process_seen = True
+                process_seen_count += 1
                 proxies, api_status = fetch_proxies()
                 if api_status in (200, 204) and proxies:
                     return True
+                # Если процесс стабильно работает более 10 секунд (5 проверок по 2с),
+                # но Clash API не отвечает (например, отключён в настройках или
+                # не слушает локальный интерфейс), не висим 4 минуты — служба работает!
+                if process_seen_count >= 5:
+                    return True
+            else:
+                process_seen_count = 0
         except Exception:
             pass
         time.sleep(2)
     # Podkop запущен, но Clash API так и не ответил (например, отключён).
     # Конфигурацию из-за этого не откатываем — она рабочая.
-    return process_seen
+    return process_seen_count > 0
 
 
 def _escape_uci_batch_value(value):
@@ -1462,10 +1477,11 @@ def _run():
             _restore_podkop_backup()
             send_telegram_notify("🔴 <b>SubParser Alert</b>\nОшибка commit Podkop. Выполнен откат.")
             return
-        subprocess.run(["/etc/init.d/podkop", "restart"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        print("[i] Перезапуск службы Podkop...")
+        restart_podkop(timeout=30)
         podkop_restarted = True
-        if not _wait_podkop_ready(timeout=240):
+        print("[i] Ожидание готовности Podkop...")
+        if not _wait_podkop_ready(timeout=60):
             print("[!] Podkop не поднялся после обновления — откатываем конфигурацию.")
             _restore_podkop_backup()
             send_telegram_notify(
