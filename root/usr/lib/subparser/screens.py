@@ -51,35 +51,32 @@ def get_main_screen():
     ])
     screen.p("Выберите необходимое действие:")
     screen.button_row([
-        {"type": "callback_data", "text": "⚙️ Меню парсера", "data": "parser_menu", "style": "primary"},
-        {"type": "callback_data", "text": "📋 Серверы и пинг", "data": "servers", "style": "primary"},
+        {"type": "callback_data", "text": "⚙️ Меню парсера", "data": "parser_menu"},
+        {"type": "callback_data", "text": "📋 Серверы и пинг", "data": "servers"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": "🔄 Проверить обновления", "data": "check_update", "style": "link"},
+        {"type": "callback_data", "text": "🔄 Обновления", "data": "check_update"},
+        {"type": "callback_data", "text": "📊 Статус", "data": "status"},
     ])
     screen.button_row([
         {"type": "callback_data", "text": "📟 Ресурсы", "data": "sysinfo"},
         {"type": "callback_data", "text": "👥 Клиенты", "data": "clients"},
-        {"type": "callback_data", "text": "🛡 Сервисы", "data": "check_services"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": "📊 Статус", "data": "status"},
+        {"type": "callback_data", "text": "🛡 Сервисы", "data": "check_services"},
+        {"type": "callback_data", "text": "📜 Лог парсера", "data": "view_log"},
+    ])
+    screen.button_row([
         {"type": "callback_data", "text": "♻️ Рестарт Podkop", "data": "restart"},
         {"type": "callback_data", "text": "⚠️ Reboot", "data": "reboot", "style": "danger"},
-    ])
-    screen.button_row([
-        {"type": "callback_data", "text": "🔄 Обновить панель", "data": "home",
-         "style": "link", "fallback": "🔄 Обновить: /menu"},
-        {"type": "callback_data", "text": "📜 Последний лог", "data": "view_log",
-         "style": "link"},
     ])
     text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "⚙️ Меню парсера", "callback_data": "parser_menu"}, {"text": "📋 Серверы и пинг", "callback_data": "servers"}],
-            [{"text": "🔄 Проверить обновления", "callback_data": "check_update"}],
-        [{"text": "📟 Ресурсы роутера", "callback_data": "sysinfo"}, {"text": "👥 Клиенты сети", "callback_data": "clients"}],
-        [{"text": "🛡 Доступ к сервисам", "callback_data": "check_services"}, {"text": "📊 Статус системы", "callback_data": "status"}],
-        [{"text": "♻️ Рестарт Podkop", "callback_data": "restart"}, {"text": "⚠️ Reboot роутера", "callback_data": "reboot"}]
+        [{"text": "🔄 Обновления", "callback_data": "check_update"}, {"text": "📊 Статус", "callback_data": "status"}],
+        [{"text": "📟 Ресурсы", "callback_data": "sysinfo"}, {"text": "👥 Клиенты", "callback_data": "clients"}],
+        [{"text": "🛡 Сервисы", "callback_data": "check_services"}, {"text": "📜 Лог парсера", "callback_data": "view_log"}],
+        [{"text": "♻️ Рестарт Podkop", "callback_data": "restart"}, {"text": "⚠️ Reboot", "callback_data": "reboot"}]
     ]}
     return text, kb
 
@@ -156,19 +153,6 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         ("🚫 Исключённые протоколы", f"<code>{esc(proto_badge)}</code>"),
         ("🔄 Состояние", "⏳ парсер выполняется" if _parser_running() else "💤 готов к запуску"),
     ])
-    screen.details(
-        "Что произойдёт при запуске",
-        "<ul>"
-        f"<li>будут загружены <b>{subs_count}</b> активных подписок;</li>"
-        f"<li>узлы проверятся с порогом <b>{esc(threshold)} ms</b>;</li>"
-        "<li>лучшие узлы записываются в выбранные секции Podkop;</li>"
-        "<li>служба Podkop перезапустится автоматически.</li>"
-        "</ul>",
-        f"• будут загружены {subs_count} активных подписок\n"
-        f"• узлы проверятся с порогом {threshold} ms\n"
-        "• лучшие узлы записываются в выбранные секции Podkop\n"
-        "• служба Podkop перезапустится автоматически",
-    )
     if prompt_custom_ping:
         screen.quote("✏️ <b>Введите желаемый пинг (например, 280) "
                      "в ответном сообщении:</b>")
@@ -1066,19 +1050,12 @@ def get_dmesg_screen():
 
 def get_reboot_confirm_screen():
     screen = RichScreen()
-    screen.h("⚠️ Подтверждение перезагрузки роутера")
-    screen.quote("Вы действительно хотите перезагрузить устройство?")
-    screen.details(
-        "Что произойдёт",
-        "<ul>"
-        "<li>все соединения и туннель Podkop будут прерваны;</li>"
-        "<li>роутер вернётся через 1–2 минуты;</li>"
-        "<li>настройки и узлы сохранятся.</li>"
-        "</ul>",
-        "• все соединения и туннель Podkop будут прерваны\n"
-        "• роутер вернётся через 1–2 минуты\n"
-        "• настройки и узлы сохранятся",
-    )
+    screen.h("⚠️ Перезагрузка роутера")
+    screen.quote("Вы действительно хотите перезагрузить устройство? Все соединения будут прерваны на 1–2 минуты.")
+    screen.button_row([
+        {"type": "callback_data", "text": "✅ Да, перезагрузить!", "data": "do_reboot", "style": "danger"},
+        {"type": "callback_data", "text": "❌ Отмена", "data": "home"},
+    ])
     text = screen.build()
     kb = {
         "inline_keyboard": [
