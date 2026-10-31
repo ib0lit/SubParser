@@ -3,7 +3,6 @@
 import sys
 import time
 sys.path.insert(0, "/usr/lib")
-import html
 import logging
 import subprocess
 import threading
@@ -41,11 +40,19 @@ from subparser.screens import (
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
 )
+from subparser.rich import RichScreen, esc, join_rich
 
 # Результаты проверки DEAD ждут подтверждения; храним в памяти бота.
 # После перезапуска бота план исчезнет и подтверждение попросит проверить снова.
 DEL_DEAD_PLANS = {}
 DEL_DEAD_PLAN_TTL = 600
+
+
+def _rich_wait(text):
+    """Небольшое rich-сообщение «идёт работа» с классическим fallback."""
+    screen = RichScreen()
+    screen.p(text)
+    return screen.build()
 
 
 def get_allowed_user_ids():
@@ -104,7 +111,10 @@ def check_post_update_notification(token):
             except Exception:
                 pass
             display_ver = ver
-            msg = f"🚀 <b>Сервис успешно обновлен до версии v{display_ver}!</b>\nВсе компоненты работают в штатном режиме."
+            screen = RichScreen()
+            screen.h(f"🚀 Сервис обновлён до версии v{esc(display_ver)}")
+            screen.quote("Все компоненты работают в штатном режиме.")
+            msg = screen.build()
             kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
             edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)
         except Exception as e:
@@ -175,12 +185,18 @@ def main():
                         clear_user_state(user_id)
                         if raw_text.isdigit() and 30 <= int(raw_text) <= 3000:
                             set_uci_val("ping_threshold", raw_text)
-                            send_msg(token, user_id, f"✅ <b>Порог задержки установлен:</b> <code>{raw_text} ms</code>")
+                            screen = RichScreen()
+                            screen.h("✅ Порог задержки обновлён")
+                            screen.kv([("⚡ Новый порог", f"<code>{esc(raw_text)} ms</code>")])
+                            send_msg(token, user_id, screen.build())
                             t, kb = get_parser_menu_screen()
                             send_msg(token, user_id, t, kb)
                             continue
                         else:
-                            send_msg(token, user_id, "⚠️ <b>Некорректное значение.</b> Введите число от 30 до 3000.")
+                            screen = RichScreen()
+                            screen.h("⚠️ Некорректное значение")
+                            screen.quote("Введите число от 30 до 3000.")
+                            send_msg(token, user_id, screen.build())
                             t, kb = get_parser_menu_screen(prompt_custom_ping=True)
                             send_msg(token, user_id, t, kb)
                             continue
@@ -193,12 +209,14 @@ def main():
                         if is_sub:
                             parsed = urllib.parse.urlsplit(raw_text)
                             set_user_state(user_id, {"pending_sub_url": raw_text})
-                            card = (
-                                f"📥 <b>Обнаружена подписка ({sub_type})!</b>\n\n"
-                                f"🌐 <b>Хост:</b> <code>{parsed.netloc}</code>\n"
-                                f"🔗 <b>URL:</b> <code>{html.escape(raw_text[:50])}...</code>\n\n"
-                                "<i>Выберите клиентский профиль (User-Agent):</i>"
-                            )
+                            screen = RichScreen()
+                            screen.h(f"📥 Обнаружена подписка ({esc(sub_type)})")
+                            screen.kv([
+                                ("🌐 Хост", f"<code>{esc(parsed.netloc)}</code>"),
+                                ("🔗 URL", f"<code>{esc(raw_text[:50])}...</code>"),
+                            ])
+                            screen.p("Выберите клиентский профиль (User-Agent):")
+                            card = screen.build()
                             kb = {"inline_keyboard": [
                                 [
                                     {"text": "📱 v2rayN", "callback_data": "addsub_ua:v2rayN"},
@@ -216,7 +234,7 @@ def main():
                             ]}
                             send_msg(token, user_id, card, kb)
                         else:
-                            wait_m = send_msg(token, user_id, "⏳ <i>Анализирую маршрут и доступность узла...</i>")
+                            wait_m = send_msg(token, user_id, _rich_wait("⏳ <i>Анализирую маршрут и доступность узла...</i>"))
                             wait_id = wait_m.get("result", {}).get("message_id") if wait_m else None
                             rep = analyze_custom_url(raw_text)
                             kb_back = {"inline_keyboard": [
@@ -227,7 +245,7 @@ def main():
                             else:
                                 send_msg(token, user_id, rep, kb_back)
                     else:
-                        wait_m = send_msg(token, user_id, "⏳ <i>Анализирую маршрут и доступность узла...</i>")
+                        wait_m = send_msg(token, user_id, _rich_wait("⏳ <i>Анализирую маршрут и доступность узла...</i>"))
                         wait_id = wait_m.get("result", {}).get("message_id") if wait_m else None
                         rep = analyze_custom_url(raw_text)
                         kb_back = {"inline_keyboard": [
@@ -330,7 +348,10 @@ def main():
                             answer_callback(token, cb_id, "⛔ Доступно только администратору!")
                             continue
                         answer_callback(token, cb_id, "Запуск обновления...")
-                        edit_msg(token, chat_id, msg_id, "🔄 <b>Выполняется загрузка и установка обновления...</b>\nБот автоматически перезапустится через 1-2 минуты.", {"inline_keyboard": []})
+                        edit_msg(token, chat_id, msg_id,
+                                 _rich_wait("🔄 <b>Выполняется загрузка и установка обновления...</b>\n"
+                                            "Бот автоматически перезапустится через 1–2 минуты."),
+                                 {"inline_keyboard": []})
                         try:
                             with open("/tmp/subparser_update_pending", "w") as f:
                                 json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
@@ -390,7 +411,7 @@ def main():
                         answer_callback(token, cb_id, "Подписка удалена" if ok else "Ошибка удаления")
                         t, kb = get_subs_list_screen()
                         prefix = "🗑 <b>Подписка удалена из роутера!</b>" if ok else "⚠️ <b>Подписка не найдена.</b>"
-                        edit_msg(token, chat_id, msg_id, f"{prefix}\n\n{t}", kb)
+                        edit_msg(token, chat_id, msg_id, join_rich(prefix, t), kb)
 
                     elif data.startswith("addsub_ua:"):
                         answer_callback(token, cb_id, "Сохраняю...")
@@ -400,19 +421,24 @@ def main():
                         clear_user_state(user_id)
 
                         if not sub_url:
-                            edit_msg(token, chat_id, msg_id, "⚠️ <b>Время действия ссылки истекло.</b>\nОтправьте ссылку на подписку снова.")
+                            screen = RichScreen()
+                            screen.h("⚠️ Время действия ссылки истекло")
+                            screen.quote("Отправьте ссылку на подписку снова.")
+                            edit_msg(token, chat_id, msg_id, screen.build())
                             continue
 
                         ok, res_name = add_subscription_to_uci(sub_url, ua_key=ua_key)
                         if ok:
                             ua_title = UA_CHOICES.get(ua_key, ua_key)
-                            text_done = (
-                                "✅ <b>Подписка успешно сохранена!</b>\n\n"
-                                f"🏷 <b>Имя:</b> <code>{res_name}</code>\n"
-                                f"👤 <b>Клиент:</b> <code>{ua_title}</code>\n"
-                                f"⚙️ Ссылка добавлена в конфигурацию роутера.\n\n"
-                                "Запустить синхронизацию узлов прямо сейчас?"
-                            )
+                            screen = RichScreen()
+                            screen.h("✅ Подписка успешно сохранена")
+                            screen.kv([
+                                ("🏷 Имя", f"<code>{esc(res_name)}</code>"),
+                                ("👤 Клиент", f"<code>{esc(ua_title)}</code>"),
+                            ])
+                            screen.p("Ссылка добавлена в конфигурацию роутера.")
+                            screen.quote("Запустить синхронизацию узлов прямо сейчас?")
+                            text_done = screen.build()
                             kb_done = {"inline_keyboard": [
                                 [{"text": "▶️ Запустить синхронизацию", "callback_data": "run_parser"}],
                                 [{"text": "📋 Мои подписки", "callback_data": "subs_list"}],
@@ -420,7 +446,10 @@ def main():
                             ]}
                             edit_msg(token, chat_id, msg_id, text_done, kb_done)
                         else:
-                            edit_msg(token, chat_id, msg_id, f"❌ <b>Ошибка сохранения:</b> {res_name}")
+                            screen = RichScreen()
+                            screen.h("❌ Ошибка сохранения подписки")
+                            screen.quote(esc(res_name))
+                            edit_msg(token, chat_id, msg_id, screen.build())
 
                     elif data == "diag_host":
                         answer_callback(token, cb_id, "Тестирую...")
@@ -550,7 +579,17 @@ def main():
                             "msg_id": msg_id,
                             "started": int(time.time()),
                         })
-                        edit_msg(token, chat_id, msg_id, f"▶️ <b>Синхронизация по текущей конфигурации</b>\n\n{text_sync}", reply_markup={"inline_keyboard": []})
+                        if ok:
+                            screen = RichScreen()
+                            screen.h("▶️ Синхронизация по текущей конфигурации")
+                            screen.p(text_sync.replace("\n", "<br>"))
+                            sync_text = screen.build()
+                        else:
+                            screen = RichScreen()
+                            screen.h("⚠️ Синхронизация не запущена")
+                            screen.p(text_sync.replace("\n", "<br>"))
+                            sync_text = screen.build()
+                        edit_msg(token, chat_id, msg_id, sync_text, reply_markup={"inline_keyboard": []})
                         th = threading.Thread(target=watch_parser_and_restore_menu, args=(token, chat_id, msg_id), daemon=True)
                         th.start()
 
@@ -618,24 +657,33 @@ def main():
 
                     elif data == "check_services":
                         answer_callback(token, cb_id, "Тестирую доступ...")
-                        edit_msg(token, chat_id, msg_id, "⏳ <b>Проверяю маршруты и доступность (параллельно)...</b>")
+                        edit_msg(token, chat_id, msg_id,
+                                 _rich_wait("⏳ <b>Проверяю маршруты и доступность "
+                                            "(параллельно)...</b>"))
                         t, kb = get_services_status_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "run_speedtest":
                         answer_callback(token, cb_id, "Замеряю скорость...")
-                        edit_msg(token, chat_id, msg_id, "⏳ <b>Тестирую скорость скачивания через туннель...</b>\n<i>(загрузка пакета 10 МБ через активный узел)</i>")
+                        edit_msg(token, chat_id, msg_id,
+                                 _rich_wait("⏳ <b>Тестирую скорость скачивания через туннель...</b>\n"
+                                            "<i>(загрузка пакета 10 МБ через активный узел)</i>"))
                         from subparser.system import measure_download_speed
                         ok, speed, elapsed = measure_download_speed()
                         if ok:
-                            res_text = (
-                                "🚀 <b>Результат теста скорости</b>\n\n"
-                                f"• Скорость загрузки: <b>{speed}</b>\n"
-                                f"• Время загрузки: <code>{elapsed}</code>\n"
-                                f"• Маршрут: через активный туннель Podkop\n"
-                            )
+                            screen = RichScreen()
+                            screen.h("🚀 Результат теста скорости")
+                            screen.kv([
+                                ("⬇️ Скорость загрузки", f"<b>{esc(speed)}</b>"),
+                                ("⏱ Время загрузки", f"<code>{esc(elapsed)}</code>"),
+                                ("🧭 Маршрут", "через активный туннель Podkop"),
+                            ])
+                            res_text = screen.build()
                         else:
-                            res_text = "❌ <b>Ошибка замера скорости.</b>\nТаймаут соединения с тестовым CDN сервером."
+                            screen = RichScreen()
+                            screen.h("❌ Ошибка замера скорости")
+                            screen.quote("Таймаут соединения с тестовым CDN сервером.")
+                            res_text = screen.build()
                         kb_back = {"inline_keyboard": [
                             [{"text": "🔄 Повторить замер", "callback_data": "run_speedtest"}],
                             [{"text": "◀️ В меню статуса", "callback_data": "status"}]
@@ -654,12 +702,18 @@ def main():
 
                     elif data == "do_reboot":
                         answer_callback(token, cb_id, "Роутер перезагружается...")
-                        edit_msg(token, chat_id, msg_id, "⚠️ <b>Роутер уходит в перезагрузку...</b>\nСвязь восстановится через 1-2 минуты.")
+                        screen = RichScreen()
+                        screen.h("⚠️ Роутер уходит в перезагрузку")
+                        screen.p("Связь восстановится через 1–2 минуты.")
+                        edit_msg(token, chat_id, msg_id, screen.build())
                         subprocess.Popen(["/sbin/reboot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                     elif data == "restart":
                         answer_callback(token, cb_id, "Служба перезапускается...")
-                        text_pending = "♻️ <b>Служба Podkop перезапускается...</b>\nСоединение восстановится через 3-5 секунд."
+                        screen = RichScreen()
+                        screen.h("♻️ Служба Podkop перезапускается")
+                        screen.p("Соединение восстановится через 3–5 секунд.")
+                        text_pending = screen.build()
                         kb_pending = {"inline_keyboard": [
                             [{"text": "🔄 Проверить статус", "callback_data": "status"}],
                             [{"text": "◀️ В главное меню", "callback_data": "home"}]
@@ -679,15 +733,17 @@ def main():
                     elif data == "del_dead_all":
                         answer_callback(token, cb_id, "Проверяю узлы...")
                         edit_msg(token, chat_id, msg_id,
-                                 "🧹 <b>Проверяю узлы во всех секциях...</b>\n\n"
-                                 "<i>Принудительный пинг, это может занять до минуты.</i>",
+                                 _rich_wait("🧹 <b>Проверяю узлы во всех секциях...</b>\n\n"
+                                            "<i>Принудительный пинг, это может занять до минуты.</i>"),
                                  {"inline_keyboard": []})
                         from subparser.podkop import scan_dead_in_all_sections
                         res = scan_dead_in_all_sections()
                         if res.get("error"):
-                            text = (f"⚠️ <b>Не удалось проверить узлы</b>\n\n"
-                                    f"{html.escape(res['error'])}\n\n"
-                                    "Podkop не изменялся.")
+                            screen = RichScreen()
+                            screen.h("⚠️ Не удалось проверить узлы")
+                            screen.quote(esc(res["error"]))
+                            screen.p("Podkop не изменялся.")
+                            text = screen.build()
                             kb = {"inline_keyboard": [
                                 [{"text": "🔄 Проверить снова", "callback_data": "del_dead_all"}],
                                 [{"text": "◀️ К секциям", "callback_data": "servers"}],
@@ -708,9 +764,11 @@ def main():
                         stored = DEL_DEAD_PLANS.pop(user_id, None)
                         if not stored or \
                                 time.time() - stored.get("ts", 0) > DEL_DEAD_PLAN_TTL:
-                            text = ("⚠️ <b>Проверка устарела</b>\n\n"
-                                    "Данные могли измениться, удаление отменено. "
-                                    "Запустите проверку заново.")
+                            screen = RichScreen()
+                            screen.h("⚠️ Проверка устарела")
+                            screen.quote("Данные могли измениться, удаление отменено. "
+                                         "Запустите проверку заново.")
+                            text = screen.build()
                             kb = {"inline_keyboard": [
                                 [{"text": "🔄 Проверить заново", "callback_data": "del_dead_all"}],
                                 [{"text": "◀️ К секциям", "callback_data": "servers"}],
@@ -719,63 +777,87 @@ def main():
                             continue
 
                         edit_msg(token, chat_id, msg_id,
-                                 "🧹 <b>Удаляю узлы и перезапускаю Podkop...</b>",
+                                 _rich_wait("🧹 <b>Удаляю узлы и перезапускаю Podkop...</b>"),
                                  {"inline_keyboard": []})
                         from subparser.podkop import delete_dead_plan
                         res = delete_dead_plan(stored.get("details", []))
-                        lines = []
+                        rows = []
+                        fallback_lines = []
                         for item in res.get("details", []):
-                            sec = html.escape(str(item.get("section", "?")))
+                            sec = esc(str(item.get("section", "?")))
                             status = item.get("status")
                             total = int(item.get("total", 0))
                             deleted = int(item.get("deleted", 0))
                             skipped = int(item.get("skipped", 0))
                             if status == "empty":
-                                lines.append(f"• <b>{sec}</b>: нет узлов")
+                                note = "нет узлов"
+                                plain = f"• <b>{sec}</b>: нет узлов"
                             elif status == "no_data":
-                                lines.append(f"• <b>{sec}</b>: пропущено (нет данных Podkop)")
+                                note = "пропущено (нет данных Podkop)"
+                                plain = f"• <b>{sec}</b>: пропущено (нет данных Podkop)"
                             elif status == "error":
-                                lines.append(f"• <b>{sec}</b>: ошибка записи")
+                                note = "ошибка записи"
+                                plain = f"• <b>{sec}</b>: ошибка записи"
                             elif status == "stale":
-                                lines.append(f"• <b>{sec}</b>: изменилась, пропущено")
+                                note = "изменилась, пропущено"
+                                plain = f"• <b>{sec}</b>: изменилась, пропущено"
                             elif status == "all_dead":
-                                lines.append(f"• <b>{sec}</b>: все {total} мёртвые — "
-                                             "оставлено без изменений")
+                                note = "все мёртвые — не изменено"
+                                plain = (f"• <b>{sec}</b>: все {total} мёртвые — "
+                                         "оставлено без изменений")
                             elif status == "deleted":
-                                line = (f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}")
+                                note = "удалено"
+                                plain = f"• <b>{sec}</b>: удалено <b>{deleted}</b> из {total}"
                                 selection = item.get("selection")
                                 if selection == "restored":
-                                    line += " · выбор сохранён"
+                                    note += " · выбор сохранён"
+                                    plain += " · выбор сохранён"
                                 elif selection == "lost":
-                                    line += " · выбранный узел удалён, авто"
+                                    note += " · узел удалён, авто"
+                                    plain += " · выбранный узел удалён, авто"
                                 elif selection == "failed":
-                                    line += " · не удалось вернуть выбор"
+                                    note += " · не удалось вернуть выбор"
+                                    plain += " · не удалось вернуть выбор"
                                 elif selection == "not_restarted":
-                                    line += " · выбор не восстановлен (нет рестарта)"
-                                lines.append(line)
+                                    note += " · выбор не восстановлен"
+                                    plain += " · выбор не восстановлен (нет рестарта)"
                             else:
-                                lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
+                                note = "мёртвых нет"
+                                plain = f"• <b>{sec}</b>: мёртвых нет ({total} шт.)"
                             if skipped and status != "no_data":
-                                lines.append(f"   <i>не проверено: {skipped}</i>")
+                                note += f" · не проверено {skipped}"
+                                plain += f"\n   <i>не проверено: {skipped}</i>"
+                            rows.append((
+                                f"<b>{sec}</b>",
+                                f"<b>{deleted}</b>" if status == "deleted" else "—",
+                                str(total),
+                                note,
+                            ))
+                            fallback_lines.append(plain)
 
                         total_deleted = int(res.get("total", 0))
+                        screen = RichScreen()
                         if total_deleted:
+                            screen.h(f"🧹 Удалено мёртвых узлов: {total_deleted}")
                             note = ("Podkop перезапущен."
                                     if res.get("restarted")
                                     else "⚠️ Podkop не удалось перезапустить — "
                                          "перезапустите вручную.")
-                            text = (f"🧹 <b>Удалено мёртвых узлов: {total_deleted}</b>\n\n"
-                                    + "\n".join(lines) +
-                                    f"\n\n<i>{note}</i>")
+                            screen.table(["Секция", "Удалено", "Всего", "Примечание"],
+                                         rows, fallback=fallback_lines)
+                            screen.quote(note)
                         elif any(item.get("status") in ("stale", "error", "all_dead")
                                  for item in res.get("details", [])):
-                            text = ("⚠️ <b>Ничего не удалено</b>\n\n"
-                                    + "\n".join(lines) +
-                                    "\n\n<i>Podkop не перезапускался.</i>")
+                            screen.h("⚠️ Ничего не удалено")
+                            screen.table(["Секция", "Удалено", "Всего", "Примечание"],
+                                         rows, fallback=fallback_lines)
+                            screen.quote("Podkop не перезапускался.")
                         else:
-                            text = ("✅ <b>Мёртвых узлов не найдено</b>\n\n"
-                                    + "\n".join(lines) +
-                                    "\n\n<i>Podkop не перезапускался.</i>")
+                            screen.h("✅ Мёртвых узлов не найдено")
+                            screen.table(["Секция", "Удалено", "Всего", "Примечание"],
+                                         rows, fallback=fallback_lines)
+                            screen.quote("Podkop не перезапускался.")
+                        text = screen.build()
                         kb = {"inline_keyboard": [
                             [{"text": "◀️ К секциям", "callback_data": "servers"}],
                             [{"text": "🏠 В главное меню", "callback_data": "home"}],
@@ -887,17 +969,17 @@ def main():
                             t, kb = get_servers_screen(delays_map=CACHED_DELAYS.get(sec_name, {}),
                                                        section=sec_name, page=0,
                                                        delete_mode=False, selected_indices=[])
-                            edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
+                            edit_msg(token, chat_id, msg_id, join_rich(msg_alert, t), kb)
                             continue
 
                         ok, deleted = delete_nodes_batch(sel_list, section=sec_name)
                         if not ok:
                             msg_alert = ("⚠️ <b>Не удалось удалить узлы</b>\n"
-                                         "<i>Конфигурация Podkop не изменена.</i>\n\n")
+                                         "<i>Конфигурация Podkop не изменена.</i>")
                             t, kb = get_servers_screen(delays_map=CACHED_DELAYS.get(sec_name, {}),
                                                        section=sec_name, page=0,
                                                        delete_mode=False, selected_indices=[])
-                            edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
+                            edit_msg(token, chat_id, msg_id, join_rich(msg_alert, t), kb)
                             continue
 
                         old_delays = CACHED_DELAYS.get(sec_name, {})
@@ -910,9 +992,10 @@ def main():
                                 new_idx += 1
                         CACHED_DELAYS[sec_name] = new_delays
 
-                        msg_alert = f"🗑 <b>Удалено узлов: {deleted} шт.</b>\n<i>(Служба перезапускается в фоне)</i>\n\n"
+                        msg_alert = (f"🗑 <b>Удалено узлов: {deleted} шт.</b>\n"
+                                     "<i>(Служба перезапускается в фоне)</i>")
                         t, kb = get_servers_screen(delays_map=new_delays, section=sec_name, page=0, delete_mode=False, selected_indices=[])
-                        edit_msg(token, chat_id, msg_id, f"{msg_alert}{t}", kb)
+                        edit_msg(token, chat_id, msg_id, join_rich(msg_alert, t), kb)
                         subprocess.Popen("sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &", shell=True)
 
                     elif data.startswith("srv_pg:"):
@@ -969,14 +1052,21 @@ def main():
                         is_active = (not is_auto and target_tag == active_manual_tag)
                         status_badge = "⚡ <b>АКТИВЕН В ДАННЫЙ МОМЕНТ (Вручную)</b>" if is_active else ("🤖 <b>Автовыбор (URL-Test)</b>" if is_auto else "💤 <b>В резерве</b>")
 
-                        card = (
-                            f"📌 <b>Узел #{idx+1} [Секция {sec_name}]</b>\n\n"
-                            f"🏷 <b>Имя:</b> <code>{name}</code>\n"
-                            f"⚡ <b>Протокол:</b> <code>{proto}</code>\n"
-                            f"🏷 <b>Тег:</b> <code>{target_tag}</code>\n"
-                            f"Статус: {status_badge}\n\n"
-                            "Действие:"
-                        )
+                        screen = RichScreen()
+                        screen.h(f"📌 Узел #{idx+1} · секция {esc(sec_name)}")
+                        screen.kv([
+                            ("🏷 Имя", f"<code>{esc(name)}</code>"),
+                            ("⚡ Протокол", f"<code>{esc(proto)}</code>"),
+                            ("🔖 Тег", f"<code>{esc(target_tag)}</code>"),
+                            ("📡 Статус", status_badge),
+                        ])
+                        screen.p("Выберите действие:")
+                        if idx < len(links):
+                            screen.button_row([
+                                {"type": "copy_text", "text": "📋 Копировать ссылку узла",
+                                 "text_to_copy": links[idx], "style": "primary"},
+                            ], align="left")
+                        card = screen.build()
                         btn_row = []
                         if not is_active:
                             btn_row.append({"text": "⚡ Сделать активным", "callback_data": f"act:{sec_name}:{idx}:{pg}"})
@@ -1005,14 +1095,21 @@ def main():
                         name = get_node_name(links[idx], idx) if idx < len(links) else f"#{idx+1}"
                         proto = urllib.parse.urlsplit(links[idx]).scheme.upper() if idx < len(links) else "PROXY"
 
-                        card = (
-                            f"📌 <b>Узел #{idx+1} [Секция {sec_name}]</b>\n\n"
-                            f"🏷 <b>Имя:</b> <code>{name}</code>\n"
-                            f"⚡ <b>Протокол:</b> <code>{proto}</code>\n"
-                            f"🏷 <b>Тег:</b> <code>{actual_tag}</code>\n"
-                            f"Статус: ⚡ <b>АКТИВЕН В ДАННЫЙ МОМЕНТ</b>\n\n"
-                            "✅ <i>Трафик зафиксирован через этот сервер.</i>"
-                        )
+                        screen = RichScreen()
+                        screen.h(f"📌 Узел #{idx+1} · секция {esc(sec_name)}")
+                        screen.kv([
+                            ("🏷 Имя", f"<code>{esc(name)}</code>"),
+                            ("⚡ Протокол", f"<code>{esc(proto)}</code>"),
+                            ("🔖 Тег", f"<code>{esc(actual_tag)}</code>"),
+                            ("📡 Статус", "⚡ <b>АКТИВЕН В ДАННЫЙ МОМЕНТ</b>"),
+                        ])
+                        screen.quote("✅ Трафик зафиксирован через этот сервер.")
+                        if idx < len(links):
+                            screen.button_row([
+                                {"type": "copy_text", "text": "📋 Копировать ссылку узла",
+                                 "text_to_copy": links[idx], "style": "primary"},
+                            ], align="left")
+                        card = screen.build()
                         kb = {"inline_keyboard": [
                             [{"text": "🔄 Сбросить на Авто (URL-Test)", "callback_data": f"auto_mode:{sec_name}:{pg}"}],
                             [{"text": f"🗑 Удалить из [{sec_name}]", "callback_data": f"del:{sec_name}:{idx}:{pg}"}],
@@ -1030,9 +1127,9 @@ def main():
                             idx = 0
                         pg = int(p[3]) if len(p) > 3 else 0
                         ok, res = delete_node(idx, section=sec_name)
-                        alert = f"🗑 Удален: <b>{res}</b>" if ok else f"❌ Ошибка: {res}"
+                        alert = f"🗑 Удалён: <b>{esc(res)}</b>" if ok else f"❌ Ошибка: {esc(res)}"
                         t, kb = get_servers_screen(section=sec_name, page=pg)
-                        edit_msg(token, chat_id, msg_id, f"{alert}\n\n{t}", kb)
+                        edit_msg(token, chat_id, msg_id, join_rich(alert, t), kb)
 
         except Exception:
             log.exception("Необработанная ошибка в цикле бота")
