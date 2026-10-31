@@ -189,8 +189,35 @@ class RichScreen:
         filled = pct * width // 100
         return f"<code>{'█' * filled}{'░' * (width - filled)}</code> {pct}%"
 
+    def keyboard_to_buttons(self, kb):
+        """Конвертирует стандартную inline_keyboard в <tg-button-row>."""
+        if not kb:
+            return self
+        raw_rows = kb.get("inline_keyboard", []) if isinstance(kb, dict) else kb
+        for row in raw_rows:
+            btns = []
+            for btn in row:
+                if not isinstance(btn, dict):
+                    continue
+                text = btn.get("text", "")
+                if "url" in btn:
+                    btns.append({"type": "url", "text": text, "url": btn["url"]})
+                elif "callback_data" in btn:
+                    data = btn["callback_data"]
+                    style = ""
+                    if data == "do_reboot" or data.startswith("sub_del_do:"):
+                        style = "danger"
+                    elif data in ("run_parser", "do_update"):
+                        style = "success"
+                    btns.append({"type": "callback_data", "text": text, "data": data, "style": style})
+            if btns:
+                self.button_row(btns)
+        return self
+
     # --- результат ------------------------------------------------------
-    def build(self):
+    def build(self, keyboard=None):
+        if keyboard:
+            self.keyboard_to_buttons(keyboard)
         rich = "\n".join(self._rich).strip()
         plain = "\n".join(self._plain).strip()
         return RichText(rich, plain)

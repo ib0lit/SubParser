@@ -95,16 +95,54 @@ def _remember_rich_edit_failure(key):
     _RICH_EDIT_FAILED.add(key)
 
 
+def _ensure_rich_buttons(text, reply_markup):
+    """Если сообщение в rich-режиме, но в нём ещё нет <tg-button>, переносит кнопки из клавиатуры внутрь текста."""
+    if not isinstance(text, RichText) or not reply_markup:
+        return text, reply_markup
+    if "<tg-button" in str(text):
+        return text, reply_markup
+    raw_rows = reply_markup.get("inline_keyboard", []) if isinstance(reply_markup, dict) else reply_markup
+    if not raw_rows:
+        return text, reply_markup
+
+    from .rich import esc_attr
+    button_rows = []
+    for row in raw_rows:
+        row_btns = []
+        for btn in row:
+            if not isinstance(btn, dict):
+                continue
+            lbl = esc_attr(btn.get("text", ""))
+            if "url" in btn:
+                url = esc_attr(btn["url"])
+                row_btns.append(f'<tg-button type="url" url="{url}">{lbl}</tg-button>')
+            elif "callback_data" in btn:
+                data = esc_attr(btn["callback_data"])
+                style = ""
+                if data == "do_reboot" or data.startswith("sub_del_do:"):
+                    style = ' style="danger"'
+                elif data in ("run_parser", "do_update"):
+                    style = ' style="success"'
+                row_btns.append(f'<tg-button type="callback_data" data="{data}"{style}>{lbl}</tg-button>')
+        if row_btns:
+            button_rows.append(f'<tg-button-row align="center">{"".join(row_btns)}</tg-button-row>')
+
+    if button_rows:
+        new_rich = str(text) + "\n" + "\n".join(button_rows)
+        return RichText(new_rich, text.fallback), reply_markup
+    return text, reply_markup
+
+
 def send_msg(token, chat_id, text, reply_markup=None):
-    if _rich_enabled(text) and len(text) <= TG_RICH_MAX_LEN:
-        payload = {"chat_id": chat_id, "rich_message": {"html": str(text)}}
-        # Если в тексте уже есть встроенные кнопки <tg-button>, внешнюю клавиатуру не дублируем
-        if reply_markup and "<tg-button" not in str(text):
-            payload["reply_markup"] = reply_markup
-        result = tg_api(token, "sendRichMessage", payload, timeout=10)
-        if result is not None:
-            return result
-        # Старый Bot API или клиент не принял rich — отправляем обычный HTML.
+    if _rich_enabled(text):
+        text, reply_markup = _ensure_rich_buttons(text, reply_markup)
+        if len(text) <= TG_RICH_MAX_LEN:
+            payload = {"chat_id": chat_id, "rich_message": {"html": str(text)}}
+            if reply_markup and "<tg-button" not in str(text):
+                payload["reply_markup"] = reply_markup
+            result = tg_api(token, "sendRichMessage", payload, timeout=10)
+            if result is not None:
+                return result
 
     text = _classic_text(text)
     chunks = _split_text(text)
@@ -120,6 +158,8 @@ def send_msg(token, chat_id, text, reply_markup=None):
 
 
 def edit_msg(token, chat_id, message_id, text, reply_markup=None):
+    if _rich_enabled(text):
+        text, reply_markup = _ensure_rich_buttons(text, reply_markup)
     rich = _rich_enabled(text) and len(text) <= TG_RICH_MAX_LEN
     edit_key = (str(chat_id), str(message_id))
     throttled = False
