@@ -1020,10 +1020,6 @@ def get_log_screen():
     screen.p(f"Последние строки лога синхронизации: <code>{line_count}</code>")
     screen.raw(f"<pre>{safe_log}</pre>", f"<pre>{safe_log}</pre>")
     screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать лог", "text_to_copy": clean_log,
-         "style": "primary"},
-    ], align="left")
-    screen.button_row([
         {"type": "callback_data", "text": "🔄 Обновить лог", "data": "view_log"},
         {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
     ])
@@ -1057,10 +1053,6 @@ def get_logread_screen():
     screen.p(f"logread, последние строки: <code>{line_count}</code>")
     screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
     screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать logread", "text_to_copy": clean_out,
-         "style": "primary"},
-    ], align="left")
-    screen.button_row([
         {"type": "callback_data", "text": "🔄 Обновить logread", "data": "log_sys"},
         {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
     ])
@@ -1090,10 +1082,6 @@ def get_dmesg_screen():
     screen.h("🖨 Лог ядра")
     screen.p(f"dmesg, последние строки: <code>{line_count}</code>")
     screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
-    screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать dmesg", "text_to_copy": clean_out,
-         "style": "primary"},
-    ], align="left")
     screen.button_row([
         {"type": "callback_data", "text": "🔄 Обновить dmesg", "data": "log_dmesg"},
         {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
