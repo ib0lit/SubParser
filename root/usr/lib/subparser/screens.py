@@ -124,10 +124,8 @@ def get_parser_menu_screen(prompt_custom_ping=False):
         sec_parts = []
         for s in all_secs:
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
-            s_mode = get_uci_val(f"sec_mode_{s}", "replace")
             if s_en:
-                badge = "Замена" if s_mode == "replace" else "Добавление"
-                sec_parts.append(f"{html.escape(s)} ({badge})")
+                sec_parts.append(html.escape(s))
         sections_str = ", ".join(sec_parts) if sec_parts else "Все выключены"
     else:
         raw_targets = get_uci_val("target_section", "main").split()
@@ -136,9 +134,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
             if s not in existing_valid:
                 existing_valid.append(s)
         target_list = existing_valid if existing_valid else ["main"]
-        g_mode = get_uci_val("update_mode", "replace")
-        mode_label = "Замена" if g_mode == "replace" else "Добавление"
-        sections_str = f"{', '.join(html.escape(s) for s in target_list)} ({mode_label})"
+        sections_str = ", ".join(html.escape(s) for s in target_list)
 
     screen = RichScreen()
     screen.h("⚙️ Параметры парсера SubParser")
@@ -158,6 +154,37 @@ def get_parser_menu_screen(prompt_custom_ping=False):
                      "в ответном сообщении:</b>")
     else:
         screen.p("Настройте параметры и запустите синхронизацию:")
+
+    screen.button_row([
+        {"type": "callback_data", "text": f"📋 Подписки ({subs_count})", "data": "subs_list"},
+        {"type": "callback_data", "text": "🎯 Секции Podkop", "data": "bot_sections_menu"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "150ms" + (" 🔘" if threshold == "150" else ""), "data": "th:150"},
+        {"type": "callback_data", "text": "350ms" + (" 🔘" if threshold == "350" else ""), "data": "th:350"},
+        {"type": "callback_data", "text": "500ms" + (" 🔘" if threshold == "500" else ""), "data": "th:500"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "✏️ Задать свой", "data": "ask_custom_th"},
+        {"type": "callback_data", "text": f"Лимит: {limit_badge}", "data": "cycle_limit"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"Расписание: {cron_badge}", "data": "cycle_cron"},
+        {"type": "callback_data", "text": f"RU: {'Фильтр' if filter_ru == '1' else 'Все'}", "data": "toggle_ru"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"🎭 Фингерпринт: {fp_badge}", "data": "menu_fp"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"🚫 Протоколы: {proto_badge}", "data": "menu_proto"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "🚀 Запустить парсер сейчас", "data": "run_parser", "style": "success"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📜 Лог", "data": "view_log"},
+        {"type": "callback_data", "text": "◀ Главное меню", "data": "home"},
+    ])
     text = screen.build()
 
     kb = {
