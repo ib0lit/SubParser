@@ -49,19 +49,6 @@ def get_main_screen():
         ("🌐 Режим трафика", f"<code>{esc(mode_str or 'н/д')}</code>"),
         ("🔄 Синхронизация", parser_badge),
     ])
-    screen.details(
-        "Что можно сделать",
-        "<ul>"
-        "<li>запустить парсер и изменить его параметры;</li>"
-        "<li>посмотреть узлы Podkop, замерить пинг и удалить мёртвые;</li>"
-        "<li>проверить ресурсы роутера, клиентов сети и доступность сервисов;</li>"
-        "<li>посмотреть статус, логи и обновить Podkop.</li>"
-        "</ul>",
-        "• запустить парсер и изменить его параметры\n"
-        "• посмотреть узлы Podkop, замерить пинг и удалить мёртвые\n"
-        "• проверить ресурсы роутера, клиентов сети и доступность сервисов\n"
-        "• посмотреть статус, логи и обновить Podkop",
-    )
     screen.p("Выберите необходимое действие:")
     screen.button_row([
         {"type": "callback_data", "text": "🔄 Обновить панель", "data": "home",
@@ -1170,6 +1157,11 @@ def get_update_screen():
     elif remote_ver and local_ver != "unknown":
         is_update_available = (local_ver != remote_ver)
 
+    branch_btns = [
+        {"text": f"{'🔘' if branch == 'main' else '⚪'} main", "callback_data": "switch_branch_main"},
+        {"text": f"{'🔘' if branch == 'beta' else '⚪'} beta", "callback_data": "switch_branch_beta"},
+    ]
+
     if is_update_available:
         short_remote_sha = remote_sha[:7] if remote_sha else "н/д"
         short_local_sha = local_sha[:7] if local_sha else "н/д"
@@ -1192,16 +1184,21 @@ def get_update_screen():
         text = screen.build()
         kb = {"inline_keyboard": [
             [{"text": "🔄 Обновить", "callback_data": "do_update"}],
+            branch_btns,
             [{"text": "◀ Главное меню", "callback_data": "home"}]
         ]}
     else:
         screen = RichScreen()
         screen.h("✅ Установлена последняя версия")
         screen.kv([
+            ("🌿 Ветка", f"<code>{esc(branch)}</code>"),
             ("📦 Версия", f"<code>v{esc(local_display_ver)}</code>"),
             ("🔖 Коммит", f"<code>{esc(local_sha[:7] if local_sha else 'н/д')}</code>"),
         ])
         text = screen.build()
-        kb = {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+        kb = {"inline_keyboard": [
+            branch_btns,
+            [{"text": "◀ Главное меню", "callback_data": "home"}]
+        ]}
 
     return text, kb

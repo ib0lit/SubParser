@@ -367,6 +367,23 @@ def main():
                         )
                         continue
 
+                    elif data in ("switch_branch_main", "switch_branch_beta"):
+                        if user_id != admin_id:
+                            answer_callback(token, cb_id, "⛔ Доступно только администратору!")
+                            continue
+                        new_br = "beta" if data == "switch_branch_beta" else "main"
+                        subprocess.run(["uci", "set", f"subparser.settings.update_branch={new_br}"], check=False)
+                        subprocess.run(["uci", "commit", "subparser"], check=False)
+                        try:
+                            with open("/etc/subparser_branch", "w") as f_br:
+                                f_br.write(new_br + "\n")
+                        except Exception:
+                            pass
+                        answer_callback(token, cb_id, f"Выбрана ветка: {new_br}")
+                        t, kb = get_update_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+                        continue
+
                     elif data == "parser_menu":
                         clear_user_state(user_id)
                         answer_callback(token, cb_id)

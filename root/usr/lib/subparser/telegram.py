@@ -135,9 +135,8 @@ def edit_msg(token, chat_id, message_id, text, reply_markup=None):
         result = tg_api(token, "editMessageText", payload, timeout=10)
         if result is not None:
             return result
-        _remember_rich_edit_failure(edit_key)
-        # Ниже — обычный HTML. Он же нужен, если сообщение было отправлено
-        # старой версией бота и не хочет превращаться в rich через edit.
+        # Не блокируем сообщение навсегда: если временный сбой, следующий экран
+        # может быть успешно отрисован через rich.
 
     text = _classic_text(text)
     if len(text) <= TG_MAX_LEN:
