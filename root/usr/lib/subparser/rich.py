@@ -59,6 +59,7 @@ class RichScreen:
     def __init__(self):
         self._rich = []
         self._plain = []
+        self._fallback_kb = []
 
     def _add(self, rich, plain):
         if rich:
@@ -105,25 +106,25 @@ class RichScreen:
         )
 
     def button_row(self, buttons, align="center"):
-        """Rich-кнопки внутри сообщения (второстепенные действия).
+        """Кнопки действий.
 
-        ``buttons`` — список словарей. Поддерживаются ``url``,
-        ``callback_data`` и ``copy_text``. Для классического fallback
-        рисуем только то, что там в принципе возможно: ссылки и текстовые
-        подсказки. Обычные действия остаются в inline-клавиатуре.
+        В rich-режиме отображаются как `<tg-button-row>` прямо внутри текста.
+        Также сохраняются в `fallback_kb`, чтобы автоматически примениться
+        в `inline_keyboard`, если rich-режим недоступен.
         """
         rich_buttons = []
         plain_lines = []
+        kb_row = []
         for btn in buttons:
             text = btn.get("text", "")
             style = f' style="{esc_attr(btn["style"])}"' if btn.get("style") else ""
-            kind = btn.get("type")
+            kind = btn.get("type", "callback_data")
             if kind == "url":
                 url = esc_attr(btn.get("url", ""))
                 rich_buttons.append(
                     f'<tg-button type="url" url="{url}"{style}>{text}</tg-button>'
                 )
-                plain_lines.append(f'<a href="{url}">{text}</a>')
+                kb_row.append({"text": text, "url": btn.get("url", "")})
             elif kind == "copy_text":
                 value = esc_attr(btn.get("text_to_copy", ""))
                 rich_buttons.append(
@@ -136,11 +137,18 @@ class RichScreen:
                     f'<tg-button type="callback_data" data="{data}"{style}>'
                     f"{text}</tg-button>"
                 )
+                kb_row.append({"text": text, "callback_data": btn.get("data", "")})
                 if btn.get("fallback"):
                     plain_lines.append(btn["fallback"])
+        if kb_row:
+            self._fallback_kb.append(kb_row)
         rich = (f'<tg-button-row align="{esc_attr(align)}">'
                 f'{"".join(rich_buttons)}</tg-button-row>')
         return self._add(rich, "\n".join(plain_lines))
+
+    @property
+    def fallback_keyboard(self):
+        return {"inline_keyboard": self._fallback_kb} if self._fallback_kb else None
 
     # --- таблицы --------------------------------------------------------
     def kv(self, rows, caption=None):

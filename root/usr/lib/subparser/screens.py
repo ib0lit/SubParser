@@ -51,8 +51,25 @@ def get_main_screen():
     ])
     screen.p("Выберите необходимое действие:")
     screen.button_row([
+        {"type": "callback_data", "text": "⚙️ Меню парсера", "data": "parser_menu", "style": "primary"},
+        {"type": "callback_data", "text": "📋 Серверы и пинг", "data": "servers", "style": "primary"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Проверить обновления", "data": "check_update", "style": "link"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📟 Ресурсы", "data": "sysinfo"},
+        {"type": "callback_data", "text": "👥 Клиенты", "data": "clients"},
+        {"type": "callback_data", "text": "🛡 Сервисы", "data": "check_services"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📊 Статус", "data": "status"},
+        {"type": "callback_data", "text": "♻️ Рестарт Podkop", "data": "restart"},
+        {"type": "callback_data", "text": "⚠️ Reboot", "data": "reboot", "style": "danger"},
+    ])
+    screen.button_row([
         {"type": "callback_data", "text": "🔄 Обновить панель", "data": "home",
-         "style": "primary", "fallback": "🔄 Обновить: /menu"},
+         "style": "link", "fallback": "🔄 Обновить: /menu"},
         {"type": "callback_data", "text": "📜 Последний лог", "data": "view_log",
          "style": "link"},
     ])
@@ -1161,6 +1178,12 @@ def get_update_screen():
         {"text": f"{'🔘' if branch == 'main' else '⚪'} main", "callback_data": "switch_branch_main"},
         {"text": f"{'🔘' if branch == 'beta' else '⚪'} beta", "callback_data": "switch_branch_beta"},
     ]
+    rich_branch_row = [
+        {"type": "callback_data", "text": f"{'🔘' if branch == 'main' else '⚪'} main",
+         "data": "switch_branch_main", "style": "primary" if branch == "main" else "link"},
+        {"type": "callback_data", "text": f"{'🔘' if branch == 'beta' else '⚪'} beta",
+         "data": "switch_branch_beta", "style": "primary" if branch == "beta" else "link"},
+    ]
 
     if is_update_available:
         short_remote_sha = remote_sha[:7] if remote_sha else "н/д"
@@ -1177,9 +1200,14 @@ def get_update_screen():
         screen.details("📝 Что нового (последний коммит)",
                        f"<p>{changelog}</p>", f"<i>{changelog}</i>", open=True)
         screen.button_row([
-            {"type": "url", "text": "🔗 Изменения на GitHub",
+            {"type": "callback_data", "text": "🔄 Обновить SubParser", "data": "do_update", "style": "success"},
+        ])
+        screen.button_row(rich_branch_row)
+        screen.button_row([
+            {"type": "url", "text": "🔗 Коммит на GitHub",
              "url": f"https://github.com/ib0lit/SubParser/commit/{esc_attr(remote_sha)}",
              "style": "link"},
+            {"type": "callback_data", "text": "◀ В меню", "data": "home", "style": "link"},
         ])
         text = screen.build()
         kb = {"inline_keyboard": [
@@ -1194,6 +1222,10 @@ def get_update_screen():
             ("🌿 Ветка", f"<code>{esc(branch)}</code>"),
             ("📦 Версия", f"<code>v{esc(local_display_ver)}</code>"),
             ("🔖 Коммит", f"<code>{esc(local_sha[:7] if local_sha else 'н/д')}</code>"),
+        ])
+        screen.button_row(rich_branch_row)
+        screen.button_row([
+            {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
         ])
         text = screen.build()
         kb = {"inline_keyboard": [
