@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import html
 import subprocess
 import urllib.parse
@@ -990,6 +991,17 @@ def get_status_screen():
     ]}
     return text, kb
 
+def _clean_log_output(text, max_len=3000):
+    """Очищает ANSI escape-последовательности и управляющие символы из логов."""
+    if not text:
+        return ""
+    # Удаляем терминальные цветовые коды ANSI (\x1b[...m)
+    cleaned = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+    # Удаляем непечатаемые символы, кроме перевода строки и табуляции
+    cleaned = "".join(ch for ch in cleaned if ch in ("\n", "\r", "\t") or ord(ch) >= 32)
+    return cleaned[-max_len:]
+
+
 def get_log_screen():
     log_text = "Лог пуст или еще не создан."
     if os.path.exists(LOG_FILE):
@@ -1000,17 +1012,24 @@ def get_log_screen():
         except Exception as e:
             log_text = f"Ошибка чтения лога: {e}"
 
-    safe_log = esc(log_text[-3000:])
-    line_count = len(log_text.strip().splitlines()) if log_text.strip() else 0
+    clean_log = _clean_log_output(log_text)
+    safe_log = esc(clean_log)
+    line_count = len(clean_log.strip().splitlines()) if clean_log.strip() else 0
     screen = RichScreen()
     screen.h("📄 Лог парсера")
     screen.p(f"Последние строки лога синхронизации: <code>{line_count}</code>")
-    screen.details(f"Показать лог ({line_count} строк)", f"<pre>{safe_log}</pre>",
-                   f"<pre>{safe_log}</pre>", open=True)
+    screen.raw(f"<pre>{safe_log}</pre>", f"<pre>{safe_log}</pre>")
     screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать лог", "text_to_copy": log_text[-3000:],
+        {"type": "copy_text", "text": "📋 Копировать лог", "text_to_copy": clean_log,
          "style": "primary"},
     ], align="left")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить лог", "data": "view_log"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ К меню парсера", "data": "parser_menu"},
+    ])
     text = screen.build()
     kb = {
         "inline_keyboard": [
@@ -1030,17 +1049,24 @@ def get_logread_screen():
     except Exception as e:
         out = f"Ошибка чтения logread: {e}"
 
-    safe_out = esc(out[-3000:])
-    line_count = len(out.strip().splitlines()) if out.strip() else 0
+    clean_out = _clean_log_output(out)
+    safe_out = esc(clean_out)
+    line_count = len(clean_out.strip().splitlines()) if clean_out.strip() else 0
     screen = RichScreen()
     screen.h("📜 Системный лог")
     screen.p(f"logread, последние строки: <code>{line_count}</code>")
-    screen.details(f"Показать лог ({line_count} строк)", f"<pre>{safe_out}</pre>",
-                   f"<pre>{safe_out}</pre>", open=True)
+    screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
     screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать logread", "text_to_copy": out[-3000:],
+        {"type": "copy_text", "text": "📋 Копировать logread", "text_to_copy": clean_out,
          "style": "primary"},
     ], align="left")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить logread", "data": "log_sys"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ Назад к статусу", "data": "status"},
+    ])
     text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить logread", "callback_data": "log_sys"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
@@ -1057,17 +1083,24 @@ def get_dmesg_screen():
     except Exception as e:
         out = f"Ошибка чтения dmesg: {e}"
 
-    safe_out = esc(out[-3000:])
-    line_count = len(out.strip().splitlines()) if out.strip() else 0
+    clean_out = _clean_log_output(out)
+    safe_out = esc(clean_out)
+    line_count = len(clean_out.strip().splitlines()) if clean_out.strip() else 0
     screen = RichScreen()
     screen.h("🖨 Лог ядра")
     screen.p(f"dmesg, последние строки: <code>{line_count}</code>")
-    screen.details(f"Показать лог ({line_count} строк)", f"<pre>{safe_out}</pre>",
-                   f"<pre>{safe_out}</pre>", open=True)
+    screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
     screen.button_row([
-        {"type": "copy_text", "text": "📋 Копировать dmesg", "text_to_copy": out[-3000:],
+        {"type": "copy_text", "text": "📋 Копировать dmesg", "text_to_copy": clean_out,
          "style": "primary"},
     ], align="left")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить dmesg", "data": "log_dmesg"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ Назад к статусу", "data": "status"},
+    ])
     text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить dmesg", "callback_data": "log_dmesg"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
