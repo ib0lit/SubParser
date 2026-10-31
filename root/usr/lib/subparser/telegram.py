@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 import json
+import logging
 import threading
 import time
 import urllib.error
 import urllib.request
+
+log = logging.getLogger("subparser.telegram")
 
 from .config import get_ssl_ctx, get_uci_bool
 from .rich import RichText
@@ -42,11 +45,13 @@ def tg_api(token, method, params=None, timeout=15, retries=2):
             if attempt <= retries and (e.code == 429 or 500 <= e.code < 600):
                 time.sleep(float(retry_after or (attempt * 2)))
                 continue
+            log.warning("Telegram API HTTP %d error on %s: %s", e.code, method, body if 'body' in locals() else e)
             return None
-        except Exception:
+        except Exception as e:
             if attempt <= retries:
                 time.sleep(attempt)
                 continue
+            log.warning("Telegram API exception on %s: %s", method, e)
             return None
 
 
