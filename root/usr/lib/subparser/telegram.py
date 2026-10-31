@@ -113,9 +113,15 @@ def _ensure_rich_buttons(text, reply_markup):
             lbl = esc_attr(btn.get("text", ""))
             if "url" in btn:
                 url = esc_attr(btn["url"])
+                # Если кнопка с таким действием уже есть в тексте, не дублируем
+                if f'url="{url}"' in str(text):
+                    continue
                 row_btns.append(f'<tg-button type="url" url="{url}">{lbl}</tg-button>')
             elif "callback_data" in btn:
                 data = esc_attr(btn["callback_data"])
+                # Если кнопка с таким callback_data уже есть в тексте, не дублируем
+                if f'data="{data}"' in str(text):
+                    continue
                 style = ""
                 if data == "do_reboot" or data.startswith("sub_del_do:"):
                     style = ' style="danger"'
