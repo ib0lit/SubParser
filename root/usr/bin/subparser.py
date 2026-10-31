@@ -1052,7 +1052,8 @@ def _wait_podkop_ready(timeout=240):
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
             pid = subprocess.run(["pidof", "sing-box"], stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, text=True).stdout.strip()
-            if status.returncode == 0 and pid:
+            service_running = bool(pid) or (status.returncode == 0) or ("running" in (status.stdout or "").lower())
+            if service_running:
                 process_seen = True
                 proxies, api_status = fetch_proxies()
                 if api_status in (200, 204) and proxies:
