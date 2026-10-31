@@ -98,7 +98,8 @@ def _remember_rich_edit_failure(key):
 def send_msg(token, chat_id, text, reply_markup=None):
     if _rich_enabled(text) and len(text) <= TG_RICH_MAX_LEN:
         payload = {"chat_id": chat_id, "rich_message": {"html": str(text)}}
-        if reply_markup:
+        # Если в тексте уже есть встроенные кнопки <tg-button>, внешнюю клавиатуру не дублируем
+        if reply_markup and "<tg-button" not in str(text):
             payload["reply_markup"] = reply_markup
         result = tg_api(token, "sendRichMessage", payload, timeout=10)
         if result is not None:
@@ -130,8 +131,11 @@ def edit_msg(token, chat_id, message_id, text, reply_markup=None):
             "message_id": message_id,
             "rich_message": {"html": str(text)},
         }
-        if reply_markup:
+        # Если в тексте уже есть встроенные кнопки <tg-button>, внешнюю клавиатуру убираем
+        if reply_markup and "<tg-button" not in str(text):
             payload["reply_markup"] = reply_markup
+        elif "<tg-button" in str(text):
+            payload["reply_markup"] = {"inline_keyboard": []}
         result = tg_api(token, "editMessageText", payload, timeout=10)
         if result is not None:
             return result
