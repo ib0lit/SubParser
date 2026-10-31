@@ -1067,7 +1067,12 @@ def main():
                         target_tag = f"{sec_name}-{idx+1}-out"
                         active_manual_tag, is_auto = get_section_routing_state(sec_name)
                         is_active = (not is_auto and target_tag == active_manual_tag)
-                        status_badge = "⚡ <b>АКТИВЕН В ДАННЫЙ МОМЕНТ (Вручную)</b>" if is_active else ("🤖 <b>Автовыбор (URL-Test)</b>" if is_auto else "💤 <b>В резерве</b>")
+                        if is_active:
+                            status_badge = "⚡ <b>Активен (выбран вручную)</b>"
+                        elif is_auto:
+                            status_badge = "🤖 <b>Автовыбор (URL-Test)</b>"
+                        else:
+                            status_badge = "💤 <b>В резерве</b>"
 
                         screen = RichScreen()
                         screen.h(f"📌 Узел #{idx+1} · секция {esc(sec_name)}")
@@ -1077,12 +1082,31 @@ def main():
                             ("🔖 Тег", f"<code>{esc(target_tag)}</code>"),
                             ("📡 Статус", status_badge),
                         ])
-                        screen.p("Выберите действие:")
+                        if is_active:
+                            screen.quote("Этот узел выбран вручную, весь трафик секции идёт через него.")
+                        elif is_auto:
+                            screen.quote("Включён режим автовыбора. Podkop автоматически тестирует узлы и направляет трафик через самый быстрый.")
+                        else:
+                            screen.quote("Секция переведена в ручной режим, но выбран другой узел. Этот сервер находится в резерве.")
+
+                        # Ссылку оборачиваем в <pre> для копирования в 1 клик без лимита в 256 символов
                         if idx < len(links):
+                            screen.raw(f"<b>Ссылка узла:</b>\n<pre>{esc(links[idx])}</pre>",
+                                       f"<b>Ссылка узла:</b>\n<pre>{esc(links[idx])}</pre>")
+
+                        if not is_active:
                             screen.button_row([
-                                {"type": "copy_text", "text": "📋 Копировать ссылку узла",
-                                 "text_to_copy": links[idx], "style": "primary"},
-                            ], align="left")
+                                {"type": "callback_data", "text": "⚡ Сделать активным", "data": f"act:{sec_name}:{idx}:{pg}"}
+                            ])
+                        else:
+                            screen.button_row([
+                                {"type": "callback_data", "text": "🔄 Сбросить на Авто (URL-Test)", "data": f"auto_mode:{sec_name}:{pg}"}
+                            ])
+                        screen.button_row([
+                            {"type": "callback_data", "text": f"🗑 Удалить из [{sec_name}]", "data": f"del:{sec_name}:{idx}:{pg}", "style": "danger"},
+                            {"type": "callback_data", "text": "◀️ Назад к списку", "data": f"srv_pg:{sec_name}:{pg}"}
+                        ])
+
                         card = screen.build()
                         btn_row = []
                         if not is_active:
@@ -1118,14 +1142,21 @@ def main():
                             ("🏷 Имя", f"<code>{esc(name)}</code>"),
                             ("⚡ Протокол", f"<code>{esc(proto)}</code>"),
                             ("🔖 Тег", f"<code>{esc(actual_tag)}</code>"),
-                            ("📡 Статус", "⚡ <b>АКТИВЕН В ДАННЫЙ МОМЕНТ</b>"),
+                            ("📡 Статус", "⚡ <b>Активен (выбран вручную)</b>"),
                         ])
                         screen.quote("✅ Трафик зафиксирован через этот сервер.")
                         if idx < len(links):
-                            screen.button_row([
-                                {"type": "copy_text", "text": "📋 Копировать ссылку узла",
-                                 "text_to_copy": links[idx], "style": "primary"},
-                            ], align="left")
+                            screen.raw(f"<b>Ссылка узла:</b>\n<pre>{esc(links[idx])}</pre>",
+                                       f"<b>Ссылка узла:</b>\n<pre>{esc(links[idx])}</pre>")
+
+                        screen.button_row([
+                            {"type": "callback_data", "text": "🔄 Сбросить на Авто (URL-Test)", "data": f"auto_mode:{sec_name}:{pg}"}
+                        ])
+                        screen.button_row([
+                            {"type": "callback_data", "text": f"🗑 Удалить из [{sec_name}]", "data": f"del:{sec_name}:{idx}:{pg}", "style": "danger"},
+                            {"type": "callback_data", "text": "◀️ Назад к списку", "data": f"srv_pg:{sec_name}:{pg}"}
+                        ])
+
                         card = screen.build()
                         kb = {"inline_keyboard": [
                             [{"text": "🔄 Сбросить на Авто (URL-Test)", "callback_data": f"auto_mode:{sec_name}:{pg}"}],
