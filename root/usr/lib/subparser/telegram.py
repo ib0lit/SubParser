@@ -96,10 +96,8 @@ def _remember_rich_edit_failure(key):
 
 
 def _ensure_rich_buttons(text, reply_markup):
-    """Если сообщение в rich-режиме, но в нём ещё нет <tg-button>, переносит кнопки из клавиатуры внутрь текста."""
+    """Конвертирует кнопки из reply_markup внутрь Rich-сообщения (<tg-button-row>)."""
     if not isinstance(text, RichText) or not reply_markup:
-        return text, reply_markup
-    if "<tg-button" in str(text):
         return text, reply_markup
     raw_rows = reply_markup.get("inline_keyboard", []) if isinstance(reply_markup, dict) else reply_markup
     if not raw_rows:

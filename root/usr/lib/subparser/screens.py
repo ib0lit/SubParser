@@ -117,7 +117,7 @@ def get_parser_menu_screen(prompt_custom_ping=False):
     fp_badge = fp_map.get(fp_val, fp_val.capitalize())
 
     excluded_protocols = [normalize_protocol(p) for p in get_uci_list("exclude_protocols") if p]
-    proto_badge = ("Все" if not excluded_protocols
+    proto_badge = ("Нет" if not excluded_protocols
                    else ", ".join(PROTOCOL_CHOICES.get(p, p) for p in excluded_protocols))
 
     if per_sec:
