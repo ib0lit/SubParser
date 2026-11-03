@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/sing--box-1.8+-E34F26?style=flat-square" alt="sing-box" />
   <img src="https://img.shields.io/badge/Telegram_Bot-Ready-24A1DE?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
   <img src="https://img.shields.io/badge/LuCI-Integrated-00D26A?style=flat-square" alt="LuCI" />
-  <img src="https://img.shields.io/badge/Release-v0.1.1--beta-8A2BE2?style=flat-square" alt="Release version" />
+  <img src="https://img.shields.io/badge/Release-v0.1.2--beta-8A2BE2?style=flat-square" alt="Release version" />
   <img src="https://img.shields.io/badge/Core-v2.1.9-informational?style=flat-square" alt="Core version" />
 </p>
 
@@ -68,13 +68,13 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 SUBPARSER_RELEASE=latest sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/install.sh)"
 
 # конкретная версия
-SUBPARSER_RELEASE=v0.1.1-beta sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+SUBPARSER_RELEASE=v0.1.2-beta sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
 ```
 
 Для `update.sh` также работает аргумент `--release`:
 
 ```sh
-sh update.sh --release v0.1.1-beta
+sh update.sh --release v0.1.2-beta
 ```
 
 Выбранный режим сохраняется в UCI (`subparser.settings.update_release`) и используется
@@ -279,7 +279,7 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
     │   │   ├── subparser                     # Служба управления cron-задачами
     │   │   └── subparser-bot                 # procd-демон Telegram-бота
     │   ├── subparser_version                 # Версия ядра/парсера (2.1.9)
-    │   └── subparser_pkg_version             # Версия релиза (0.1.1-beta)
+    │   └── subparser_pkg_version             # Версия релиза (0.1.2-beta)
     ├── usr/
     │   ├── bin/
     │   │   ├── subparser.py                  # Ядро парсинга и стресс-тестирования
