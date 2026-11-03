@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/sing--box-1.8+-E34F26?style=flat-square" alt="sing-box" />
   <img src="https://img.shields.io/badge/Telegram_Bot-Ready-24A1DE?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
   <img src="https://img.shields.io/badge/LuCI-Integrated-00D26A?style=flat-square" alt="LuCI" />
-  <img src="https://img.shields.io/badge/Release-v0.1.2b-8A2BE2?style=flat-square" alt="Release version" />
+  <img src="https://img.shields.io/badge/Release-v0.1.2c-8A2BE2?style=flat-square" alt="Release version" />
   <img src="https://img.shields.io/badge/Core-v3.0.0-informational?style=flat-square" alt="Core version" />
 </p>
 
@@ -68,20 +68,20 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 SUBPARSER_RELEASE=latest sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/install.sh)"
 
 # конкретная версия
-SUBPARSER_RELEASE=v0.1.2b sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+SUBPARSER_RELEASE=v0.1.2c sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
 ```
 
 Для `update.sh` также работает аргумент `--release`:
 
 ```sh
-sh update.sh --release v0.1.2b
+sh update.sh --release v0.1.2c
 ```
 
 Локальное обновление без GitHub (из каталога проекта или архива релиза):
 
 ```sh
 sh update.sh --local /path/to/SubParser
-sh update.sh --archive /path/to/subparser-0.1.2b.tar.gz
+sh update.sh --archive /path/to/subparser-0.1.2c.tar.gz
 ```
 
 Выбранный режим сохраняется в UCI (`subparser.settings.update_release`) и используется
@@ -290,7 +290,7 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
     │   │   ├── subparser                     # Служба управления cron-задачами
     │   │   └── subparser-bot                 # procd-демон Telegram-бота
     │   ├── subparser_version                 # Версия ядра/парсера (3.0.0)
-    │   └── subparser_pkg_version             # Версия релиза (0.1.2b)
+    │   └── subparser_pkg_version             # Версия релиза (0.1.2c)
     ├── usr/
     │   ├── bin/
     │   │   ├── subparser.py                  # Ядро парсинга и стресс-тестирования
