@@ -666,7 +666,7 @@ def main():
 
                     elif data == "cycle_limit":
                         cur_lim = get_uci_val("max_best_nodes", "0")
-                        cycle_map = {"0": "3", "3": "5", "5": "7", "7": "individual"}
+                        cycle_map = {"0": "3", "3": "5", "5": "10", "10": "individual"}
                         new_lim = cycle_map.get(cur_lim, "0")
                         if new_lim == "individual":
                             set_uci_val("per_section_config", "1")
@@ -709,7 +709,7 @@ def main():
 
                     elif data == "cycle_limit_sections":
                         cur_lim = get_uci_val("max_best_nodes", "0")
-                        cycle_map = {"0": "3", "3": "5", "5": "7", "7": "individual"}
+                        cycle_map = {"0": "3", "3": "5", "5": "10", "10": "individual"}
                         new_lim = cycle_map.get(cur_lim, "0")
                         if new_lim == "individual":
                             set_uci_val("per_section_config", "1")
