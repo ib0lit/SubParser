@@ -892,16 +892,15 @@ def main():
                             "msg_id": msg_id,
                             "started": int(time.time()),
                         })
+                        # Статус синхронизации остаётся обычным HTML-сообщением:
+                        # subparser.py обновляет его через editMessageText с
+                        # parse_mode=HTML. Rich-сообщение так обновить нельзя.
                         if ok:
-                            screen = RichScreen()
-                            screen.h("▶️ Синхронизация по текущей конфигурации")
-                            screen.p(text_sync.replace("\n", "<br>"))
-                            sync_text = screen.build()
+                            sync_text = ("▶️ <b>Синхронизация по текущей конфигурации</b>\n\n"
+                                         + text_sync)
                         else:
-                            screen = RichScreen()
-                            screen.h("⚠️ Синхронизация не запущена")
-                            screen.p(text_sync.replace("\n", "<br>"))
-                            sync_text = screen.build()
+                            sync_text = ("⚠️ <b>Синхронизация не запущена</b>\n\n"
+                                         + text_sync)
                         edit_msg(token, chat_id, msg_id, sync_text, reply_markup={"inline_keyboard": []})
                         th = threading.Thread(target=watch_parser_and_restore_menu, args=(token, chat_id, msg_id), daemon=True)
                         th.start()
