@@ -6,8 +6,8 @@
   <img src="https://img.shields.io/badge/sing--box-1.8+-E34F26?style=flat-square" alt="sing-box" />
   <img src="https://img.shields.io/badge/Telegram_Bot-Ready-24A1DE?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
   <img src="https://img.shields.io/badge/LuCI-Integrated-00D26A?style=flat-square" alt="LuCI" />
-  <img src="https://img.shields.io/badge/Release-v0.1.2--beta-8A2BE2?style=flat-square" alt="Release version" />
-  <img src="https://img.shields.io/badge/Core-v2.1.9-informational?style=flat-square" alt="Core version" />
+  <img src="https://img.shields.io/badge/Release-v0.1.2b-8A2BE2?style=flat-square" alt="Release version" />
+  <img src="https://img.shields.io/badge/Core-v3.0.0-informational?style=flat-square" alt="Core version" />
 </p>
 
 **SubParser** — легковесный инструмент автоматизации для OpenWrt. Парсит подписки, проверяет узлы, отбирает самые стабильные серверы и выгружает их в Podkop. Управление доступно через LuCI и Telegram-бота.
@@ -68,13 +68,13 @@ sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update
 SUBPARSER_RELEASE=latest sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/install.sh)"
 
 # конкретная версия
-SUBPARSER_RELEASE=v0.1.2-beta sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
+SUBPARSER_RELEASE=v0.1.2b sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh)"
 ```
 
 Для `update.sh` также работает аргумент `--release`:
 
 ```sh
-sh update.sh --release v0.1.2-beta
+sh update.sh --release v0.1.2b
 ```
 
 Выбранный режим сохраняется в UCI (`subparser.settings.update_release`) и используется
@@ -131,7 +131,7 @@ SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit
 - **Поддерживаемые протоколы**: VLESS (Reality, TLS, WebSocket, gRPC, XHTTP), Trojan, Hysteria2, Shadowsocks (SIP002 и legacy), SOCKS4/4a/5.
 - **Двухэтапный отбор**: быстрый скрининг доступности, затем тест стабильности по 5 замерам с анализом джиттера.
 - **Фильтр протоколов**: в LuCI и боте можно исключить любой набор протоколов. Такие узлы отбрасываются сразу после загрузки подписки — до дедупликации и первого этапа скрининга.
-- **Интеграция с Podkop**: мультисекционность, режимы замены и добавления, индивидуальная настройка каждой секции.
+- **Интеграция с Podkop**: мультисекционность, режимы замены и добавления, индивидуальная настройка каждой секции: режим, лимит Топ-N и очистка мёртвых узлов.
 - **Telegram-бот**: подписки, серверы, пинг, клиенты сети, логи и системные показатели прямо в чате.
 - **LuCI**: настройки сервиса, подписок, секций Podkop и интерактивный дашборд узлов.
 - **Автономность**: гибкий cron-планировщик и watchdog с автоперезапуском Podkop.
@@ -146,7 +146,8 @@ SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit
   - *Быстрый скрининг*: первичная проверка доступности серверов подписок через HTTP 204.
   - *Тест стабильности (Jitter Analysis)*: серия из 5 контрольных замеров для отсева серверов с потерями пакетов и нестабильной задержкой.
 * **Интеллектуальный фильтр RU**: автоматическое отсеивание серверов для обхода белых списков (отключается в настройках).
-* **Лимитирование пула (Top-N)**: выгрузка в Podkop только Топ-3/5/10 самых стабильных серверов или всего пула, прошедшего проверку.
+* **Лимитирование пула (Top-N)**: выгрузка в Podkop только Топ-3/5/10, всего пула или собственного Топ-N. Лимит задаётся глобально и может быть переопределён для каждой секции Podkop в индивидуальном режиме.
+* **Очистка мёртвых при добавлении**: в режиме добавления парсер может дополнительно проверить уже установленные узлы секции и исключить те, что перестали отвечать. Опция включается глобально или отдельно для каждой секции; в режиме полной замены список и так перезаписывается.
 * **Защита от потери связи (Smart Fallback)**: если ни один сервер не уложился в заданный пинг, выбираются наименее медленные; если рабочих узлов меньше двух, конфигурация Podkop остаётся нетронутой, а администратор получает алерт в боте.
 * **Контроль трафика и лимитов**: парсинг заголовков `Subscription-Userinfo` с выводом остатка трафика и срока действия подписки, если провайдер отдаёт эту информацию.
 * **Кастомный User-Agent и параметры устройства**: можно указать свой User-Agent, Device ID/HWID, модель устройства и версию ОС, чтобы не занимать лишний слот в подписке (не гарантировано).
@@ -185,7 +186,7 @@ SUBPARSER_BRANCH=main sh -c "$(curl -sL https://raw.githubusercontent.com/ib0lit
 * основные настройки: включение службы, порог пинга, лимит серверов, фильтрация RU, фильтр протоколов, ручной запуск;
 * расширенные настройки: размер пула для стресс-теста, гистерезис, fallback на нестабильные узлы, проверка TLS, локальная диагностика, Clash API Podkop и прокси для теста скорости;
 * обновления: выбор ветки GitHub, список веток подтягивается из репозитория;
-* секции Podkop: глобальные и индивидуальные режимы;
+* секции Podkop: глобальные и индивидуальные режимы, персональный лимит Топ-N и очистка мёртвых узлов при добавлении;
 * watchdog: отдельная вкладка с интервалом проверки, таймаутами, grace-периодом, кулдауном, URL проверки и переключателями действий;
 * Telegram: токен, Chat ID, доверенные пользователи, проверка связи;
 * подписки: таблица источников, User-Agent, Device ID/HWID, модель и версия ОС;
@@ -278,8 +279,8 @@ WinSCP, откат, поведение после `apk upgrade`, сборка и
     │   ├── init.d/
     │   │   ├── subparser                     # Служба управления cron-задачами
     │   │   └── subparser-bot                 # procd-демон Telegram-бота
-    │   ├── subparser_version                 # Версия ядра/парсера (2.1.9)
-    │   └── subparser_pkg_version             # Версия релиза (0.1.2-beta)
+    │   ├── subparser_version                 # Версия ядра/парсера (3.0.0)
+    │   └── subparser_pkg_version             # Версия релиза (0.1.2b)
     ├── usr/
     │   ├── bin/
     │   │   ├── subparser.py                  # Ядро парсинга и стресс-тестирования

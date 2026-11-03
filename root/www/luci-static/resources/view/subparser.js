@@ -138,7 +138,16 @@ return view.extend({
         o.value('3', _('Топ-3'));
         o.value('5', _('Топ-5'));
         o.value('10', _('Топ-10'));
+        o.value('custom', _('Свой лимит (Топ-N)'));
         o.default = '0';
+        o.description = _('Сколько лучших узлов оставлять в каждой секции. При индивидуальной настройке секций значение можно переопределить для каждой секции отдельно.');
+
+        o = s.taboption('general', form.Value, 'max_best_custom', _('Свой лимит Топ-N'));
+        o.datatype = 'uinteger';
+        o.placeholder = '20';
+        o.default = '0';
+        o.depends('max_best_nodes', 'custom');
+        o.description = _('Используется, если выбран «Свой лимит (Топ-N)». 0 — без ограничения.');
 
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
@@ -245,6 +254,11 @@ return view.extend({
         glob_mode.default = 'replace';
         glob_mode.depends('per_section_config', '0');
 
+        var globPrune = s.taboption('sections', form.Flag, 'prune_dead_append', _('Удалять мёртвые узлы при добавлении'));
+        globPrune.default = '0';
+        globPrune.depends('per_section_config', '0');
+        globPrune.description = _('В режиме добавления парсер дополнительно проверит уже установленные узлы секции и исключит те, что не отвечают. В режиме замены список и так перезаписывается.');
+
         self.availableSections.forEach(function(sec) {
             var sec_en = s.taboption('sections', form.Flag, 'sec_en_' + sec, _('Обновлять секцию') + ' [' + sec + ']');
             sec_en.default = '1';
@@ -255,6 +269,30 @@ return view.extend({
             sec_m.value('append', _('Добавлять к существующим (без дубликатов)'));
             sec_m.default = 'replace';
             sec_m.depends('per_section_config', '1');
+
+            var secLimit = s.taboption('sections', form.ListValue, 'sec_limit_' + sec, _('Лимит узлов') + ' [' + sec + ']');
+            secLimit.value('inherit', _('Как в глобальных настройках'));
+            secLimit.value('0', _('Неограниченно'));
+            secLimit.value('3', _('Топ-3'));
+            secLimit.value('5', _('Топ-5'));
+            secLimit.value('10', _('Топ-10'));
+            secLimit.value('custom', _('Свой лимит (Топ-N)'));
+            secLimit.default = 'inherit';
+            secLimit.depends('per_section_config', '1');
+
+            var secLimitCustom = s.taboption('sections', form.Value, 'sec_limit_custom_' + sec, _('Свой лимит Топ-N') + ' [' + sec + ']');
+            secLimitCustom.datatype = 'uinteger';
+            secLimitCustom.placeholder = '20';
+            secLimitCustom.default = '0';
+            secLimitCustom.depends('per_section_config', '1');
+            secLimitCustom.depends('sec_limit_' + sec, 'custom');
+
+            var secPrune = s.taboption('sections', form.ListValue, 'sec_prune_dead_' + sec, _('Удалять мёртвые при добавлении') + ' [' + sec + ']');
+            secPrune.value('inherit', _('Как в глобальных настройках'));
+            secPrune.value('1', _('Да'));
+            secPrune.value('0', _('Нет'));
+            secPrune.default = 'inherit';
+            secPrune.depends('per_section_config', '1');
         });
 
         o = s.taboption('advanced', form.Value, 'stress_top', _('Сколько кандидатов проверять на стабильность'));

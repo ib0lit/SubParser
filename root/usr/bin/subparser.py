@@ -352,6 +352,46 @@ def get_uci(option, default=""):
         return default
 
 
+def _limit_value(value, custom_value="0"):
+    """Преобразует лимит из UCI в число. 0 — без ограничения, custom — ручное значение."""
+    value = str(value or "").strip().lower()
+    if value in ("", "0", "unlimited", "none"):
+        return 0
+    if value == "custom":
+        value = str(custom_value or "0").strip()
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def resolve_section_limit(section, per_section):
+    """Лимит лучших узлов для секции: персональный или глобальный."""
+    if per_section:
+        mode = get_uci(f"sec_limit_{section}", "inherit")
+        if mode and mode != "inherit":
+            return _limit_value(mode, get_uci(f"sec_limit_custom_{section}", "0"))
+    return _limit_value(get_uci("max_best_nodes", "0"), get_uci("max_best_custom", "0"))
+
+
+def resolve_section_prune(section, per_section):
+    """Удалять ли мёртвые узлы из существующего списка при режиме добавления."""
+    if per_section:
+        value = get_uci(f"sec_prune_dead_{section}", "inherit")
+        if value in ("0", "1"):
+            return value == "1"
+    return get_uci("prune_dead_append", "0") == "1"
+
+
+def read_section_links(section):
+    try:
+        out = subprocess.check_output(["uci", "-q", "get", f"podkop.{section}.urltest_proxy_links"],
+                                      text=True, stderr=subprocess.DEVNULL).strip()
+        return [l.strip() for l in out.split() if l.strip()]
+    except Exception:
+        return []
+
+
 def link_protocol(link):
     """Каноническое имя протокола ссылки (hy2 -> hysteria2)."""
     try:
@@ -1140,7 +1180,6 @@ def _run():
         return
 
     threshold = int(get_uci("ping_threshold", "350"))
-    max_best = int(get_uci("max_best_nodes", "0"))
     max_jitter = int(get_uci("max_jitter", "150"))
     filter_ru = get_uci("filter_ru", "1") == "1"
     per_section_config = get_uci("per_section_config", "0") == "1"
@@ -1162,6 +1201,9 @@ def _run():
 
     if not section_targets:
         section_targets["main"] = "replace"
+
+    section_limits = {s: resolve_section_limit(s, per_section_config) for s in section_targets}
+    section_prune = {s: resolve_section_prune(s, per_section_config) for s in section_targets}
 
     start_time = time.time()
     all_links = []
@@ -1199,12 +1241,31 @@ def _run():
         send_telegram_notify(msg)
         return
 
-    print(f"\nВсего уникальных узлов для тестирования: {len(all_links)}")
+    # В режиме добавления с включённой очисткой проверяем и текущие узлы секций,
+    # чтобы выкинуть мёртвые. Новые узлы отбираются только из подписок.
+    existing_by_section = {}
+    prune_test_links = []
+    test_fps = {link_fingerprint(l) for l in all_links}
+    for sec, mode in section_targets.items():
+        if mode != "append" or not section_prune.get(sec):
+            continue
+        existing = read_section_links(sec)
+        existing_by_section[sec] = existing
+        for link in existing:
+            fp = link_fingerprint(link)
+            if fp not in test_fps:
+                test_fps.add(fp)
+                prune_test_links.append(link)
+    if prune_test_links:
+        print(f"[i] Дополнительно проверяем текущие узлы секций: {len(prune_test_links)}")
+
+    test_links = list(all_links) + prune_test_links
+    print(f"\nВсего уникальных узлов для тестирования: {len(test_links)}")
 
     api_port = find_free_port()
     outbounds = []
     tag_map = {}
-    for i, link in enumerate(all_links):
+    for i, link in enumerate(test_links):
         tag = f"n_{i+1}"
         try:
             ob = parse_link_to_singbox_outbound(link, tag)
@@ -1347,8 +1408,12 @@ def _run():
             os.remove(tmp_cfg)
 
     # Отбор: стабильные, затем расширенный порог, и только по явному разрешению — живые.
+    # Узлы, добавленные только для проверки существующей конфигурации, в отбор не попадают.
+    candidate_fps = {link_fingerprint(l) for l in all_links}
     stable = [l for l, i in results.items()
-              if i.get("is_stable") and i.get("delay", 0) > 0 and not (filter_ru and is_ru_node(i.get("name", "")))]
+              if link_fingerprint(l) in candidate_fps
+              and i.get("is_stable") and i.get("delay", 0) > 0
+              and not (filter_ru and is_ru_node(i.get("name", "")))]
     best = [l for l in stable if results[l]["delay"] < threshold]
     if not best and stable:
         relaxed_limit = int(threshold * 1.5)
@@ -1357,9 +1422,19 @@ def _run():
             print(f"[i] Порог {threshold} ms не дал результата, применяем расширенный порог {relaxed_limit} ms.")
     if not best and get_uci_bool("allow_unstable_fallback", False):
         best = [l for l, i in results.items()
-                if i.get("delay", 0) > 0 and not (filter_ru and is_ru_node(i.get("name", "")))]
+                if link_fingerprint(l) in candidate_fps
+                and i.get("delay", 0) > 0
+                and not (filter_ru and is_ru_node(i.get("name", "")))]
         if best:
             print("[!] Применён fallback на живые (нестабильные) узлы: включена опция allow_unstable_fallback.")
+
+    # Результаты в разрезе fingerprint — для проверки уже установленных узлов.
+    results_by_fp = {}
+    for link, info in results.items():
+        fp = link_fingerprint(link)
+        prev = results_by_fp.get(fp)
+        if prev is None or (info.get("delay", 0) > 0 and prev.get("delay", 0) <= 0):
+            results_by_fp[fp] = info
 
     previous = read_json(LAST_SELECTED_FILE, {}).get("links", [])
     previous_set = {link_fingerprint(x) for x in previous} if isinstance(previous, list) else set()
@@ -1373,9 +1448,6 @@ def _run():
         return score
 
     best.sort(key=lambda l: (node_score(l), results.get(l, {}).get("delay", 999999)))
-    if max_best > 0 and len(best) > max_best:
-        print(f"Применен лимит узлов: оставляем Топ-{max_best} из {len(best)}")
-        best = best[:max_best]
 
     elapsed = round(time.time() - start_time, 1)
     MIN_REQUIRED_NODES = 2
@@ -1415,19 +1487,32 @@ def _run():
     selection_proxies = None
     write_failed = False
     for sec, mode in section_targets.items():
-        existing_links = []
-        try:
-            out = subprocess.check_output(["uci", "-q", "get", f"podkop.{sec}.urltest_proxy_links"],
-                                          text=True, stderr=subprocess.DEVNULL).strip()
-            existing_links = [l.strip() for l in out.split() if l.strip()]
-        except Exception:
-            existing_links = []
+        existing_links = existing_by_section.get(sec)
+        if existing_links is None:
+            existing_links = read_section_links(sec)
+
+        section_limit = section_limits.get(sec, 0)
+        section_best = best[:section_limit] if section_limit > 0 else list(best)
+        if section_limit > 0:
+            print(f"Секция '{sec}': лимит Топ-{section_limit} (кандидатов {len(best)}).")
 
         if mode == "append":
-            existing_fps = {link_fingerprint(x) for x in existing_links}
             merged = list(existing_links)
+            pruned_dead = 0
+            if section_prune.get(sec):
+                kept = []
+                for link in merged:
+                    info = results_by_fp.get(link_fingerprint(link))
+                    # Если узел не удалось протестировать — не трогаем его.
+                    if info is None or info.get("delay", 0) > 0:
+                        kept.append(link)
+                    else:
+                        pruned_dead += 1
+                merged = kept
+
+            existing_fps = {link_fingerprint(x) for x in merged}
             added = 0
-            for idx_b, b in enumerate(best):
+            for idx_b, b in enumerate(section_best):
                 if link_fingerprint(b) not in existing_fps:
                     merged.append(_prepare_link(b, results, idx_b))
                     existing_fps.add(link_fingerprint(b))
@@ -1435,9 +1520,12 @@ def _run():
             target_links = merged
             before_cnt = len(existing_links)
             after_cnt = len(target_links)
-            report = f"  ▫️ <b>{html.escape(sec)}</b>: добавлено +{added} новых (было {before_cnt} → стало {after_cnt})"
+            report = f"  ▫️ <b>{html.escape(sec)}</b>: добавлено +{added} новых"
+            if pruned_dead:
+                report += f", удалено мёртвых -{pruned_dead}"
+            report += f" (было {before_cnt} → стало {after_cnt})"
         else:
-            target_links = [_prepare_link(b, results, idx_b) for idx_b, b in enumerate(best)]
+            target_links = [_prepare_link(b, results, idx_b) for idx_b, b in enumerate(section_best)]
             before_cnt = len(existing_links)
             after_cnt = len(target_links)
             report = f"  ▫️ <b>{html.escape(sec)}</b>: полная замена (было {before_cnt} -> стало {after_cnt})"

@@ -37,6 +37,7 @@ from subparser.screens import (
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_protocols_menu_screen,
     get_sections_menu_screen, get_sections_selector_screen,
+    get_section_settings_screen,
     get_del_dead_all_confirm_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
@@ -213,6 +214,44 @@ def main():
                             screen.quote("Введите число от 30 до 3000.")
                             send_msg(token, user_id, screen.build())
                             t, kb = get_parser_menu_screen(prompt_custom_ping=True)
+                            send_msg(token, user_id, t, kb)
+                            continue
+
+                    if state.get("waiting_for") in ("custom_limit", "custom_limit_sec"):
+                        section = state.get("section", "")
+                        clear_user_state(user_id)
+                        if raw_text.isdigit() and 0 <= int(raw_text) <= 500:
+                            if section:
+                                set_uci_val(f"sec_limit_custom_{section}", raw_text)
+                                set_uci_val(f"sec_limit_{section}", "custom")
+                                target = f"секции {section}"
+                            else:
+                                set_uci_val("max_best_custom", raw_text)
+                                set_uci_val("max_best_nodes", "custom")
+                                target = "всех секций"
+                            limit_txt = "без ограничения" if int(raw_text) == 0 else f"Топ-{raw_text}"
+                            screen = RichScreen()
+                            screen.h("✅ Лимит узлов обновлён")
+                            screen.kv([
+                                ("🎯 Область", esc(target)),
+                                ("🔝 Лимит", f"<code>{esc(limit_txt)}</code>"),
+                            ])
+                            send_msg(token, user_id, screen.build())
+                            if section:
+                                t, kb = get_section_settings_screen(section)
+                            else:
+                                t, kb = get_parser_menu_screen()
+                            send_msg(token, user_id, t, kb)
+                            continue
+                        else:
+                            screen = RichScreen()
+                            screen.h("⚠️ Некорректное значение")
+                            screen.quote("Введите число от 0 до 500. 0 — без ограничения.")
+                            send_msg(token, user_id, screen.build())
+                            if section:
+                                t, kb = get_section_settings_screen(section)
+                            else:
+                                t, kb = get_parser_menu_screen(prompt_custom_limit=True)
                             send_msg(token, user_id, t, kb)
                             continue
 
@@ -630,9 +669,104 @@ def main():
                         cycle_map = {"0": "3", "3": "5", "5": "10", "10": "0"}
                         new_lim = cycle_map.get(cur_lim, "0")
                         set_uci_val("max_best_nodes", new_lim)
-                        badge_txt = "Все" if new_lim == "0" else f"Топ-{new_lim}"
+                        badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
                         answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
                         t, kb = get_parser_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "ask_custom_limit":
+                        set_user_state(user_id, {"waiting_for": "custom_limit"})
+                        answer_callback(token, cb_id, "Введите лимит...")
+                        t, kb = get_parser_menu_screen(prompt_custom_limit=True)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data in ("toggle_prune", "toggle_prune_menu"):
+                        cur = get_uci_val("prune_dead_append", "0")
+                        new_val = "0" if cur == "1" else "1"
+                        set_uci_val("prune_dead_append", new_val)
+                        answer_callback(token, cb_id,
+                                        "Мёртвые при добавлении: " +
+                                        ("удалять" if new_val == "1" else "оставлять"))
+                        if data == "toggle_prune_menu":
+                            t, kb = get_parser_menu_screen()
+                        else:
+                            t, kb = get_sections_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "cycle_limit_sections":
+                        cur_lim = get_uci_val("max_best_nodes", "0")
+                        cycle_map = {"0": "3", "3": "5", "5": "10", "10": "0"}
+                        new_lim = cycle_map.get(cur_lim, "0")
+                        set_uci_val("max_best_nodes", new_lim)
+                        badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
+                        answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
+                        t, kb = get_sections_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_screen:"):
+                        sec_name = data.split(":", 1)[1]
+                        answer_callback(token, cb_id)
+                        t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_toggle:"):
+                        sec_name = data.split(":", 1)[1]
+                        cur = get_uci_val(f"sec_en_{sec_name}", "1")
+                        set_uci_val(f"sec_en_{sec_name}", "0" if cur == "1" else "1")
+                        answer_callback(token, cb_id, "Секция переключена")
+                        t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_cycle_mode:"):
+                        sec_name = data.split(":", 1)[1]
+                        cur = get_uci_val(f"sec_mode_{sec_name}", "replace")
+                        new_val = "append" if cur == "replace" else "replace"
+                        set_uci_val(f"sec_mode_{sec_name}", new_val)
+                        answer_callback(token, cb_id,
+                                        "Режим: " + ("добавление" if new_val == "append" else "замена"))
+                        t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_cycle_limit:"):
+                        sec_name = data.split(":", 1)[1]
+                        cur = get_uci_val(f"sec_limit_{sec_name}", "inherit")
+                        cycle = ["inherit", "0", "3", "5", "10", "custom"]
+                        try:
+                            new_val = cycle[(cycle.index(cur) + 1) % len(cycle)]
+                        except ValueError:
+                            new_val = "inherit"
+                        set_uci_val(f"sec_limit_{sec_name}", new_val)
+                        if new_val == "custom":
+                            set_user_state(user_id, {"waiting_for": "custom_limit_sec",
+                                                     "section": sec_name})
+                            answer_callback(token, cb_id, "Введите Топ-N...")
+                            t, kb = get_section_settings_screen(sec_name)
+                            edit_msg(token, chat_id, msg_id, t, kb)
+                            continue
+                        answer_callback(token, cb_id, f"Лимит: {new_val}")
+                        t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_ask_limit:"):
+                        sec_name = data.split(":", 1)[1]
+                        set_user_state(user_id, {"waiting_for": "custom_limit_sec",
+                                                 "section": sec_name})
+                        answer_callback(token, cb_id, "Введите Топ-N...")
+                        t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_cycle_prune:"):
+                        sec_name = data.split(":", 1)[1]
+                        cur = get_uci_val(f"sec_prune_dead_{sec_name}", "inherit")
+                        cycle = ["inherit", "1", "0"]
+                        try:
+                            new_val = cycle[(cycle.index(cur) + 1) % len(cycle)]
+                        except ValueError:
+                            new_val = "inherit"
+                        set_uci_val(f"sec_prune_dead_{sec_name}", new_val)
+                        labels = {"inherit": "как глобально", "1": "удалять", "0": "оставлять"}
+                        answer_callback(token, cb_id, f"Мёртвые: {labels[new_val]}")
+                        t, kb = get_section_settings_screen(sec_name)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "cycle_cron":
