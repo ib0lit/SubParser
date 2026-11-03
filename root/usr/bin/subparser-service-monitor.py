@@ -457,13 +457,6 @@ def run_cycle(targets, state):
             result = probe_target(info["active_tag"], target, timeout_ms)
 
             if result["ok"]:
-                if st.get("fails", 0) >= threshold and st.get("notified"):
-                    notify("✅ <b>Сервис снова доступен</b>\n"
-                           "Секция <b>%s</b>: <code>%s</code>\n"
-                           "Узел: <code>%s</code>"
-                           % (html.escape(section),
-                              html.escape(target["label"]),
-                              html.escape(str(info["label"]))))
                 st["fails"] = 0
                 st["notified"] = False
                 st["last_ok"] = int(time.time())

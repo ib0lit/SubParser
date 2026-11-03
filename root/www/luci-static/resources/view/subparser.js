@@ -596,7 +596,7 @@ return view.extend({
         o.default = '1';
         o.rmempty = false;
         o.depends('watchdog_service_enabled', '1');
-        o.description = _('Отправлять в Telegram сообщения о подтверждённом сбое, переключении узла и восстановлении сервиса.');
+        o.description = _('Отправлять в Telegram сообщения о подтверждённом сбое и переключении узла. Уведомления о восстановлении сервиса не отправляются.');
 
         o = s.taboption('services', form.Button, '_service_check', _('Диагностика'));
         o.inputtitle = _('Проверить сервисы сейчас');
