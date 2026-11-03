@@ -300,11 +300,22 @@ else
     set_default_uci "watchdog_group_retry" "3"
     set_default_uci "watchdog_max_run" "600"
     set_default_uci "watchdog_test_url" "https://www.gstatic.com/generate_204"
-    set_default_uci "watchdog_service_cooldown" "10"
-    set_default_uci "watchdog_service_notify" "1"
-    set_default_uci "watchdog_service_active_interval" "1"
-    set_default_uci "watchdog_service_idle_interval" "5"
+    set_default_uci "watchdog_service_enabled" "1"
+    set_default_uci "watchdog_service_interval_migrated" "0"
+    set_default_uci "watchdog_service_active_interval" "30"
     set_default_uci "watchdog_service_traffic_kb" "20"
+    set_default_uci "watchdog_service_timeout" "8000"
+    set_default_uci "watchdog_service_fail_threshold" "2"
+    set_default_uci "watchdog_service_cooldown" "10"
+    set_default_uci "watchdog_service_manual_switch" "1"
+    set_default_uci "watchdog_service_notify" "1"
+    set_default_uci "watchdog_service_meta" "0"
+    set_default_uci "watchdog_service_telegram" "0"
+    set_default_uci "watchdog_service_youtube" "0"
+    set_default_uci "watchdog_service_steam" "0"
+    set_default_uci "watchdog_service_discord" "0"
+    set_default_uci "watchdog_service_twitch" "0"
+    set_default_uci "watchdog_service_tiktok" "0"
     set_default_uci "watchdog_restart_podkop" "1"
     set_default_uci "watchdog_emergency" "1"
     set_default_uci "watchdog_notify_recovery" "1"
@@ -314,6 +325,25 @@ else
     uci -q delete subparser.settings.cron_interval 2>/dev/null || true
     uci -q delete subparser.settings.custom_interval_min 2>/dev/null || true
     uci -q delete subparser.settings.cache_ttl 2>/dev/null || true
+    uci -q delete subparser.settings.watchdog_service_idle_interval 2>/dev/null || true
+    # Старый интервал сервисов задавался в минутах, новый — в секундах.
+    SVC_MIGRATED=$(uci -q get subparser.settings.watchdog_service_interval_migrated)
+    if [ "$SVC_MIGRATED" != "1" ]; then
+        SVC_INT=$(uci -q get subparser.settings.watchdog_service_active_interval)
+        case "$SVC_INT" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ "$SVC_INT" -le 1 ]; then
+                    SVC_INT=30
+                else
+                    SVC_INT=$((SVC_INT * 60))
+                    [ "$SVC_INT" -gt 300 ] && SVC_INT=300
+                fi
+                uci -q set subparser.settings.watchdog_service_active_interval="$SVC_INT"
+                ;;
+        esac
+        uci -q set subparser.settings.watchdog_service_interval_migrated='1'
+    fi
     uci commit subparser
 fi
 
@@ -347,11 +377,11 @@ cp -f "${SRC_PATH}/www/luci-static/resources/view/"* /www/luci-static/resources/
 rm -f /usr/share/rpcd/acl.d/subparser.json 2>/dev/null || true
 
 echo "=== [5/7] Настройка прав доступа и компиляция ==="
-chmod +x /etc/init.d/subparser /etc/init.d/subparser-bot 2>/dev/null || true
+chmod +x /etc/init.d/subparser /etc/init.d/subparser-bot /etc/init.d/subparser-monitor 2>/dev/null || true
 chmod +x /usr/bin/subparser* 2>/dev/null || true
 
 # Предкомпиляция Python-файлов
-python3 -m py_compile /usr/lib/subparser/*.py /usr/bin/subparser-bot.py /usr/bin/subparser.py >/dev/null 2>&1 || true
+python3 -m py_compile /usr/lib/subparser/*.py /usr/bin/subparser-bot.py /usr/bin/subparser.py /usr/bin/subparser-service-monitor.py >/dev/null 2>&1 || true
 
 echo "=== [6/7] Регистрация задач и автозапуск ==="
 CRON_TMP="/tmp/cron_subparser_inst.tmp"
@@ -390,11 +420,13 @@ fi
 
 /etc/init.d/subparser enable
 /etc/init.d/subparser-bot enable
+/etc/init.d/subparser-monitor enable
 
 EN=$(uci -q get subparser.settings.enabled)
 if [ "$EN" = "1" ]; then
     /etc/init.d/subparser start
     /etc/init.d/subparser-bot start
+    /etc/init.d/subparser-monitor start
 fi
 
 echo "=== [7/7] Обновление кэша LuCI ==="

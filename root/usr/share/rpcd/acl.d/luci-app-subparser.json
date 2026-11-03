@@ -4,6 +4,7 @@
         "read": {
             "file": {
                 "/usr/bin/subparser-helper.sh": [ "exec" ],
+                "/usr/bin/subparser-service-monitor.py": [ "exec" ],
                 "/tmp/subparser_sync.log": [ "read" ]
             },
             "uci": [ "subparser", "podkop" ]

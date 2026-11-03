@@ -280,8 +280,9 @@ if [ ! -d "$SRC_PATH" ]; then
 fi
 
 echo "=== [4/5] Применение обновлений и миграция структуры ==="
-# Остановка бота перед заменой файлов
+# Остановка бота и монитора перед заменой файлов
 /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
+/etc/init.d/subparser-monitor stop >/dev/null 2>&1 || true
 
 mkdir -p /etc/hotplug.d/uci /usr/bin /usr/lib/subparser /etc/init.d \
          /usr/share/luci/menu.d /usr/share/rpcd/acl.d /www/luci-static/resources/view
@@ -305,7 +306,7 @@ rm -f /usr/share/rpcd/acl.d/subparser.json 2>/dev/null || true
 chmod +x /usr/bin/subparser* /etc/init.d/subparser*
 
 # Предкомпиляция Python-файлов
-python3 -m py_compile /usr/lib/subparser/*.py /usr/bin/subparser-bot.py /usr/bin/subparser.py >/dev/null 2>&1 || true
+python3 -m py_compile /usr/lib/subparser/*.py /usr/bin/subparser-bot.py /usr/bin/subparser.py /usr/bin/subparser-service-monitor.py >/dev/null 2>&1 || true
 
 # Регистрация watchdog в cron
 CRON_TMP="/tmp/cron_subparser_upd.tmp"
@@ -364,11 +365,22 @@ set_default_uci "watchdog_group_timeout" "3000"
 set_default_uci "watchdog_group_retry" "3"
 set_default_uci "watchdog_max_run" "600"
 set_default_uci "watchdog_test_url" "https://www.gstatic.com/generate_204"
-set_default_uci "watchdog_service_cooldown" "10"
-set_default_uci "watchdog_service_notify" "1"
-set_default_uci "watchdog_service_active_interval" "1"
-set_default_uci "watchdog_service_idle_interval" "5"
+set_default_uci "watchdog_service_enabled" "1"
+set_default_uci "watchdog_service_interval_migrated" "0"
+set_default_uci "watchdog_service_active_interval" "30"
 set_default_uci "watchdog_service_traffic_kb" "20"
+set_default_uci "watchdog_service_timeout" "8000"
+set_default_uci "watchdog_service_fail_threshold" "2"
+set_default_uci "watchdog_service_cooldown" "10"
+set_default_uci "watchdog_service_manual_switch" "1"
+set_default_uci "watchdog_service_notify" "1"
+set_default_uci "watchdog_service_meta" "0"
+set_default_uci "watchdog_service_telegram" "0"
+set_default_uci "watchdog_service_youtube" "0"
+set_default_uci "watchdog_service_steam" "0"
+set_default_uci "watchdog_service_discord" "0"
+set_default_uci "watchdog_service_twitch" "0"
+set_default_uci "watchdog_service_tiktok" "0"
 set_default_uci "watchdog_restart_podkop" "1"
 set_default_uci "watchdog_emergency" "1"
 set_default_uci "watchdog_notify_recovery" "1"
@@ -380,6 +392,26 @@ fi
 uci -q delete subparser.settings.cron_interval 2>/dev/null || true
 uci -q delete subparser.settings.custom_interval_min 2>/dev/null || true
 uci -q delete subparser.settings.cache_ttl 2>/dev/null || true
+uci -q delete subparser.settings.watchdog_service_idle_interval 2>/dev/null || true
+# Старый интервал сервисов задавался в минутах, новый — в секундах.
+# Флаг защищает от повторной миграции при следующих обновлениях.
+SVC_MIGRATED=$(uci -q get subparser.settings.watchdog_service_interval_migrated)
+if [ "$SVC_MIGRATED" != "1" ]; then
+    SVC_INT=$(uci -q get subparser.settings.watchdog_service_active_interval)
+    case "$SVC_INT" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$SVC_INT" -le 1 ]; then
+                SVC_INT=30
+            else
+                SVC_INT=$((SVC_INT * 60))
+                [ "$SVC_INT" -gt 300 ] && SVC_INT=300
+            fi
+            uci set subparser.settings.watchdog_service_active_interval="$SVC_INT"
+            ;;
+    esac
+    uci set subparser.settings.watchdog_service_interval_migrated='1'
+fi
 uci commit subparser
 
 # Конфиг содержит токен бота — не даём читать его всем подряд.
@@ -412,8 +444,11 @@ echo "=== [5/5] Перезапуск служб и очистка кэша LuCI 
 EN=$(uci -q get subparser.settings.enabled)
 if [ "$EN" = "1" ]; then
     /etc/init.d/subparser-bot restart >/dev/null 2>&1 || true
+    /etc/init.d/subparser-monitor enable >/dev/null 2>&1 || true
+    /etc/init.d/subparser-monitor restart >/dev/null 2>&1 || true
 else
     /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
+    /etc/init.d/subparser-monitor stop >/dev/null 2>&1 || true
 fi
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache

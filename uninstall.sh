@@ -8,7 +8,10 @@ echo "=== [1/5] Остановка и отключение служб ==="
 /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
 /etc/init.d/subparser-bot disable >/dev/null 2>&1 || true
 
-killall -9 subparser.py subparser-bot.py subparser-watchdog.sh >/dev/null 2>&1 || true
+/etc/init.d/subparser-monitor stop >/dev/null 2>&1 || true
+/etc/init.d/subparser-monitor disable >/dev/null 2>&1 || true
+
+killall -9 subparser.py subparser-bot.py subparser-service-monitor.py subparser-watchdog.sh >/dev/null 2>&1 || true
 
 # Очистка динамической таблицы файрвола bot_block
 nft delete table inet bot_block >/dev/null 2>&1 || true
@@ -23,7 +26,7 @@ rm -f "$CRON_TMP"
 echo "=== [3/5] Удаление файлов приложения ==="
 rm -f /usr/bin/subparser*
 rm -rf /usr/lib/subparser
-rm -f /etc/init.d/subparser /etc/init.d/subparser-bot
+rm -f /etc/init.d/subparser /etc/init.d/subparser-bot /etc/init.d/subparser-monitor
 rm -f /etc/hotplug.d/uci/99-subparser 2>/dev/null || true
 rm -f /etc/subparser_version /etc/subparser_pkg_version /etc/subparser_commit /etc/subparser_branch /etc/subparser_release 2>/dev/null || true
 rm -rf /etc/subparser 2>/dev/null || true

@@ -21,32 +21,6 @@ num() {
     printf '%s' "$_wd_num"
 }
 
-# Счётчики WAN-интерфейса: rx tx. Если интерфейс не определён, суммируем все,
-# кроме lo. Это только индикатор активности, а не точный биллинг.
-wan_counters() {
-    _if=$(ip route show default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
-    [ -z "$_if" ] && _if=$(uci -q get network.wan.device)
-    [ -z "$_if" ] && _if=$(uci -q get network.wan.ifname)
-    _rx=0
-    _tx=0
-    if [ -n "$_if" ] && [ -r "/sys/class/net/${_if}/statistics/rx_bytes" ]; then
-        _rx=$(cat "/sys/class/net/${_if}/statistics/rx_bytes" 2>/dev/null)
-        _tx=$(cat "/sys/class/net/${_if}/statistics/tx_bytes" 2>/dev/null)
-    else
-        for _f in /sys/class/net/*/statistics/rx_bytes; do
-            [ -r "$_f" ] || continue
-            _name=${_f#/sys/class/net/}
-            _name=${_name%%/*}
-            [ "$_name" = "lo" ] && continue
-            _rx=$((_rx + $(cat "$_f" 2>/dev/null || echo 0)))
-            _tx=$((_tx + $(cat "${_f%rx_bytes}tx_bytes" 2>/dev/null || echo 0)))
-        done
-    fi
-    case "$_rx" in ''|*[!0-9]*) _rx=0 ;; esac
-    case "$_tx" in ''|*[!0-9]*) _tx=0 ;; esac
-    printf '%s %s' "$_rx" "$_tx"
-}
-
 [ "$(cfg enabled 0)" = "1" ] || exit 0
 [ "$(cfg watchdog_enabled 1)" = "1" ] || exit 0
 
@@ -65,17 +39,10 @@ if command -v flock >/dev/null 2>&1; then
     flock -n 8 2>/dev/null || exit 0
 fi
 
-# Cron запускает скрипт каждую минуту. Основные проверки идут по
-# watchdog_interval, а сервисы — по своему адаптивному расписанию.
+# Cron запускает скрипт каждую минуту, фактическая частота основных проверок
+# задаётся watchdog_interval. Проверка сервисов вынесена в отдельную службу
+# subparser-monitor: она работает только при активном трафике.
 INTERVAL=$(num "$(cfg watchdog_interval 5)" 5 1 60)
-SERVICES=$(uci -q get subparser.settings.watchdog_services)
-SERVICE_COOLDOWN=$(num "$(cfg watchdog_service_cooldown 10)" 10 1 1440)
-SERVICE_NOTIFY=$(cfg watchdog_service_notify 1)
-SERVICE_ACTIVE_INTERVAL=$(num "$(cfg watchdog_service_active_interval 1)" 1 1 60)
-SERVICE_IDLE_INTERVAL=$(num "$(cfg watchdog_service_idle_interval 5)" 5 1 60)
-SERVICE_TRAFFIC_KB=$(num "$(cfg watchdog_service_traffic_kb 20)" 20 1 100000)
-LAST_SERVICE_FILE="/tmp/subparser_service.last"
-TRAFFIC_FILE="/tmp/subparser_service.traffic"
 NOW=$(date +%s)
 
 MAIN_DUE=1
@@ -88,54 +55,8 @@ if [ -f "$LAST_RUN_FILE" ]; then
     fi
 fi
 
-# Адаптивная частота проверки сервисов: при активном трафике чаще, без
-# трафика — реже. Счётчики читаются каждый запуск cron (раз в минуту).
-SERVICE_DUE=0
-SERVICE_ACTIVE=0
-if [ -n "$SERVICES" ]; then
-    set -- $(wan_counters)
-    RX="$1"
-    TX="$2"
-    PREV_TS=0
-    PREV_RX=0
-    PREV_TX=0
-    if [ -f "$TRAFFIC_FILE" ]; then
-        read -r PREV_TS PREV_RX PREV_TX < "$TRAFFIC_FILE" 2>/dev/null || true
-        case "$PREV_TS" in ''|*[!0-9]*) PREV_TS=0 ;; esac
-        case "$PREV_RX" in ''|*[!0-9]*) PREV_RX=0 ;; esac
-        case "$PREV_TX" in ''|*[!0-9]*) PREV_TX=0 ;; esac
-    else
-        # Первый запуск после установки/перезагрузки: не ждём накопления.
-        SERVICE_ACTIVE=1
-    fi
-    if [ "$PREV_TS" -gt 0 ] && [ "$NOW" -gt "$PREV_TS" ]; then
-        ELAPSED=$((NOW - PREV_TS))
-        DELTA=$((RX + TX - PREV_RX - PREV_TX))
-        [ "$DELTA" -lt 0 ] && DELTA=0
-        RATE_KB=$((DELTA / 1024 / ELAPSED))
-        [ "$RATE_KB" -ge "$SERVICE_TRAFFIC_KB" ] && SERVICE_ACTIVE=1
-    fi
-    printf '%s %s %s\n' "$NOW" "$RX" "$TX" > "$TRAFFIC_FILE" 2>/dev/null || true
-
-    SVC_INTERVAL=$SERVICE_IDLE_INTERVAL
-    [ "$SERVICE_ACTIVE" = "1" ] && SVC_INTERVAL=$SERVICE_ACTIVE_INTERVAL
-    if [ ! -f "$LAST_SERVICE_FILE" ]; then
-        SERVICE_DUE=1
-    else
-        LAST_SVC=$(cat "$LAST_SERVICE_FILE" 2>/dev/null)
-        case "$LAST_SVC" in ''|*[!0-9]*) LAST_SVC=0 ;; esac
-        if [ "$LAST_SVC" -le 0 ] || [ $((NOW - LAST_SVC)) -ge $((SVC_INTERVAL * 60 - 5)) ]; then
-            SERVICE_DUE=1
-        fi
-    fi
-fi
-
-if [ "$MAIN_DUE" = "0" ] && [ "$SERVICE_DUE" = "0" ]; then
-    exit 0
-fi
-if [ "$MAIN_DUE" = "1" ]; then
-    printf '%s\n' "$NOW" > "$LAST_RUN_FILE"
-fi
+[ "$MAIN_DUE" = "1" ] || exit 0
+printf '%s\n' "$NOW" > "$LAST_RUN_FILE"
 
 DOWN_WAIT=$(num "$(cfg watchdog_down_wait 10)" 10 2 600)
 RESTART_WAIT=$(num "$(cfg watchdog_restart_wait 15)" 15 2 600)
@@ -348,233 +269,6 @@ api_get() {
     fi
 }
 
-# --- Точечная проверка сервисов ------------------------------------------------
-# Пользователь задаёт список HTTPS-адресов. Сначала проверяется активный узел.
-# При сбое принудительно перепроверяется urltest-группа. Если сервис не ожил,
-# на следующем цикле (и не чаще кулдауна) все узлы секции проверяются уже по
-# адресу самого сервиса: sing-box сохраняет эти замеры в историю URLTest и
-# может выбрать узел, который реально открывает сервис.
-check_services() {
-    [ -n "$SERVICES" ] || return 0
-    [ -n "$HEALTHY_SECTIONS" ] || return 0
-    API_BASE="$API_BASE" API_SECRET="$API_SECRET" \
-    SECTIONS="$HEALTHY_SECTIONS" SERVICES="$SERVICES" \
-    TEST_TIMEOUT="$TEST_TIMEOUT" HTTP_TIMEOUT="$HTTP_TIMEOUT" \
-    GROUP_TIMEOUT="$GROUP_TIMEOUT" GROUP_RETRY="$GROUP_RETRY" \
-    COOLDOWN="$SERVICE_COOLDOWN" MAX_RUN="$MAX_RUN" \
-    DO_NOTIFY="$SERVICE_NOTIFY" TOKEN="$TOKEN" CHAT_ID="$CHAT_ID" \
-    python3 - <<'PYEOF'
-import html
-import json
-import os
-import time
-import urllib.parse
-import urllib.request
-
-API_BASE = os.environ.get("API_BASE", "").rstrip("/")
-API_SECRET = os.environ.get("API_SECRET", "")
-SECTIONS = [s for s in os.environ.get("SECTIONS", "").split() if s]
-SERVICES = [s for s in os.environ.get("SERVICES", "").split() if s]
-TEST_TIMEOUT = int(os.environ.get("TEST_TIMEOUT", "4000") or 4000)
-HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "8") or 8)
-GROUP_TIMEOUT = int(os.environ.get("GROUP_TIMEOUT", "3000") or 3000)
-GROUP_RETRY = int(os.environ.get("GROUP_RETRY", "3") or 0)
-COOLDOWN = int(os.environ.get("COOLDOWN", "10") or 10) * 60
-MAX_RUN = int(os.environ.get("MAX_RUN", "600") or 600)
-DO_NOTIFY = os.environ.get("DO_NOTIFY", "1") == "1"
-TOKEN = os.environ.get("TOKEN", "")
-CHAT_ID = os.environ.get("CHAT_ID", "")
-STATE_FILE = "/tmp/subparser_service.state"
-START = time.time()
-
-if not API_BASE or not SECTIONS or not SERVICES:
-    raise SystemExit(0)
-
-try:
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        state = json.load(f)
-    if not isinstance(state, dict):
-        state = {}
-except Exception:
-    state = {}
-
-
-def save_state():
-    try:
-        tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        os.replace(tmp, STATE_FILE)
-    except Exception:
-        pass
-
-
-def api(path, timeout=None):
-    if timeout is None:
-        timeout = HTTP_TIMEOUT
-    req = urllib.request.Request(API_BASE + path)
-    if API_SECRET:
-        req.add_header("Authorization", "Bearer " + API_SECRET)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-def quote(value):
-    return urllib.parse.quote(str(value), safe="")
-
-
-def probe(tag, service):
-    data = api("/proxies/%s/delay?url=%s&timeout=%d"
-               % (quote(tag), quote(service), TEST_TIMEOUT), HTTP_TIMEOUT + 2)
-    if not isinstance(data, dict):
-        return None
-    delay = data.get("delay")
-    return delay if isinstance(delay, int) and delay > 0 else None
-
-
-def selected(tag):
-    data = api("/proxies/" + quote(tag))
-    if not isinstance(data, dict):
-        return None
-    return data.get("now")
-
-
-def resolve_group(proxies, section):
-    tag = section + "-urltest-out"
-    data = proxies.get(tag)
-    if isinstance(data, dict) and str(data.get("type", "")).lower() == "urltest":
-        return tag, data
-    for key, value in proxies.items():
-        if section in key and isinstance(value, dict) and \
-                str(value.get("type", "")).lower() == "urltest":
-            return key, value
-    return None, None
-
-
-def notify(key, text):
-    if not DO_NOTIFY or not TOKEN or not CHAT_ID:
-        return
-    now = time.time()
-    if now - state.get(key, {}).get("last_notify", 0) < COOLDOWN:
-        return
-    state.setdefault(key, {})["last_notify"] = int(now)
-    data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.telegram.org/bot%s/sendMessage" % TOKEN, data=data)
-    try:
-        urllib.request.urlopen(req, timeout=8).read()
-    except Exception:
-        pass
-
-
-def deep_probe(section, service, deadline):
-    """Проверяет все узлы секции по адресу сервиса."""
-    data = api("/proxies")
-    if not isinstance(data, dict):
-        return False
-    proxies = data.get("proxies", {})
-    tag, group = resolve_group(proxies, section)
-    if not tag:
-        return False
-    for node in group.get("all", []):
-        if node == tag:
-            continue
-        if time.time() > deadline:
-            return False
-        probe(node, service)
-    return True
-
-
-def short_name(tag):
-    return html.escape(str(tag or "?"))
-
-
-deadline = START + max(60, int(MAX_RUN * 0.8))
-for section in SECTIONS:
-    data = api("/proxies")
-    if not isinstance(data, dict):
-        continue
-    tag, group = resolve_group(data.get("proxies", {}), section)
-    if not tag:
-        continue
-
-    for service in SERVICES:
-        if service.lower().startswith("http://"):
-            # Clash API принудительно игнорирует HTTP-адреса.
-            continue
-        key = "%s|%s" % (section, service)
-        st = state.setdefault(key, {})
-        fails = int(st.get("fails", 0) or 0)
-
-        delay = probe(tag, service)
-        if delay:
-            if fails >= 2:
-                notify(key,
-                       "✅ <b>Сервис снова доступен</b>\n"
-                       "Секция <b>%s</b>: <code>%s</code>"
-                       % (html.escape(section), html.escape(service)))
-            st["fails"] = 0
-            continue
-
-        fails += 1
-        st["fails"] = fails
-
-        # Этап 1: дешёвая принудительная проверка всей urltest-группы.
-        before = selected(tag)
-        api("/group/%s/delay?url=%s&timeout=%d"
-            % (quote(tag), quote(service), GROUP_TIMEOUT), HTTP_TIMEOUT + 2)
-        if GROUP_RETRY > 0:
-            time.sleep(GROUP_RETRY)
-        after = selected(tag)
-        if probe(tag, service):
-            st["fails"] = 0
-            if before and after and before != after:
-                notify(key,
-                       "🔁 <b>URLTest переключил узел</b>\n"
-                       "Секция <b>%s</b>: <code>%s</code> → <code>%s</code>\n"
-                       "Причина: недоступен <code>%s</code>"
-                       % (html.escape(section), short_name(before),
-                          short_name(after), html.escape(service)))
-            continue
-
-        # Этап 2: только со второго сбоя и не чаще кулдауна — проверяем все
-        # узлы по адресу сервиса, чтобы URLTest выбрал подходящий.
-        if fails < 2:
-            continue
-        now = time.time()
-        if now - float(st.get("last_deep", 0) or 0) < COOLDOWN:
-            continue
-        st["last_deep"] = int(now)
-
-        before = selected(tag)
-        deep_probe(section, service, deadline)
-        after = selected(tag)
-        if probe(tag, service):
-            st["fails"] = 0
-            notify(key,
-                   "🔁 <b>URLTest выбрал узел по сервису</b>\n"
-                   "Секция <b>%s</b>: <code>%s</code> → <code>%s</code>\n"
-                   "Сервис: <code>%s</code>"
-                   % (html.escape(section), short_name(before),
-                      short_name(after), html.escape(service)))
-        else:
-            notify(key,
-                   "⚠️ <b>Сервис недоступен</b>\n"
-                   "Секция <b>%s</b>: <code>%s</code>\n"
-                   "Ни один проверенный узел не открыл адрес."
-                   % (html.escape(section), html.escape(service)))
-
-save_state()
-PYEOF
-}
-
 if ! api_get "/proxies" 3 | grep -q '"proxies"'; then
     # API может быть недоступен при живом sing-box — не считаем это аварией.
     exit 0
@@ -593,17 +287,6 @@ except Exception:
 PYEOF
 )
 [ -z "$SECTION_LIST" ] && SECTION_LIST="main"
-
-# --- Сервисный цикл без основной проверки ---------------------------------------
-# Основные проверки не наступили, но сервисы пора проверять: не трогаем
-# процесс/секции, только убеждаемся, что есть WAN, и проверяем сервисы.
-if [ "$MAIN_DUE" = "0" ]; then
-    [ "$WAN_CHECK" = "1" ] && { check_wan_alive || exit 0; }
-    HEALTHY_SECTIONS="$SECTION_LIST"
-    check_services
-    printf '%s\n' "$NOW" > "$LAST_SERVICE_FILE" 2>/dev/null || true
-    exit 0
-fi
 
 # URL проверки кодируется один раз; при сбое python3 используем gstatic.
 TEST_URL=$(TEST_URL_RAW="$TEST_URL_RAW" python3 -c \
@@ -648,14 +331,6 @@ for SEC in $SECTION_LIST; do
 done
 
 [ "$ABORTED" = "1" ] && exit 0
-
-# Точечные проверки сервисов не влияют на признание секции мёртвой: они лишь
-# заставляют URLTest перепроверить узлы и при необходимости сменить активный.
-# В основной цикл сервисы попадают только по своему расписанию.
-if [ "$SERVICE_DUE" = "1" ]; then
-    check_services
-    printf '%s\n' "$NOW" > "$LAST_SERVICE_FILE" 2>/dev/null || true
-fi
 
 # Все секции живы. О восстановлении сообщаем только если авария была
 # подтверждена и watchdog уже запускал экстренный отбор узлов: одиночный

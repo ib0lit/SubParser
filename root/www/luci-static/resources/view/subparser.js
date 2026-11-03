@@ -112,6 +112,7 @@ return view.extend({
         s.tab('subscriptions', _('📋 Подписки'));
         s.tab('advanced', _('🛠 Дополнительно'));
         s.tab('watchdog', _('🛡 Watchdog'));
+        s.tab('services', _('📡 Мониторинг сервисов'));
 
         var o = s.taboption('general', form.Flag, 'enabled', _('Включить сервис'));
         o.rmempty = false;
@@ -484,41 +485,6 @@ return view.extend({
         o.depends('watchdog_enabled', '1');
         o.description = _('Адрес, который должен отвечать кодом 204. Смените, если ваши узлы блокируют Google или конкретный домен: иначе watchdog будет считать секции мёртвыми.');
 
-        var wdServices = s.taboption('watchdog', form.DynamicList, 'watchdog_services', _('Сервисы для точечной проверки'));
-        wdServices.placeholder = 'https://www.youtube.com';
-        wdServices.depends('watchdog_enabled', '1');
-        wdServices.description = _('Список HTTPS-адресов сервисов, которые должны открываться через активный узел. При сбое watchdog принудительно перепроверяет URLTest, а при повторном сбое перебирает узлы по адресу сервиса. Пустой список — проверка выключена. Используйте только <b>https://</b>: HTTP-адреса Clash API игнорирует.');
-
-        o = s.taboption('watchdog', form.Value, 'watchdog_service_active_interval', _('Интервал проверки при активном трафике (мин)'));
-        o.datatype = 'range(1, 60)';
-        o.default = '1';
-        o.depends('watchdog_enabled', '1');
-        o.description = _('Как часто проверять сервисы, когда через WAN идёт активный трафик. По умолчанию каждая минута: так зависший узел замечается быстрее. Значения меньше минуты невозможны, потому что cron запускает watchdog раз в минуту.');
-
-        o = s.taboption('watchdog', form.Value, 'watchdog_service_idle_interval', _('Интервал проверки без трафика (мин)'));
-        o.datatype = 'range(1, 60)';
-        o.default = '5';
-        o.depends('watchdog_enabled', '1');
-        o.description = _('Как часто проверять сервисы, когда трафик ниже порога. Редкие проверки почти не нагружают роутер и не будят модем зря. По умолчанию каждые 5 минут.');
-
-        o = s.taboption('watchdog', form.Value, 'watchdog_service_traffic_kb', _('Порог активного трафика (КБ/с)'));
-        o.datatype = 'range(1, 100000)';
-        o.default = '20';
-        o.depends('watchdog_enabled', '1');
-        o.description = _('Средняя скорость по WAN (rx+tx), выше которой трафик считается активным. Считается между запусками watchdog. По умолчанию 20 КБ/с.');
-
-        o = s.taboption('watchdog', form.Value, 'watchdog_service_cooldown', _('Кулдаун глубокой проверки сервисов (минут)'));
-        o.datatype = 'range(1, 1440)';
-        o.default = '10';
-        o.depends('watchdog_enabled', '1');
-        o.description = _('Как часто при повторном сбое сервиса перебирать все узлы секции по его адресу. Защищает слабые роутеры от слишком частых тяжёлых проверок. По умолчанию 10 минут.');
-
-        o = s.taboption('watchdog', form.Flag, 'watchdog_service_notify', _('Сообщать о переключениях из-за сервисов'));
-        o.default = '1';
-        o.rmempty = false;
-        o.depends('watchdog_enabled', '1');
-        o.description = _('Отправлять в Telegram уведомление, когда URLTest переключился из-за недоступности сервиса или когда ни один узел не смог открыть сервис. Повторные сообщения ограничены кулдауном.');
-
         o = s.taboption('watchdog', form.Value, 'watchdog_max_run', _('Максимальное время проверки (сек)'));
         o.datatype = 'range(30, 3600)';
         o.default = '600';
@@ -542,6 +508,120 @@ return view.extend({
         o.rmempty = false;
         o.depends('watchdog_enabled', '1');
         o.description = _('Отправлять в Telegram сообщения «Podkop восстановлен» и «Проксирование Podkop восстановлено». Уведомления о сбоях остаются включёнными.');
+
+        // --- Мониторинг сервисов -------------------------------------------------
+        var servicePresets = [
+            { id: 'meta', label: 'Instagram / Meta', hint: 'instagram.com, facebook.com' },
+            { id: 'telegram', label: 'Telegram', hint: 't.me, web.telegram.org' },
+            { id: 'youtube', label: 'YouTube', hint: 'youtube.com, youtu.be' },
+            { id: 'steam', label: 'Steam', hint: 'steampowered.com, steamcommunity.com' },
+            { id: 'discord', label: 'Discord', hint: 'discord.com, discord.gg' },
+            { id: 'twitch', label: 'Twitch', hint: 'twitch.tv, gql.twitch.tv' },
+            { id: 'tiktok', label: 'TikTok', hint: 'tiktok.com, tiktokv.com' }
+        ];
+
+        var svcHint = s.taboption('services', form.DummyValue, '_service_hint');
+        svcHint.rawhtml = true;
+        svcHint.render = function() {
+            return E('details', {
+                'class': 'alert-message info',
+                'style': 'margin-bottom: 12px; font-size: 13px; cursor: pointer;'
+            }, [
+                E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Как работает мониторинг сервисов (нажмите, чтобы раскрыть)')),
+                E('div', { 'style': 'margin: 10px 0 0 10px; line-height: 1.5; cursor: default;' }, [
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Проверки выполняются только при активном трафике по WAN. Если трафик стоит, запросы к сервисам не отправляются.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Каждый сервис проверяется по нескольким HTTPS-адресам. Сервис считается доступным, если ответил хотя бы один из них.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Сбой подтверждается после нескольких неудач подряд. Затем URLTest принудительно перепроверяется, а при ручном выборе монитор может переключить селектор на лучший узел по адресу сервиса.')),
+                    E('p', { 'style': 'margin: 0; color: #ffb300;' }, _('Используйте только https:// — Clash API игнорирует HTTP-адреса. Проверка идёт HEAD-запросом через активный узел, поэтому любой HTTP-ответ считается успехом.'))
+                ])
+            ]);
+        };
+
+        o = s.taboption('services', form.Flag, 'watchdog_service_enabled', _('Включить мониторинг сервисов'));
+        o.default = '1';
+        o.rmempty = false;
+        o.description = _('Отдельный монитор доступности сервисов. Работает независимо от watchdog секций и запускается службой SubParser.');
+
+        servicePresets.forEach(function(p) {
+            var f = s.taboption('services', form.Flag, 'watchdog_service_' + p.id, _(p.label));
+            f.default = '0';
+            f.rmempty = false;
+            f.depends('watchdog_service_enabled', '1');
+            f.description = _('Проверяемые адреса: ') + p.hint;
+        });
+
+        var svcManual = s.taboption('services', form.DynamicList, 'watchdog_services', _('Свои адреса для проверки'));
+        svcManual.placeholder = 'Instagram|https://www.instagram.com/|https://i.instagram.com/';
+        svcManual.depends('watchdog_service_enabled', '1');
+        svcManual.description = _('Формат: <code>Название|https://адрес1|https://адрес2</code> или просто <code>https://адрес</code>. Несколько адресов одного сервиса проверяются вместе. Только HTTPS.');
+
+        o = s.taboption('services', form.Value, 'watchdog_service_active_interval', _('Интервал проверки при активном трафике (сек)'));
+        o.datatype = 'range(10, 300)';
+        o.default = '30';
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Как часто проверять сервисы, пока по WAN идёт трафик. По умолчанию каждые 30 секунд. Меньше 10 секунд ставить не стоит: проверки начнут мешать друг другу.');
+
+        o = s.taboption('services', form.Value, 'watchdog_service_traffic_kb', _('Порог активного трафика (КБ/с)'));
+        o.datatype = 'range(1, 100000)';
+        o.default = '20';
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Средняя скорость по WAN (rx+tx), выше которой трафик считается активным. После остановки трафика мониторинг продолжается ещё 30 секунд, чтобы не пропустить хвост загрузки.');
+
+        o = s.taboption('services', form.Value, 'watchdog_service_timeout', _('Таймаут проверки сервиса (мс)'));
+        o.datatype = 'range(1000, 30000)';
+        o.default = '8000';
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Лимит на один HTTPS-запрос через узел. Для загруженных или мобильных узлов 8–10 секунд уменьшает ложные срабатывания.');
+
+        o = s.taboption('services', form.Value, 'watchdog_service_fail_threshold', _('Неудач подряд для срабатывания'));
+        o.datatype = 'range(1, 5)';
+        o.default = '2';
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Сколько проверок подряд должны завершиться ошибкой, прежде чем считать сервис недоступным. Значение 2 защищает от одиночных таймаутов.');
+
+        o = s.taboption('services', form.Value, 'watchdog_service_cooldown', _('Кулдаун между переключениями (минут)'));
+        o.datatype = 'range(1, 1440)';
+        o.default = '10';
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Не повторять переключение и уведомление по тому же сервису чаще указанного времени. Защищает от серии тяжёлых переборов узлов.');
+
+        o = s.taboption('services', form.Flag, 'watchdog_service_manual_switch', _('Переключать узел при ручном выборе'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Если секция вручную закреплена за узлом и сервис перестал открываться, проверить все узлы по адресу сервиса и переключить селектор на лучший. При выключении монитор только уведомит.');
+
+        o = s.taboption('services', form.Flag, 'watchdog_service_notify', _('Уведомлять о сбоях и переключениях'));
+        o.default = '1';
+        o.rmempty = false;
+        o.depends('watchdog_service_enabled', '1');
+        o.description = _('Отправлять в Telegram сообщения о подтверждённом сбое, переключении узла и восстановлении сервиса.');
+
+        o = s.taboption('services', form.Button, '_service_check', _('Диагностика'));
+        o.inputtitle = _('Проверить сервисы сейчас');
+        o.inputstyle = 'action';
+        o.depends('watchdog_service_enabled', '1');
+        o.onclick = function(ev) {
+            var btn = ev.target;
+            btn.disabled = true;
+            btn.innerText = _('Проверка...');
+            return fs.exec('/usr/bin/subparser-service-monitor.py', ['--check']).then(function(res) {
+                btn.disabled = false;
+                btn.innerText = _('Проверить сервисы сейчас');
+                var out = (res.stdout || '').trim() || (res.stderr || '').trim() || _('Нет вывода');
+                ui.showModal(_('Диагностика сервисов'), [
+                    E('pre', {
+                        'style': 'max-height: 420px; overflow: auto; white-space: pre-wrap; font-size: 12px;'
+                    }, out),
+                    E('div', { 'class': 'right' }, [
+                        E('button', {
+                            'class': 'btn cbi-button',
+                            'click': ui.hideModal
+                        }, _('Закрыть'))
+                    ])
+                ]);
+            });
+        };
 
         o = s.taboption('telegram', form.Value, 'tg_bot_token', _('Telegram Bot Token'));
         o.placeholder = '123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ';

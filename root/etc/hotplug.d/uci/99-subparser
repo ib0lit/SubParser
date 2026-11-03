@@ -18,6 +18,7 @@ LOCK_FILE="/tmp/subparser_hotplug.lock"
     INTERVAL=$(uci -q get subparser.settings.interval)
     CH=$(uci -q get subparser.settings.custom_hour)
     CM=$(uci -q get subparser.settings.custom_minute)
+    SVC_STATE=$(uci -q show subparser 2>/dev/null | grep 'watchdog_service' | md5sum | cut -d' ' -f1)
 
     PREV_EN=""
     PREV_TOKEN=""
@@ -25,6 +26,7 @@ LOCK_FILE="/tmp/subparser_hotplug.lock"
     PREV_INTERVAL=""
     PREV_CH=""
     PREV_CM=""
+    PREV_SVC=""
     if [ -f "$STATE_FILE" ]; then
         PREV_EN=$(sed -n '1p' "$STATE_FILE")
         PREV_TOKEN=$(sed -n '2p' "$STATE_FILE")
@@ -32,10 +34,11 @@ LOCK_FILE="/tmp/subparser_hotplug.lock"
         PREV_INTERVAL=$(sed -n '4p' "$STATE_FILE")
         PREV_CH=$(sed -n '5p' "$STATE_FILE")
         PREV_CM=$(sed -n '6p' "$STATE_FILE")
+        PREV_SVC=$(sed -n '7p' "$STATE_FILE")
     fi
 
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-        "$EN" "$TOKEN" "$CHAT" "$INTERVAL" "$CH" "$CM" > "$STATE_FILE"
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+        "$EN" "$TOKEN" "$CHAT" "$INTERVAL" "$CH" "$CM" "$SVC_STATE" > "$STATE_FILE"
 
     # Первый запуск: только запоминаем состояние.
     if [ -z "$PREV_INTERVAL" ] && [ -z "$PREV_EN" ] && [ -z "$PREV_TOKEN" ]; then
@@ -52,6 +55,16 @@ LOCK_FILE="/tmp/subparser_hotplug.lock"
             /etc/init.d/subparser-bot restart >/dev/null 2>&1 || true
         else
             /etc/init.d/subparser-bot stop >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # Настройки мониторинга сервисов применяются перезапуском отдельной службы.
+    if [ "$SVC_STATE" != "$PREV_SVC" ]; then
+        if [ "$EN" = "1" ]; then
+            /etc/init.d/subparser-monitor enable >/dev/null 2>&1 || true
+            /etc/init.d/subparser-monitor restart >/dev/null 2>&1 || true
+        else
+            /etc/init.d/subparser-monitor stop >/dev/null 2>&1 || true
         fi
     fi
 ) 9>"$LOCK_FILE" </dev/null >/dev/null 2>&1 &
