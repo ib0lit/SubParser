@@ -1153,6 +1153,49 @@ def _write_section_links(section, links):
         return False
 
 
+def _node_name_from_link(link):
+    try:
+        name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment).strip()
+        if name:
+            return name
+        parsed = urllib.parse.urlsplit(link)
+        return parsed.hostname or parsed.scheme.upper() or "узел"
+    except Exception:
+        return "узел"
+
+
+def _format_change_spoiler(change_details, results, max_total=40, max_per_list=10):
+    blocks = []
+    shown = 0
+    hidden = 0
+    for sec, added, removed in change_details:
+        lines = [f"<b>{html.escape(str(sec))}</b>"]
+        for label, links, icon in (("Добавлены", added, "➕"),
+                                   ("Удалены", removed, "➖")):
+            if not links:
+                continue
+            lines.append(f"{icon} <b>{label}:</b>")
+            for link in links[:max_per_list]:
+                if shown >= max_total:
+                    hidden += 1
+                    continue
+                info = results.get(link, {})
+                name = str(info.get("name") or _node_name_from_link(link))
+                if len(name) > 48:
+                    name = name[:47] + "…"
+                delay = info.get("delay", 0)
+                suffix = f" — {delay} ms" if delay and delay > 0 else ""
+                lines.append(f"• {html.escape(name)}{suffix}")
+                shown += 1
+            if len(links) > max_per_list:
+                hidden += len(links) - max_per_list
+                lines.append(f"• … ещё {len(links) - max_per_list}")
+        blocks.append("\n".join(lines))
+    if hidden:
+        blocks.append(f"… скрыто строк: {hidden}")
+    return "\n\n".join(blocks)
+
+
 def _prepare_link(link, results, idx):
     if "#" in link:
         base_url, raw_name = link.split("#", 1)
@@ -1505,6 +1548,7 @@ def _run():
 
     changed_sections = []
     section_reports = []
+    change_details = []
     selection_plan = []
     selection_notes = []
     selection_proxies = None
@@ -1591,6 +1635,15 @@ def _run():
             before_cnt = len(original_links)
             after_cnt = len(target_links)
             report = f"  ▫️ <b>{html.escape(sec)}</b>: полная замена (было {before_cnt} -> стало {after_cnt})"
+
+        target_fps = _link_set(target_links)
+        original_fps = _link_set(original_links)
+        added_links = [l for l in target_links
+                       if link_fingerprint(l) not in original_fps]
+        removed_links = [l for l in original_links
+                         if link_fingerprint(l) not in target_fps]
+        if added_links or removed_links:
+            change_details.append((sec, added_links, removed_links))
 
         if _link_set(target_links) == _link_set(original_links):
             print(f"Секция '{sec}': без изменений ({after_cnt} узлов).")
@@ -1702,6 +1755,11 @@ def _run():
                 sub_lines.append(f"• <b>{html.escape(str(sname))}</b>: {format_bytes(used)} / {format_bytes(tot)} (до {exp_str})")
         if sub_lines:
             msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
+    if change_details:
+        details = _format_change_spoiler(change_details, results)
+        if details:
+            msg += ("\n\n<tg-spoiler>🧩 <b>Детали изменений</b>\n"
+                    f"{details}</tg-spoiler>")
     send_telegram_notify(msg)
 
 
