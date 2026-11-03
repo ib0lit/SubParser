@@ -170,7 +170,14 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
     }
     cron_badge = cron_labels.get(cron_int, cron_int)
     ru_badge = "Вкл (фильтровать)" if filter_ru == "1" else "Выкл (сохранять)"
-    subs_count = len(get_subscriptions())
+    subs = get_subscriptions()
+    subs_count = len(subs)
+    subs_parts = []
+    for sub in subs:
+        name = str(sub.get("name") or sub.get("sec_name") or "без имени")
+        icon = "🟢" if str(sub.get("enabled", "1")) == "1" else "🔴"
+        subs_parts.append(f"{icon} {html.escape(name)}")
+    subs_str = ", ".join(subs_parts) if subs_parts else "нет"
 
     fp_val = get_uci_val("override_fp", "as_is").lower().strip()
     fp_map = {
@@ -221,7 +228,7 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
     screen = RichScreen()
     screen.h("⚙️ Параметры парсера SubParser")
     kv_rows = [
-        ("📋 Подписок", f"<code>{subs_count} шт.</code>"),
+        ("📋 Подписки", f"<code>{subs_str}</code>"),
         ("🎯 Секции Podkop", f"<code>{sections_str}</code>"),
         ("⚡️ Порог пинга", f"<code>{esc(threshold)} ms</code>"),
     ]
