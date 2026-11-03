@@ -147,6 +147,7 @@ return view.extend({
         o.value('0', _('Неограниченно'));
         o.value('3', _('Топ-3'));
         o.value('5', _('Топ-5'));
+        o.value('7', _('Топ-7'));
         o.value('10', _('Топ-10'));
         o.value('custom', _('Свой лимит'));
         o.default = '0';
@@ -285,6 +286,7 @@ return view.extend({
             secLimit.value('0', _('Неограниченно'));
             secLimit.value('3', _('Топ-3'));
             secLimit.value('5', _('Топ-5'));
+            secLimit.value('7', _('Топ-7'));
             secLimit.value('10', _('Топ-10'));
             secLimit.value('custom', _('Свой лимит'));
             secLimit.default = 'inherit';

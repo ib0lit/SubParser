@@ -666,18 +666,32 @@ def main():
 
                     elif data == "cycle_limit":
                         cur_lim = get_uci_val("max_best_nodes", "0")
-                        cycle_map = {"0": "3", "3": "5", "5": "10", "10": "0"}
+                        cycle_map = {"0": "3", "3": "5", "5": "7", "7": "individual"}
                         new_lim = cycle_map.get(cur_lim, "0")
-                        set_uci_val("max_best_nodes", new_lim)
-                        badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
-                        answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
+                        if new_lim == "individual":
+                            set_uci_val("per_section_config", "1")
+                            answer_callback(token, cb_id, "Лимит: индивидуальный")
+                        else:
+                            set_uci_val("max_best_nodes", new_lim)
+                            badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
+                            answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
+                        t, kb = get_parser_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "disable_per_sec":
+                        set_uci_val("per_section_config", "0")
+                        answer_callback(token, cb_id, "Индивидуальные лимиты выключены")
                         t, kb = get_parser_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "ask_custom_limit":
-                        set_user_state(user_id, {"waiting_for": "custom_limit"})
-                        answer_callback(token, cb_id, "Введите лимит...")
-                        t, kb = get_parser_menu_screen(prompt_custom_limit=True)
+                        if get_uci_val("per_section_config", "0") == "1":
+                            answer_callback(token, cb_id, "Сначала выключите индивидуальные лимиты")
+                            t, kb = get_parser_menu_screen()
+                        else:
+                            set_user_state(user_id, {"waiting_for": "custom_limit"})
+                            answer_callback(token, cb_id, "Введите лимит...")
+                            t, kb = get_parser_menu_screen(prompt_custom_limit=True)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data in ("toggle_prune", "toggle_prune_menu"):
@@ -695,11 +709,15 @@ def main():
 
                     elif data == "cycle_limit_sections":
                         cur_lim = get_uci_val("max_best_nodes", "0")
-                        cycle_map = {"0": "3", "3": "5", "5": "10", "10": "0"}
+                        cycle_map = {"0": "3", "3": "5", "5": "7", "7": "individual"}
                         new_lim = cycle_map.get(cur_lim, "0")
-                        set_uci_val("max_best_nodes", new_lim)
-                        badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
-                        answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
+                        if new_lim == "individual":
+                            set_uci_val("per_section_config", "1")
+                            answer_callback(token, cb_id, "Лимит: индивидуальный")
+                        else:
+                            set_uci_val("max_best_nodes", new_lim)
+                            badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
+                            answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
                         t, kb = get_sections_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
