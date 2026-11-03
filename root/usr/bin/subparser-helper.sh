@@ -97,6 +97,31 @@ print(json.dumps(ordered, ensure_ascii=False))
 '
         ;;
 
+    get_github_releases)
+        # Список GitHub Releases для выбора версии в LuCI.
+        python3 - <<'PYEOF'
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib")
+try:
+    from subparser.releases import get_releases
+    releases = get_releases(30)
+except Exception:
+    releases = []
+
+print(json.dumps([
+    {
+        "tag": item.get("tag", ""),
+        "name": item.get("name", ""),
+        "prerelease": bool(item.get("prerelease")),
+        "published_at": item.get("published_at", ""),
+    }
+    for item in releases
+], ensure_ascii=False))
+PYEOF
+        ;;
+
     test_tg)
         TOKEN=$(uci -q get subparser.settings.tg_bot_token)
         CHAT_ID=$(uci -q get subparser.settings.tg_chat_id)

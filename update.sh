@@ -16,14 +16,81 @@ case "$BRANCH" in
 esac
 COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
+PKG_VERSION_FILE="/etc/subparser_pkg_version"
+RELEASE_FILE="/etc/subparser_release"
 BRANCH_FILE="/etc/subparser_branch"
 
-echo "=== [1/5] Проверка наличия обновлений (ветка: ${BRANCH}) ==="
+# Режим обновления: branch (по умолчанию), latest или тег релиза.
+RELEASE_MODE="${SUBPARSER_RELEASE:-${SUBPARSER_VERSION:-}}"
+RELEASE_TAG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --release|--version)
+            shift
+            [ $# -gt 0 ] || { echo "[!] После $0 --release нужен тег релиза"; exit 1; }
+            RELEASE_MODE="$1"
+            ;;
+        --release=*|--version=*) RELEASE_MODE="${1#*=}" ;;
+    esac
+    shift
+done
+if [ -z "$RELEASE_MODE" ]; then
+    RELEASE_MODE=$(uci -q get subparser.settings.update_release 2>/dev/null | tr -d ' \t\r\n' || true)
+fi
+[ -z "$RELEASE_MODE" ] && RELEASE_MODE="branch"
+case "$RELEASE_MODE" in
+    ""|branch|main) RELEASE_MODE="branch" ;;
+    latest) ;;
+    *[!A-Za-z0-9._-]*)
+        echo "[!] Недопустимый тег релиза: $RELEASE_MODE"
+        exit 1
+        ;;
+esac
 
-REMOTE_SHA=$(curl -sL \
-  -H "User-Agent: OpenWrt-SubParser-Updater" \
-  "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${BRANCH}" \
-  | grep '"sha":' | head -n 1 | cut -d '"' -f 4)
+if [ "$RELEASE_MODE" = "branch" ]; then
+    echo "=== [1/5] Проверка наличия обновлений (ветка: ${BRANCH}) ==="
+    REMOTE_SHA=$(curl -sL \
+      -H "User-Agent: OpenWrt-SubParser-Updater" \
+      "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${BRANCH}" \
+      | grep '"sha":' | head -n 1 | cut -d '"' -f 4)
+else
+    if [ "$RELEASE_MODE" = "latest" ]; then
+        RELEASE_TAG=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
+            -H "User-Agent: OpenWrt-SubParser-Updater" \
+            "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases?per_page=10" 2>/dev/null \
+            | python3 -c '
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+for item in data if isinstance(data, list) else []:
+    if isinstance(item, dict) and not item.get("draft"):
+        tag = str(item.get("tag_name") or "").strip()
+        assets = item.get("assets") if isinstance(item.get("assets"), list) else []
+        has_service = any(
+            str(a.get("name") or "").startswith("subparser-")
+            and str(a.get("name") or "").endswith((".tar.gz", ".zip"))
+            for a in assets if isinstance(a, dict)
+        )
+        if tag and has_service:
+            print(tag)
+            break
+' || true)
+        if [ -z "$RELEASE_TAG" ]; then
+            echo "[!] Не удалось определить последний релиз на GitHub."
+            exit 1
+        fi
+    else
+        RELEASE_TAG="$RELEASE_MODE"
+    fi
+    echo "=== [1/5] Проверка наличия обновлений (релиз: ${RELEASE_TAG}) ==="
+    REMOTE_SHA=$(curl -sL \
+      -H "User-Agent: OpenWrt-SubParser-Updater" \
+      "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${RELEASE_TAG}" \
+      | grep '"sha":' | head -n 1 | cut -d '"' -f 4)
+fi
 
 if [ -z "$REMOTE_SHA" ]; then
     echo "[!] Не удалось определить версию на GitHub. Выполняем принудительное обновление..."
@@ -31,10 +98,13 @@ else
     if [ -f "$COMMIT_FILE" ]; then
         LOCAL_SHA=$(cat "$COMMIT_FILE" 2>/dev/null || true)
         if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-            CURRENT_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
+            CURRENT_VER=$(cat "$PKG_VERSION_FILE" 2>/dev/null || cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
             echo ""
             echo "=========================================================="
             echo " [i] Обновлений нет. Установлена актуальная версия: ${CURRENT_VER}"
+            if [ -n "$RELEASE_TAG" ]; then
+                echo " Релиз: ${RELEASE_TAG}"
+            fi
             echo " SHA коммита: ${LOCAL_SHA:0:7}"
             echo "=========================================================="
             exit 0
@@ -83,12 +153,42 @@ rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
 TARBALL="${TMP_DIR}/subparser.tar.gz"
-if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
-        "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
-        -o "$TARBALL"; then
-    echo "[!] Не удалось скачать архив ветки ${BRANCH}."
-    rm -rf "$TMP_DIR"
-    exit 1
+if [ -n "$RELEASE_TAG" ]; then
+    RELEASE_URL=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
+        -H "User-Agent: OpenWrt-SubParser-Updater" \
+        "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}" 2>/dev/null \
+        | RELEASE_TAG="$RELEASE_TAG" python3 -c '
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+for asset in data.get("assets", []) if isinstance(data, dict) else []:
+    name = str(asset.get("name") or "")
+    url = str(asset.get("browser_download_url") or "")
+    if url and name.startswith("subparser-") and name.endswith(".tar.gz"):
+        print(url)
+        break
+' || true)
+    if [ -z "$RELEASE_URL" ]; then
+        RELEASE_URL="https://github.com/${REPO_USER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/subparser-${RELEASE_TAG#v}.tar.gz"
+    fi
+    echo "[*] Скачивание релиза ${RELEASE_TAG}: ${RELEASE_URL}"
+    if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
+            "$RELEASE_URL" -o "$TARBALL"; then
+        echo "[!] Не удалось скачать архив релиза ${RELEASE_TAG}."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+else
+    if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
+            "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
+            -o "$TARBALL"; then
+        echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
 fi
 if ! gzip -t "$TARBALL" 2>/dev/null; then
     echo "[!] Архив повреждён (проверка gzip не пройдена). Обновление отменено."
@@ -172,6 +272,7 @@ set_default_uci "allow_unstable_fallback" "0"
 set_default_uci "stress_top" "40"
 set_default_uci "hysteresis_pct" "10"
 set_default_uci "update_branch" "$BRANCH"
+set_default_uci "update_release" "branch"
 set_default_uci "speedtest_proxy" "socks5h://127.0.0.1:4534"
 set_default_uci "watchdog_enabled" "1"
 set_default_uci "watchdog_interval" "5"
@@ -205,6 +306,18 @@ chmod 600 /etc/config/subparser 2>/dev/null || true
 
 printf '%s\n' "$BRANCH" > "$BRANCH_FILE"
 
+if [ -n "$RELEASE_TAG" ]; then
+    printf '%s\n' "$RELEASE_TAG" > "$RELEASE_FILE"
+    uci -q set subparser.settings.update_release="$RELEASE_MODE"
+    if [ -z "$REMOTE_SHA" ] && [ -f "${SRC_PARENT}/COMMIT" ]; then
+        REMOTE_SHA=$(cat "${SRC_PARENT}/COMMIT" 2>/dev/null || true)
+    fi
+else
+    rm -f "$RELEASE_FILE"
+    uci -q set subparser.settings.update_release="branch"
+fi
+uci -q commit subparser 2>/dev/null || true
+
 if [ -n "$REMOTE_SHA" ]; then
     echo "$REMOTE_SHA" > "$COMMIT_FILE"
 fi
@@ -224,9 +337,12 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 
 rm -rf "$TMP_DIR"
 
-NEW_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "2.1.9")
+NEW_VER=$(cat "$PKG_VERSION_FILE" 2>/dev/null || cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
 echo ""
 echo "=========================================================="
 echo " [OK] SubParser успешно обновлен до версии ${NEW_VER}!"
+if [ -n "$RELEASE_TAG" ]; then
+    echo " Релиз: ${RELEASE_TAG}"
+fi
 echo " Все подписки, настройки и токен бота сохранены."
 echo "=========================================================="

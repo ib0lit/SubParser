@@ -802,27 +802,35 @@ def get_reboot_confirm_screen():
     }
     return text, kb
 
+def _read_version_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _installed_versions():
+    pkg = _read_version_file("/etc/subparser_pkg_version")
+    core = _read_version_file("/etc/subparser_version")
+    release = _read_version_file("/etc/subparser_release")
+    return pkg or core or "unknown", core or "unknown", release
+
+
+def _release_mark(release, installed_pkg):
+    version = str(release.get("version") or "")
+    tag = str(release.get("tag") or "")
+    return "✅" if version and version == installed_pkg or tag == installed_pkg else "⬇️"
+
 
 def get_update_screen():
     import urllib.request, json
-    local_sha = ""
-    local_ver = "unknown"
-    try:
-        with open('/etc/subparser_commit', 'r') as f:
-            local_sha = f.read().strip()
-    except Exception:
-        pass
-
-    try:
-        with open('/etc/subparser_version', 'r') as f:
-            local_ver = f.read().strip()
-    except Exception:
-        pass
-
-    local_display_ver = local_ver
+    local_sha = _read_version_file("/etc/subparser_commit")
+    local_pkg, local_core, local_release = _installed_versions()
+    local_display_ver = local_pkg
 
     remote_sha = ""
-    remote_ver = local_ver
+    remote_ver = local_pkg
     changelog = "Описание недоступно"
     branch = get_uci_val("update_branch", "main") or "main"
     branch = "".join(ch for ch in branch if ch.isalnum() or ch in "-_./") or "main"
@@ -836,41 +844,155 @@ def get_update_screen():
             remote_sha = data.get('sha', '').strip()
             changelog = html.escape(data.get('commit', {}).get('message', ''))
     except Exception:
-        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений на GitHub.", {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений на GitHub.", {
+            "inline_keyboard": [
+                [{"text": "📦 Выбрать релиз", "callback_data": "check_releases"}],
+                [{"text": "◀ Главное меню", "callback_data": "home"}],
+            ]
+        }
 
-    try:
-        req_v = urllib.request.Request(
-            f"https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/root/etc/subparser_version",
-            headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
-        with urllib.request.urlopen(req_v, timeout=5, context=get_ssl_ctx()) as resp_v:
-            remote_ver = resp_v.read().decode('utf-8').strip()
-    except Exception:
-        pass
+    for version_path in ("root/etc/subparser_pkg_version", "root/etc/subparser_version"):
+        try:
+            req_v = urllib.request.Request(
+                f"https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/{version_path}",
+                headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+            with urllib.request.urlopen(req_v, timeout=5, context=get_ssl_ctx()) as resp_v:
+                remote_ver = resp_v.read().decode('utf-8').strip()
+            break
+        except Exception:
+            continue
 
     is_update_available = False
     if local_sha and remote_sha:
         is_update_available = (local_sha != remote_sha)
-    elif remote_ver and local_ver != "unknown":
-        is_update_available = (local_ver != remote_ver)
+    elif remote_ver and local_pkg != "unknown":
+        is_update_available = (local_pkg != remote_ver)
+
+    installed_line = f"• Установлено: <code>v{html.escape(local_display_ver)}</code>"
+    if local_core and local_core != local_display_ver:
+        installed_line += f" (ядро <code>v{html.escape(local_core)}</code>)"
+    if local_release:
+        installed_line += f"\n• Тег релиза: <code>{html.escape(local_release)}</code>"
+    if local_sha:
+        installed_line += f"\n• Коммит: <code>{local_sha[:7]}</code>"
 
     if is_update_available:
         short_remote_sha = remote_sha[:7] if remote_sha else ""
-        short_local_sha = local_sha[:7] if local_sha else "н/д"
         text = (
-            f"🎉 <b>Доступно обновление!</b>\n\n"
+            f"🎉 <b>Доступно обновление ветки!</b>\n\n"
             f"• Ветка: <code>{html.escape(branch)}</code>\n"
-            f"• Текущая версия: <code>v{local_display_ver}</code> (<code>{short_local_sha}</code>)\n"
-            f"• Новая версия: <code>v{remote_ver}</code> (<code>{short_remote_sha}</code>)\n\n"
-            f"📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"
+            f"{installed_line}\n"
+            f"• В ветке: <code>v{html.escape(remote_ver)}</code>"
+        )
+        if short_remote_sha:
+            text += f" (<code>{short_remote_sha}</code>)"
+        text += f"\n\n📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"
+        update_button = {"text": "🔄 Обновить ветку", "callback_data": "do_update"}
+    else:
+        text = (
+            f"✅ <b>Установлена актуальная версия ветки.</b>\n\n"
+            f"• Ветка: <code>{html.escape(branch)}</code>\n"
+            f"{installed_line}"
+        )
+        update_button = None
+
+    kb_rows = []
+    if update_button:
+        kb_rows.append([update_button])
+    kb_rows.append([{"text": "📦 Выбрать версию из релизов", "callback_data": "check_releases"}])
+    kb_rows.append([{"text": "◀ Главное меню", "callback_data": "home"}])
+    return text, {"inline_keyboard": kb_rows}
+
+
+def get_releases_screen():
+    from .releases import get_releases
+    local_pkg, local_core, local_release = _installed_versions()
+    try:
+        releases = get_releases(20)
+    except Exception:
+        text = (
+            "❌ <b>Не удалось получить список релизов</b>\n\n"
+            "Проверьте сеть на роутере или повторите позже."
         )
         kb = {"inline_keyboard": [
-            [{"text": "🔄 Обновить", "callback_data": "do_update"}],
-            [{"text": "◀ Главное меню", "callback_data": "home"}]
+            [{"text": "🔄 Повторить", "callback_data": "check_releases"}],
+            [{"text": "◀ Проверить обновления ветки", "callback_data": "check_update"}],
+            [{"text": "◀ Главное меню", "callback_data": "home"}],
         ]}
-    else:
-        text = f"✅ <b>У вас установлена последняя версия!</b>\n\nТекущая версия: <code>v{local_display_ver}</code>"
-        if local_sha:
-            text += f" (<code>{local_sha[:7]}</code>)"
-        kb = {"inline_keyboard": [[{"text": "◀ Главное меню", "callback_data": "home"}]]}
+        return text, kb
 
+    lines = [
+        "📦 <b>Версии SubParser из GitHub Releases</b>\n",
+        f"• Установлено: <code>v{html.escape(local_pkg)}</code> (ядро <code>v{html.escape(local_core)}</code>)",
+    ]
+    if local_release:
+        lines.append(f"• Тег релиза: <code>{html.escape(local_release)}</code>")
+    lines.append("")
+    lines.append("Выберите версию для установки или обновления:")
+
+    kb_rows = []
+    for release in releases[:8]:
+        tag = release.get("tag", "")
+        name = release.get("name") or tag
+        suffix = " · pre-release" if release.get("prerelease") else ""
+        mark = _release_mark(release, local_pkg)
+        lines.append(f"{mark} <code>{html.escape(tag)}</code>{suffix} — {html.escape(name)}")
+        label = f"{mark} {tag}" + (" (beta)" if release.get("prerelease") else "")
+        kb_rows.append([{"text": label[:64], "callback_data": f"rel_pick:{tag}"}])
+
+    if not releases:
+        lines.append("Релизов пока нет.")
+
+    kb_rows.append([{"text": "🌿 Обновления из ветки main", "callback_data": "use_branch"}])
+    kb_rows.append([{"text": "◀ Проверить обновления ветки", "callback_data": "check_update"}])
+    kb_rows.append([{"text": "◀ Главное меню", "callback_data": "home"}])
+    return "\n".join(lines), {"inline_keyboard": kb_rows}
+
+
+def get_release_confirm_screen(tag):
+    from .releases import get_release, normalize_tag
+    local_pkg, local_core, _local_release = _installed_versions()
+    try:
+        selected = normalize_tag(tag)
+        release = get_release(selected)
+    except Exception:
+        return (
+            "❌ <b>Не удалось загрузить выбранный релиз</b>\n\n"
+            "Возможно, он удалён или GitHub временно недоступен.",
+            {"inline_keyboard": [
+                [{"text": "📦 К списку релизов", "callback_data": "check_releases"}],
+                [{"text": "◀ Главное меню", "callback_data": "home"}],
+            ]}
+        )
+
+    actual_tag = release.get("tag", tag)
+    version = release.get("version", actual_tag.lstrip("v"))
+    published = (release.get("published_at") or "")[:10]
+    body = (release.get("body") or "").strip()
+    body_html = html.escape(body[:1800]) if body else "Описание не указано."
+    state = "pre-release" if release.get("prerelease") else "stable"
+    already = version == local_pkg or actual_tag == local_pkg or actual_tag == _local_release
+
+    text = (
+        f"📦 <b>Релиз {html.escape(actual_tag)}</b>\n\n"
+        f"• Название: {html.escape(release.get('name') or actual_tag)}\n"
+        f"• Статус: <code>{state}</code>\n"
+    )
+    if published:
+        text += f"• Опубликован: <code>{html.escape(published)}</code>\n"
+    text += (
+        f"• Сейчас установлено: <code>v{html.escape(local_pkg)}</code>"
+        f" (ядро <code>v{html.escape(local_core)}</code>)\n\n"
+        f"📝 <b>Описание релиза:</b>\n<i>{body_html}</i>\n\n"
+    )
+    if already:
+        text += "ℹ️ Эта версия уже установлена. Установка перезапишет файлы сервиса."
+    else:
+        text += "⚠️ Будут обновлены файлы сервиса. Подписки, настройки и токен бота сохранятся."
+
+    kb = {"inline_keyboard": [
+        [{"text": f"🚀 Установить {actual_tag}"[:64], "callback_data": f"rel_do:{actual_tag}"}],
+        [{"text": "📦 К списку релизов", "callback_data": "check_releases"}],
+        [{"text": "◀ Главное меню", "callback_data": "home"}],
+    ]}
     return text, kb

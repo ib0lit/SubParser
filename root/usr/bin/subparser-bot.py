@@ -34,6 +34,7 @@ from subparser.podkop import (
 from subparser.screens import (
     get_clients_screen, get_device_action_screen, get_dmesg_screen,
     get_log_screen, get_logread_screen, get_main_screen, get_update_screen,
+    get_releases_screen, get_release_confirm_screen,
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_protocols_menu_screen,
     get_sections_menu_screen, get_sections_selector_screen,
@@ -41,6 +42,7 @@ from subparser.screens import (
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
 )
+from subparser.releases import get_release, normalize_tag
 
 # Результаты проверки DEAD ждут подтверждения; храним в памяти бота.
 # После перезапуска бота план исчезнет и подтверждение попросит проверить снова.
@@ -98,13 +100,25 @@ def check_post_update_notification(token):
             with open(marker, "r") as f:
                 data = json.load(f)
             ver = "актуальной"
+            for version_file in ("/etc/subparser_pkg_version", "/etc/subparser_version"):
+                try:
+                    with open(version_file, "r") as vf:
+                        ver = vf.read().strip()
+                    if ver:
+                        break
+                except Exception:
+                    pass
+            release_tag = ""
             try:
-                with open("/etc/subparser_version", "r") as vf:
-                    ver = vf.read().strip()
+                with open("/etc/subparser_release", "r") as rf:
+                    release_tag = rf.read().strip()
             except Exception:
                 pass
-            display_ver = ver
-            msg = f"🚀 <b>Сервис успешно обновлен до версии v{display_ver}!</b>\nВсе компоненты работают в штатном режиме."
+            display_ver = html.escape(ver)
+            msg = f"🚀 <b>Сервис успешно обновлен до версии v{display_ver}!</b>"
+            if release_tag:
+                msg += f"\nРелиз: <code>{html.escape(release_tag)}</code>"
+            msg += "\nВсе компоненты работают в штатном режиме."
             kb = {"inline_keyboard": [[{"text": "◀ В главное меню", "callback_data": "home"}]]}
             edit_msg(token, data["chat_id"], data["msg_id"], msg, kb)
         except Exception as e:
@@ -258,7 +272,7 @@ def main():
                     ADMIN_PREFIXES = (
                         'sub_del_', 'reboot', 'do_reboot', 'restart', 'enter_del_mode',
                         'srv_del_pg', 'apply_bdel', 'del:', 'blk:', 'unblk:', 'do_update',
-                        'del_dead_all',
+                        'del_dead_all', 'rel_do', 'use_branch',
                     )
                     if any(data == p or data.startswith(p) for p in ADMIN_PREFIXES) and user_id != admin_id:
                         print(f"[AUTH REJECT] Admin-only action '{data}' blocked for user {username} ({user_id})")
@@ -325,6 +339,70 @@ def main():
                         edit_msg(token, chat_id, msg_id, t, kb)
                         continue
 
+                    elif data == "check_releases":
+                        answer_callback(token, cb_id, "Загружаю релизы...")
+                        t, kb = get_releases_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+                        continue
+
+                    elif data.startswith("rel_pick:"):
+                        tag = data.split(":", 1)[1].strip()
+                        try:
+                            tag = normalize_tag(tag)
+                        except ValueError:
+                            answer_callback(token, cb_id, "Некорректный тег релиза")
+                            continue
+                        answer_callback(token, cb_id)
+                        t, kb = get_release_confirm_screen(tag)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+                        continue
+
+                    elif data.startswith("rel_do:"):
+                        if user_id != admin_id:
+                            answer_callback(token, cb_id, "⛔ Доступно только администратору!")
+                            continue
+                        requested_tag = data.split(":", 1)[1].strip()
+                        try:
+                            requested_tag = normalize_tag(requested_tag)
+                            release = get_release(requested_tag)
+                            actual_tag = release.get("tag", "")
+                        except Exception:
+                            answer_callback(token, cb_id, "Не удалось загрузить релиз")
+                            continue
+                        answer_callback(token, cb_id, "Запуск обновления...")
+                        edit_msg(
+                            token, chat_id, msg_id,
+                            f"🔄 <b>Устанавливается релиз {html.escape(actual_tag)}...</b>\n"
+                            "Бот автоматически перезапустится через 1-2 минуты.",
+                            {"inline_keyboard": []}
+                        )
+                        try:
+                            with open("/tmp/subparser_update_pending", "w") as f:
+                                json.dump({"chat_id": chat_id, "msg_id": msg_id}, f)
+                        except Exception:
+                            pass
+                        # update.sh берём из main: он умеет и ветки, и релизы,
+                        # а устанавливаемый код — из выбранного тега.
+                        subprocess.Popen(
+                            ["sh", "-c",
+                             "curl -fsSL https://raw.githubusercontent.com/ib0lit/SubParser/main/update.sh -o /tmp/run_update.sh && "
+                             "chmod +x /tmp/run_update.sh && "
+                             f"(SUBPARSER_RELEASE={requested_tag} /tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
+                            close_fds=True,
+                            start_new_session=True
+                        )
+                        continue
+
+                    elif data == "use_branch":
+                        if user_id != admin_id:
+                            answer_callback(token, cb_id, "⛔ Доступно только администратору!")
+                            continue
+                        set_uci_val("update_release", "branch")
+                        answer_callback(token, cb_id, "Выбраны обновления из ветки")
+                        t, kb = get_update_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+                        continue
+
                     elif data == "do_update":
                         if user_id != admin_id:
                             answer_callback(token, cb_id, "⛔ Доступно только администратору!")
@@ -340,7 +418,7 @@ def main():
                         branch = "".join(ch for ch in branch if ch.isalnum() or ch in "-_./")
                         subprocess.Popen(
                             ["sh", "-c",
-                             f"curl -fsSL https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/update.sh -o /tmp/run_update.sh && chmod +x /tmp/run_update.sh && (SUBPARSER_BRANCH={branch} /tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
+                             f"curl -fsSL https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/update.sh -o /tmp/run_update.sh && chmod +x /tmp/run_update.sh && (SUBPARSER_BRANCH={branch} SUBPARSER_RELEASE=branch /tmp/run_update.sh >/tmp/subparser_update.log 2>&1 &)"],
                             close_fds=True,
                             start_new_session=True
                         )

@@ -8,6 +8,7 @@ return view.extend({
     serverLinks: [],
     availableSections: ['main'],
     githubBranches: ['main'],
+    githubReleases: [],
 
     load: function() {
         var self = this;
@@ -28,6 +29,15 @@ return view.extend({
             }).catch(function() {
                 self.githubBranches = ['main'];
                 return links;
+            }).then(function(links) {
+                return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_releases']).then(function(res) {
+                    try { self.githubReleases = JSON.parse(res.stdout.trim() || '[]'); }
+                    catch(e) { self.githubReleases = []; }
+                    return links;
+                }).catch(function() {
+                    self.githubReleases = [];
+                    return links;
+                });
             });
         });
     },
@@ -293,6 +303,24 @@ return view.extend({
         });
         o.default = 'main';
         o.description = _('Список веток загружается из GitHub. Для стабильной работы выберите <code>main</code>.');
+
+        o = s.taboption('advanced', form.ListValue, 'update_release', _('Версия GitHub для обновлений'));
+        o.value('branch', _('Ветка из поля выше'));
+        o.value('latest', _('Последний релиз'));
+        var currentRelease = (this.data && this.data.update_release) ? this.data.update_release : 'branch';
+        var seenReleases = {};
+        (this.githubReleases || []).forEach(function(rel) {
+            if (!rel || !rel.tag) return;
+            seenReleases[rel.tag] = true;
+            var label = rel.tag + (rel.prerelease ? _(' (beta)') : '');
+            if (rel.name && rel.name !== rel.tag) label += ' — ' + rel.name;
+            o.value(rel.tag, label);
+        });
+        if (currentRelease !== 'branch' && currentRelease !== 'latest' && !seenReleases[currentRelease]) {
+            o.value(currentRelease, currentRelease);
+        }
+        o.default = 'branch';
+        o.description = _('Выберите ветку, последний релиз или конкретный GitHub Release. Обновление запускается через Telegram-бота или скрипт <code>update.sh</code>; настройки и подписки сохраняются.');
 
         var wdHint = s.taboption('watchdog', form.DummyValue, '_watchdog_hint');
         wdHint.rawhtml = true;

@@ -16,22 +16,51 @@ case "$BRANCH" in
 esac
 COMMIT_FILE="/etc/subparser_commit"
 VERSION_FILE="/etc/subparser_version"
+PKG_VERSION_FILE="/etc/subparser_pkg_version"
+RELEASE_FILE="/etc/subparser_release"
 BRANCH_FILE="/etc/subparser_branch"
+
+# Режим установки:
+#   без параметров / SUBPARSER_RELEASE=branch — из ветки (как раньше);
+#   SUBPARSER_RELEASE=latest                — последний GitHub Release;
+#   SUBPARSER_RELEASE=v0.1.0-beta           — конкретный релиз.
+RELEASE_MODE="${SUBPARSER_RELEASE:-${SUBPARSER_VERSION:-}}"
+RELEASE_TAG=""
 
 # Локальный режим для установки из локальной копии репозитория:
 #   sh install.sh --local
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 LOCAL_SRC=""
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --local|--local-archive) LOCAL_SRC="$SCRIPT_DIR/root" ;;
+        --release|--version)
+            shift
+            [ $# -gt 0 ] || { echo "[!] После $0 --release нужен тег релиза"; exit 1; }
+            RELEASE_MODE="$1"
+            ;;
+        --release=*|--version=*) RELEASE_MODE="${1#*=}" ;;
     esac
+    shift
 done
 
 if [ -n "$LOCAL_SRC" ] && [ ! -d "$LOCAL_SRC" ]; then
     echo "[!] Не найден локальный каталог root рядом со скриптом: $LOCAL_SRC"
     exit 1
 fi
+if [ -n "$LOCAL_SRC" ] && [ -n "$RELEASE_MODE" ] && [ "$RELEASE_MODE" != "branch" ]; then
+    echo "[!] Нельзя одновременно использовать --local и --release."
+    exit 1
+fi
+
+case "$RELEASE_MODE" in
+    ""|branch|main) RELEASE_MODE="branch" ;;
+    latest) ;;
+    *[!A-Za-z0-9._-]*)
+        echo "[!] Недопустимый тег релиза: $RELEASE_MODE"
+        exit 1
+        ;;
+esac
 
 echo "=== [1/7] Проверка дискового пространства устройства ==="
 
@@ -115,18 +144,84 @@ if [ -n "$LOCAL_SRC" ]; then
     echo "=== [3/7] Локальная установка из портативного архива ==="
     SRC_PATH="$LOCAL_SRC"
 else
-    echo "=== [3/7] Загрузка компонентов с GitHub (ветка: ${BRANCH}) ==="
     TMP_DIR="/tmp/subparser-install"
     rm -rf "$TMP_DIR"
     mkdir -p "$TMP_DIR"
-
     TARBALL="${TMP_DIR}/subparser.tar.gz"
-    if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
-            "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
-            -o "$TARBALL"; then
-        echo "[!] Не удалось скачать архив ветки ${BRANCH}."
-        rm -rf "$TMP_DIR"
-        exit 1
+
+    if [ "$RELEASE_MODE" != "branch" ]; then
+        echo "=== [3/7] Загрузка релиза с GitHub (${RELEASE_MODE}) ==="
+        if [ "$RELEASE_MODE" = "latest" ]; then
+            RELEASE_TAG=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
+                -H "User-Agent: OpenWrt-SubParser-Installer" \
+                "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases?per_page=10" 2>/dev/null \
+                | python3 -c '
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+for item in data if isinstance(data, list) else []:
+    if isinstance(item, dict) and not item.get("draft"):
+        tag = str(item.get("tag_name") or "").strip()
+        assets = item.get("assets") if isinstance(item.get("assets"), list) else []
+        has_service = any(
+            str(a.get("name") or "").startswith("subparser-")
+            and str(a.get("name") or "").endswith((".tar.gz", ".zip"))
+            for a in assets if isinstance(a, dict)
+        )
+        if tag and has_service:
+            print(tag)
+            break
+' || true)
+            if [ -z "$RELEASE_TAG" ]; then
+                echo "[!] Не удалось определить последний релиз на GitHub."
+                rm -rf "$TMP_DIR"
+                exit 1
+            fi
+        else
+            RELEASE_TAG="$RELEASE_MODE"
+        fi
+
+        RELEASE_URL=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
+            -H "User-Agent: OpenWrt-SubParser-Installer" \
+            "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}" 2>/dev/null \
+            | RELEASE_TAG="$RELEASE_TAG" python3 -c '
+import json
+import os
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+for asset in data.get("assets", []) if isinstance(data, dict) else []:
+    name = str(asset.get("name") or "")
+    url = str(asset.get("browser_download_url") or "")
+    if url and name.startswith("subparser-") and name.endswith(".tar.gz"):
+        print(url)
+        break
+' || true)
+        if [ -z "$RELEASE_URL" ]; then
+            RELEASE_URL="https://github.com/${REPO_USER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/subparser-${RELEASE_TAG#v}.tar.gz"
+        fi
+        echo "[*] Релиз: ${RELEASE_TAG}"
+        echo "[*] Скачивание: ${RELEASE_URL}"
+        if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
+                "$RELEASE_URL" -o "$TARBALL"; then
+            echo "[!] Не удалось скачать архив релиза ${RELEASE_TAG}."
+            rm -rf "$TMP_DIR"
+            exit 1
+        fi
+    else
+        echo "=== [3/7] Загрузка компонентов с GitHub (ветка: ${BRANCH}) ==="
+        if ! curl -fL --retry 3 --connect-timeout 15 -m 240 \
+                "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
+                -o "$TARBALL"; then
+            echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+            rm -rf "$TMP_DIR"
+            exit 1
+        fi
     fi
     if ! gzip -t "$TARBALL" 2>/dev/null; then
         echo "[!] Архив повреждён (проверка gzip не пройдена). Установка отменена."
@@ -214,6 +309,15 @@ fi
 chmod 600 /etc/config/subparser 2>/dev/null || true
 printf '%s\n' "$BRANCH" > "$BRANCH_FILE"
 
+if [ "$RELEASE_MODE" != "branch" ]; then
+    printf '%s\n' "$RELEASE_TAG" > "$RELEASE_FILE"
+    uci -q set subparser.settings.update_release="$RELEASE_MODE"
+else
+    rm -f "$RELEASE_FILE"
+    uci -q set subparser.settings.update_release="branch"
+fi
+uci -q commit subparser 2>/dev/null || true
+
 # Копирование модулей Python и системных утилит
 rm -rf /usr/lib/subparser/*
 cp -rf "${SRC_PATH}/usr/lib/subparser/"* /usr/lib/subparser/ 2>/dev/null || true
@@ -250,6 +354,16 @@ if [ -n "$LOCAL_SRC" ]; then
     # В архив кладётся COMMIT, чтобы update.sh понимал, какая ревизия стоит.
     if [ -f "$SCRIPT_DIR/COMMIT" ]; then
         REMOTE_SHA=$(cat "$SCRIPT_DIR/COMMIT" 2>/dev/null || true)
+    fi
+elif [ -n "$RELEASE_TAG" ]; then
+    if [ -f "${SRC_PARENT}/COMMIT" ]; then
+        REMOTE_SHA=$(cat "${SRC_PARENT}/COMMIT" 2>/dev/null || true)
+    fi
+    if [ -z "$REMOTE_SHA" ]; then
+        REMOTE_SHA=$(curl -sL \
+          -H "User-Agent: OpenWrt-SubParser-Installer" \
+          "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/commits/${RELEASE_TAG}" \
+          | grep '"sha":' | head -n 1 | cut -d '"' -f 4 || true)
     fi
 else
     REMOTE_SHA=$(curl -sL \
