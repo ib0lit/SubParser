@@ -421,6 +421,15 @@ class TrafficTracker:
 
 
 # --- Цели проверки ------------------------------------------------------------
+def _section_list(value):
+    return [s for s in str(value or "").split() if s]
+
+
+def target_applies(target, section):
+    selected = target.get("sections") or []
+    return not selected or section in selected
+
+
 def load_targets():
     targets = []
     for preset_id in PRESET_ORDER:
@@ -434,6 +443,8 @@ def load_targets():
             "label": preset.get("label", preset_id),
             "urls": list(preset.get("urls") or []),
             "require_all": bool(preset.get("require_all")),
+            "sections": _section_list(
+                cfg("watchdog_service_sections_" + preset_id, "")),
         })
 
     manual = str(cfg("watchdog_services", "")).split()
@@ -441,20 +452,32 @@ def load_targets():
         entry = entry.strip()
         if not entry:
             continue
+        sections = []
         if "|" in entry:
             parts = [p.strip() for p in entry.split("|") if p.strip()]
             label = parts[0]
-            urls = [p for p in parts[1:] if p.startswith("https://")]
+            urls = []
+            for part in parts[1:]:
+                low = part.lower()
+                if low.startswith("sections="):
+                    sections = [s.strip() for s in
+                                part.split("=", 1)[1].split(",") if s.strip()]
+                elif part.startswith("https://"):
+                    urls.append(part)
         else:
             urls = [entry] if entry.startswith("https://") else []
             label = urllib.parse.urlsplit(urls[0]).hostname if urls else entry
         urls = [u for u in urls if u.startswith("https://")]
         if not urls:
             continue
+        target_id = "url:" + "|".join(urls)
+        if sections:
+            target_id += "@" + ",".join(sections)
         targets.append({
-            "id": "url:" + "|".join(urls),
+            "id": target_id,
             "label": label or urls[0],
             "urls": urls,
+            "sections": sections,
         })
     return targets
 
@@ -490,6 +513,8 @@ def run_cycle(targets, state):
         if not info:
             continue
         for target in targets:
+            if not target_applies(target, section):
+                continue
             key = "%s|%s" % (section, target["id"])
             st = state.setdefault(key, {})
             result = probe_target(info["active_tag"], target, timeout_ms)
@@ -617,6 +642,8 @@ def check_once(as_json=False):
             mode = "ручной" if info["mode"] == "manual" else "URLTest"
             print("Секция %s: узел %s (%s)" % (section, info["label"], mode))
         for target in targets:
+            if not target_applies(target, section):
+                continue
             result = probe_target(info["active_tag"], target, timeout_ms)
             item = {
                 "id": target["id"],

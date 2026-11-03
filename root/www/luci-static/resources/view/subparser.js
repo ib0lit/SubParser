@@ -549,12 +549,23 @@ return view.extend({
             f.depends('watchdog_service_enabled', '1');
             f.description = _('Проверяемые адреса: ') + p.hint +
                 (p.all ? ' ' + _('Сервис считается доступным только если отвечают оба адреса.') : '');
+
+            var secSel = s.taboption('services', form.MultiValue,
+                'watchdog_service_sections_' + p.id,
+                _('Секции для ') + p.label);
+            self.availableSections.forEach(function(sec) {
+                secSel.value(sec, sec);
+            });
+            var secDeps = { watchdog_service_enabled: '1' };
+            secDeps['watchdog_service_' + p.id] = '1';
+            secSel.depends(secDeps);
+            secSel.description = _('Пусто — проверять во всех управляемых секциях Podkop. Выберите только те секции, где этот сервис должен контролироваться.');
         });
 
         var svcManual = s.taboption('services', form.DynamicList, 'watchdog_services', _('Свои адреса для проверки'));
-        svcManual.placeholder = 'Instagram|https://www.instagram.com/|https://i.instagram.com/';
+        svcManual.placeholder = 'Instagram|sections=gemini,main|https://www.instagram.com/';
         svcManual.depends('watchdog_service_enabled', '1');
-        svcManual.description = _('Формат: <code>Название|https://адрес1|https://адрес2</code> или просто <code>https://адрес</code>. Несколько адресов одного сервиса проверяются вместе. Только HTTPS.');
+        svcManual.description = _('Формат: <code>Название|sections=секция1,секция2|https://адрес1|https://адрес2</code> или просто <code>https://адрес</code>. Блок <code>sections=</code> необязателен: без него проверяются все секции. Несколько адресов одного сервиса проверяются вместе. Только HTTPS.');
 
         o = s.taboption('services', form.Value, 'watchdog_service_active_interval', _('Интервал проверки при активном трафике (сек)'));
         o.datatype = 'range(10, 300)';
