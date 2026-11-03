@@ -112,6 +112,7 @@ except Exception:
         return "unchanged"
 
 CONFIG_NAME = "subparser"
+REPORT_CACHE_FILE = "/tmp/subparser_last_report.json"
 SINGBOX_BIN = "/usr/bin/sing-box"
 TEST_URL = "https://www.gstatic.com/generate_204"
 LOCK_FILE = "/var/run/subparser.lock"
@@ -312,31 +313,43 @@ def update_live_progress(step_title, step_desc):
     except Exception:
         pass
 
-def send_telegram_notify(text, rich_text=None):
+def _sent_message_id(resp):
+    """message_id из успешного ответа Telegram (для кнопок отчёта)."""
+    try:
+        payload = json.loads(resp.read().decode("utf-8"))
+        return payload.get("result", {}).get("message_id")
+    except Exception:
+        return None
+
+
+def send_telegram_notify(text, rich_text=None, reply_markup=None):
     """Отправляет отчёт: сначала rich-сообщение, при неудаче — обычный HTML.
 
-    rich_text — необязательный HTML для sendRichMessage (поддерживает
-    раскрываемый <details>). text — обычный HTML-вариант с <blockquote
-    expandable> для клиентов без поддержки rich-сообщений.
+    rich_text — необязательный HTML для sendRichMessage. text — обычный
+    HTML-вариант для клиентов без поддержки rich-сообщений.
+    reply_markup — необязательная inline-клавиатура. Возвращает message_id.
     """
     try:
         token = subprocess.check_output(["uci", "-q", "get", f"{CONFIG_NAME}.settings.tg_bot_token"], text=True).strip()
         chat_id = subprocess.check_output(["uci", "-q", "get", f"{CONFIG_NAME}.settings.tg_chat_id"], text=True).strip()
         if not token or not chat_id:
-            return
+            return None
 
         ctx = make_ssl_context()
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+        classic_payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            classic_payload["reply_markup"] = reply_markup
+        data = json.dumps(classic_payload).encode("utf-8")
 
         rich_url = f"https://api.telegram.org/bot{token}/sendRichMessage"
         rich_data = None
         if rich_text and get_uci("tg_rich_messages", "1") == "1":
-            rich_data = json.dumps({
-                "chat_id": chat_id,
-                "rich_message": {"html": rich_text},
-            }).encode("utf-8")
+            rich_payload = {"chat_id": chat_id, "rich_message": {"html": rich_text}}
+            if reply_markup:
+                rich_payload["reply_markup"] = reply_markup
+            rich_data = json.dumps(rich_payload).encode("utf-8")
 
         print("[*] Ожидание готовности сети для отправки отчета в Telegram...")
         time.sleep(4)
@@ -354,7 +367,7 @@ def send_telegram_notify(text, rich_text=None):
                     with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
                         if resp.status == 200:
                             print(f"[OK] Rich-отчет доставлен в Telegram (попытка {attempt}/{max_attempts}).")
-                            return
+                            return _sent_message_id(resp)
                 except Exception as rich_err:
                     code = getattr(rich_err, "code", None)
                     print(f"  [!] Rich-сообщение не доставлено ({rich_err}); отправляю обычный HTML.")
@@ -364,11 +377,14 @@ def send_telegram_notify(text, rich_text=None):
                         rich_data = None
 
             try:
-                req = urllib.request.Request(url, data=data, headers={"User-Agent": "OpenWrt-SubParser"})
+                req = urllib.request.Request(
+                    url, data=data,
+                    headers={"Content-Type": "application/json",
+                             "User-Agent": "OpenWrt-SubParser"})
                 with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
                     if resp.status == 200:
                         print(f"[OK] Уведомление успешно доставлено в Telegram (попытка {attempt}/{max_attempts}).")
-                        return
+                        return _sent_message_id(resp)
             except Exception as net_err:
                 if attempt < max_attempts:
                     print(f"  [!] Нет связи с Telegram ({net_err}). Повтор через {retry_delay}с...")
@@ -377,6 +393,7 @@ def send_telegram_notify(text, rich_text=None):
         print("[!] Превышен лимит ожидания. Уведомление не доставлено.")
     except Exception as e:
         print(f"[!] Ошибка отправки: {e}")
+    return None
 
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -1196,13 +1213,11 @@ def _node_name_from_link(link):
         return "узел"
 
 
-def _format_change_details(change_details, results, max_chars=None):
+def _format_change_details(change_details, results):
     """Один сервер — одна строка, без повторов по секциям.
 
     Для каждого сервера собираются все секции, куда он добавлен или откуда
-    удалён. max_chars используется только как технический предохранитель для
-    обычного HTML-сообщения Telegram (лимит 4096 символов); rich-вариант
-    формируется без ограничения.
+    удалён.
     """
 
     def collect(index):
@@ -1224,15 +1239,11 @@ def _format_change_details(change_details, results, max_chars=None):
     removed_nodes = collect(2)
 
     blocks = []
-    used = 0
-    truncated = 0
     for label, nodes, icon in (("Добавлены", added_nodes, "➕"),
                                ("Удалены", removed_nodes, "➖")):
         if not nodes:
             continue
-        header = f"{icon} <b>{label} ({len(nodes)}):</b>"
-        lines = [header]
-        used += len(header) + 1
+        lines = [f"{icon} <b>{label} ({len(nodes)}):</b>"]
         for node in nodes:
             info = results.get(node["link"], {})
             name = str(info.get("name") or _node_name_from_link(node["link"]))
@@ -1241,18 +1252,10 @@ def _format_change_details(change_details, results, max_chars=None):
             delay = info.get("delay", 0)
             suffix = f" — {delay} ms" if delay and delay > 0 else ""
             sections = ", ".join(html.escape(s) for s in node["sections"])
-            line = f"• {html.escape(name)}{suffix} ({sections})"
-            if max_chars is not None and used + len(line) + 1 > max_chars:
-                truncated += 1
-                continue
-            lines.append(line)
-            used += len(line) + 1
+            lines.append(f"• {html.escape(name)}{suffix} ({sections})")
         blocks.append("\n".join(lines))
 
-    text = "\n\n".join(blocks)
-    if truncated:
-        text += f"\n… ещё {truncated}"
-    return text
+    return "\n\n".join(blocks)
 
 
 def _prepare_link(link, results, idx):
@@ -1815,20 +1818,30 @@ def _run():
         if sub_lines:
             msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
     rich_msg = msg
+    change_details_html = ""
+    change_details_rich = ""
+    reply_markup = None
     if change_details:
-        rich_details = _format_change_details(change_details, results)
-        if rich_details:
-            # Rich HTML: настоящий сворачиваемый блок <details>, все серверы.
-            rich_body = rich_details.replace("\n", "<br/>")
-            rich_msg += ("\n\n<details><summary>🧩 <b>Детали изменений</b></summary>"
-                         f"{rich_body}</details>")
-            # Обычный HTML: тот же список в раскрываемом blockquote. Ограничение
-            # только по длине сообщения Telegram (4096), а не по числу строк.
-            budget = max(400, 3900 - len(msg) - 100)
-            details = _format_change_details(change_details, results, max_chars=budget)
-            msg += ("\n\n<blockquote expandable>🧩 <b>Детали изменений</b>\n"
-                    f"{details}</blockquote>")
-    send_telegram_notify(msg, rich_msg if rich_msg != msg else None)
+        change_details_html = _format_change_details(change_details, results)
+        if change_details_html:
+            change_details_rich = change_details_html.replace("\n", "<br/>")
+            reply_markup = {"inline_keyboard": [[
+                {"text": "🗂 Изменения серверов", "callback_data": "report_changes"}
+            ]]}
+    msg_id = send_telegram_notify(msg, rich_msg, reply_markup=reply_markup)
+    if msg_id and change_details_html:
+        try:
+            write_json_atomic(REPORT_CACHE_FILE, {
+                "message_id": msg_id,
+                "chat_id": get_uci("tg_chat_id", ""),
+                "created": int(time.time()),
+                "summary_html": msg,
+                "summary_rich": rich_msg,
+                "details_html": change_details_html,
+                "details_rich": change_details_rich,
+            })
+        except Exception as cache_err:
+            print(f"[!] Не удалось сохранить детали отчёта: {cache_err}")
 
 
 def main():

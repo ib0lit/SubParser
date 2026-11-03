@@ -43,7 +43,7 @@ from subparser.screens import (
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
 )
 from subparser.releases import get_release, normalize_tag
-from subparser.rich import RichScreen, esc, join_rich
+from subparser.rich import RichScreen, RichText, esc, join_rich
 
 # Результаты проверки DEAD ждут подтверждения; храним в памяти бота.
 # После перезапуска бота план исчезнет и подтверждение попросит проверить снова.
@@ -1329,6 +1329,43 @@ def main():
                         t, kb = get_servers_screen(delays_map=delays, section=sec_name, page=pg)
                         edit_msg(token, chat_id, msg_id, t, kb)
                         answer_callback(token, cb_id, "⚡️ Пинги обновлены!")
+
+                    elif data in ("report_changes", "report_back"):
+                        report_cache = None
+                        try:
+                            with open("/tmp/subparser_last_report.json", "r", encoding="utf-8") as rf:
+                                report_cache = json.load(rf)
+                        except Exception:
+                            report_cache = None
+                        if not report_cache or str(report_cache.get("message_id")) != str(msg_id):
+                            answer_callback(token, cb_id, "Данные этого отчёта недоступны")
+                            continue
+                        answer_callback(token, cb_id)
+                        rich_on = get_uci_val("tg_rich_messages", "1") == "1"
+                        if data == "report_changes":
+                            fallback = (report_cache.get("summary_html", "") +
+                                        "\n\n🧩 <b>Детали изменений</b>\n" +
+                                        report_cache.get("details_html", ""))
+                            if rich_on:
+                                body = (report_cache.get("summary_rich", "") +
+                                        "\n\n🧩 <b>Детали изменений</b>\n" +
+                                        report_cache.get("details_rich", ""))
+                                text = RichText(body, fallback)
+                            else:
+                                text = fallback
+                            kb = {"inline_keyboard": [[
+                                {"text": "⬅️ К отчёту", "callback_data": "report_back"}
+                            ]]}
+                        else:
+                            if rich_on:
+                                text = RichText(report_cache.get("summary_rich", ""),
+                                                report_cache.get("summary_html", ""))
+                            else:
+                                text = report_cache.get("summary_html", "")
+                            kb = {"inline_keyboard": [[
+                                {"text": "🗂 Изменения серверов", "callback_data": "report_changes"}
+                            ]]}
+                        edit_msg(token, chat_id, msg_id, text, kb)
 
                     elif data == "noop":
                         answer_callback(token, cb_id)
