@@ -243,9 +243,12 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         {"type": "callback_data", "text": "🎯 Секции Podkop", "data": "bot_sections_menu"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": "150ms" + (" 🔘" if threshold == "150" else ""), "data": "th:150"},
-        {"type": "callback_data", "text": "350ms" + (" 🔘" if threshold == "350" else ""), "data": "th:350"},
-        {"type": "callback_data", "text": "500ms" + (" 🔘" if threshold == "500" else ""), "data": "th:500"},
+        {"type": "callback_data", "text": "150ms", "data": "th:150",
+         "style": "primary" if threshold == "150" else ""},
+        {"type": "callback_data", "text": "350ms", "data": "th:350",
+         "style": "primary" if threshold == "350" else ""},
+        {"type": "callback_data", "text": "500ms", "data": "th:500",
+         "style": "primary" if threshold == "500" else ""},
         {"type": "callback_data", "text": "✏️", "data": "ask_custom_th"},
     ])
     if per_sec:
