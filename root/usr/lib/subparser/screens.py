@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import html
 import subprocess
 import urllib.parse
@@ -12,15 +13,71 @@ from .podkop import (
     get_podkop_service_status, get_section_routing_state, CACHED_DELAYS
 )
 from .system import get_blocked_macs, get_wifi_stations, get_ip_by_mac, check_single_service
+from .rich import RichScreen, esc, esc_attr
+
+
+def _parser_running():
+    """Идёт ли сейчас синхронизация SubParser."""
+    try:
+        res = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True)
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
+
 
 def get_main_screen():
-    text = "🎛 <b>Панель управления SubParser & OpenWrt</b>\n\nВыберите необходимое действие:"
+    subs_count = len(get_subscriptions())
+    sections = get_all_podkop_sections()
+    sections_str = ", ".join(esc(s) for s in sections) if sections else "main"
+    svc_ok, pid, ram_mb, mode_str = get_podkop_service_status()
+    podkop_badge = "🟢 Запущен" if svc_ok else "🔴 Остановлен"
+    parser_badge = "⏳ Выполняется" if _parser_running() else "💤 В ожидании"
+    if pid:
+        core_badge = f"<code>PID {esc(pid)}</code>"
+        if ram_mb:
+            core_badge += f" · <code>{esc(ram_mb)}</code>"
+    else:
+        core_badge = "🔴 Остановлено"
+
+    screen = RichScreen()
+    screen.h("🎛 Панель управления SubParser &amp; OpenWrt")
+    screen.kv([
+        ("📦 Подписки", f"<code>{subs_count}</code>"),
+        ("📁 Секции Podkop", f"<code>{sections_str}</code>"),
+        ("🛰 Podkop", podkop_badge),
+        ("⚙️ Ядро sing-box", core_badge),
+        ("🌐 Режим трафика", f"<code>{esc(mode_str or 'н/д')}</code>"),
+        ("🔄 Синхронизация", parser_badge),
+    ])
+    screen.p("Выберите необходимое действие:")
+    screen.button_row([
+        {"type": "callback_data", "text": "⚙️ Меню парсера", "data": "parser_menu"},
+        {"type": "callback_data", "text": "📋 Серверы и пинг", "data": "servers"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновления", "data": "check_update"},
+        {"type": "callback_data", "text": "📊 Статус", "data": "status"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📟 Ресурсы", "data": "sysinfo"},
+        {"type": "callback_data", "text": "👥 Клиенты", "data": "clients"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "🛡 Сервисы", "data": "check_services"},
+        {"type": "callback_data", "text": "📜 Лог парсера", "data": "view_log"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "♻️ Рестарт Podkop", "data": "restart"},
+        {"type": "callback_data", "text": "⚠️ Reboot", "data": "reboot", "style": "danger"},
+    ])
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "⚙️ Меню парсера", "callback_data": "parser_menu"}, {"text": "📋 Серверы и пинг", "callback_data": "servers"}],
-            [{"text": "🔄 Проверить обновления", "callback_data": "check_update"}],
-        [{"text": "📟 Ресурсы роутера", "callback_data": "sysinfo"}, {"text": "👥 Клиенты сети", "callback_data": "clients"}],
-        [{"text": "🛡 Доступ к сервисам", "callback_data": "check_services"}, {"text": "📊 Статус системы", "callback_data": "status"}],
-        [{"text": "♻️ Рестарт Podkop", "callback_data": "restart"}, {"text": "⚠️ Reboot роутера", "callback_data": "reboot"}]
+        [{"text": "🔄 Обновления", "callback_data": "check_update"}, {"text": "📊 Статус", "callback_data": "status"}],
+        [{"text": "📟 Ресурсы", "callback_data": "sysinfo"}, {"text": "👥 Клиенты", "callback_data": "clients"}],
+        [{"text": "🛡 Сервисы", "callback_data": "check_services"}, {"text": "📜 Лог парсера", "callback_data": "view_log"}],
+        [{"text": "♻️ Рестарт Podkop", "callback_data": "restart"}, {"text": "⚠️ Reboot", "callback_data": "reboot"}]
     ]}
     return text, kb
 
@@ -61,17 +118,15 @@ def get_parser_menu_screen(prompt_custom_ping=False):
     fp_badge = fp_map.get(fp_val, fp_val.capitalize())
 
     excluded_protocols = [normalize_protocol(p) for p in get_uci_list("exclude_protocols") if p]
-    proto_badge = ("Все" if not excluded_protocols
+    proto_badge = ("Нет" if not excluded_protocols
                    else ", ".join(PROTOCOL_CHOICES.get(p, p) for p in excluded_protocols))
 
     if per_sec:
         sec_parts = []
         for s in all_secs:
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
-            s_mode = get_uci_val(f"sec_mode_{s}", "replace")
             if s_en:
-                badge = "Замена" if s_mode == "replace" else "Добавление"
-                sec_parts.append(f"{html.escape(s)} ({badge})")
+                sec_parts.append(html.escape(s))
         sections_str = ", ".join(sec_parts) if sec_parts else "Все выключены"
     else:
         raw_targets = get_uci_val("target_section", "main").split()
@@ -80,23 +135,58 @@ def get_parser_menu_screen(prompt_custom_ping=False):
             if s not in existing_valid:
                 existing_valid.append(s)
         target_list = existing_valid if existing_valid else ["main"]
-        g_mode = get_uci_val("update_mode", "replace")
-        mode_label = "Замена" if g_mode == "replace" else "Добавление"
-        sections_str = f"{', '.join(html.escape(s) for s in target_list)} ({mode_label})"
+        sections_str = ", ".join(html.escape(s) for s in target_list)
 
-    text = (
-        "⚙️ <b>Параметры парсера SubParser</b>\n\n"
-        f"📋 <b>Подписок:</b> <code>{subs_count} шт.</code>\n"
-        f"🎯 <b>Секции Podkop:</b> <code>{sections_str}</code>\n"
-        f"⚡️ <b>Порог пинга:</b> <code>{threshold} ms</code>\n"
-        f"🔝 <b>Лимит узлов:</b> <code>{limit_badge}</code>\n"
-        f"⏰ <b>Расписание:</b> <code>{cron_badge}</code>\n"
-        f"🇷🇺 <b>Фильтр RU:</b> <code>{ru_badge}</code>\n"
-        f"🎭 <b>uTLS Fingerprint:</b> <code>{fp_badge}</code>\n"
-        f"🚫 <b>Исключённые протоколы:</b> <code>{html.escape(proto_badge)}</code>\n"
-    )
+    screen = RichScreen()
+    screen.h("⚙️ Параметры парсера SubParser")
+    screen.kv([
+        ("📋 Подписок", f"<code>{subs_count} шт.</code>"),
+        ("🎯 Секции Podkop", f"<code>{sections_str}</code>"),
+        ("⚡️ Порог пинга", f"<code>{esc(threshold)} ms</code>"),
+        ("🔝 Лимит узлов", f"<code>{esc(limit_badge)}</code>"),
+        ("⏰ Расписание", f"<code>{esc(cron_badge)}</code>"),
+        ("🇷🇺 Фильтр RU", f"<code>{esc(ru_badge)}</code>"),
+        ("🎭 uTLS Fingerprint", f"<code>{esc(fp_badge)}</code>"),
+        ("🚫 Исключённые протоколы", f"<code>{esc(proto_badge)}</code>"),
+        ("🔄 Состояние", "⏳ парсер выполняется" if _parser_running() else "💤 готов к запуску"),
+    ])
     if prompt_custom_ping:
-        text += "\n✏️ <b>Введите желаемый пинг (например, 280) в ответном сообщении:</b>"
+        screen.quote("✏️ <b>Введите желаемый пинг (например, 280) "
+                     "в ответном сообщении:</b>")
+    else:
+        screen.p("Настройте параметры и запустите синхронизацию:")
+
+    screen.button_row([
+        {"type": "callback_data", "text": f"📋 Подписки ({subs_count})", "data": "subs_list"},
+        {"type": "callback_data", "text": "🎯 Секции Podkop", "data": "bot_sections_menu"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "150ms" + (" 🔘" if threshold == "150" else ""), "data": "th:150"},
+        {"type": "callback_data", "text": "350ms" + (" 🔘" if threshold == "350" else ""), "data": "th:350"},
+        {"type": "callback_data", "text": "500ms" + (" 🔘" if threshold == "500" else ""), "data": "th:500"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "✏️ Задать свой", "data": "ask_custom_th"},
+        {"type": "callback_data", "text": f"Лимит: {limit_badge}", "data": "cycle_limit"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"Расписание: {cron_badge}", "data": "cycle_cron"},
+        {"type": "callback_data", "text": f"RU: {'Фильтр' if filter_ru == '1' else 'Все'}", "data": "toggle_ru"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"🎭 Фингерпринт: {fp_badge}", "data": "menu_fp"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": f"🚫 Протоколы: {proto_badge}", "data": "menu_proto"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "🚀 Запустить парсер сейчас", "data": "run_parser", "style": "success"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📜 Лог", "data": "view_log"},
+        {"type": "callback_data", "text": "◀ Главное меню", "data": "home"},
+    ])
+    text = screen.build()
 
     kb = {
         "inline_keyboard": [
@@ -153,14 +243,22 @@ def get_protocols_menu_screen():
         ])
     kb["inline_keyboard"].append([{"text": "◀ Назад в параметры", "callback_data": "parser_menu"}])
 
-    text = (
-        "🚫 <b>Фильтр протоколов</b>\n\n"
-        "Отмеченные протоколы исключаются сразу после загрузки подписки — "
-        "они не попадают ни в дедупликацию, ни на первый этап скрининга.\n\n"
-        f"Исключено сейчас: <b>{len(excluded)}</b>"
-    )
+    rows = []
+    fallback_rows = []
+    for proto, label in PROTOCOL_CHOICES.items():
+        is_excluded = proto in excluded
+        mark = "🚫 <b>Исключён</b>" if is_excluded else "✅ <b>Включён</b>"
+        rows.append((esc(label), mark))
+        fallback_rows.append(f"• <b>{esc(label)}:</b> {'исключён' if is_excluded else 'включён'}")
+    screen = RichScreen()
+    screen.h("🚫 Фильтр протоколов")
+    screen.p("Отмеченные протоколы исключаются сразу после загрузки подписки — "
+             "они не попадают ни в дедупликацию, ни на первый этап скрининга.")
+    screen.kv([("Исключено сейчас", f"<b>{len(excluded)}</b>")])
+    screen.table(["Протокол", "Статус"], rows, fallback=fallback_rows)
     if not excluded:
-        text += "\n\n<i>Фильтр пуст: обрабатываются все протоколы.</i>"
+        screen.quote("Фильтр пуст: обрабатываются все протоколы.")
+    text = screen.build()
     return text, kb
 
 
@@ -194,34 +292,50 @@ def get_fp_menu_screen():
         "qq": "QQ Browser 🐧", "randomized": "Randomized 🎲"
     }
     cur_label = mapping.get(cur, cur.capitalize())
-    text = (
-        "🎭 <b>uTLS Fingerprint (эмуляция браузера)</b>\n\n"
-        "Глобально заменяет TLS Client Hello для всех узлов во избежание блокировок по сигнатурам браузера.\n\n"
-        f"Текущий режим: <b>{cur_label}</b>"
-    )
+    rows = []
+    for val, label in fps:
+        mark = "🔘 <b>Текущий</b>" if cur == val else "—"
+        rows.append((esc(label.replace(" 🔘", "")), mark))
+    screen = RichScreen()
+    screen.h("🎭 uTLS Fingerprint (эмуляция браузера)")
+    screen.p("Глобально заменяет TLS Client Hello для всех узлов во избежание "
+             "блокировок по сигнатурам браузера.")
+    screen.kv([("Текущий режим", f"<b>{esc(cur_label)}</b>")])
+    screen.table(["Режим", "Выбран"], rows)
+    text = screen.build()
     return text, kb
 
 def get_subs_list_screen():
     subs = get_subscriptions()
     if not subs:
-        text = "📋 <b>Источники подписок</b>\n\nАктивные подписки не найдены.\n\n<i>Отправьте ссылку на подписку прямо в чат для её добавления.</i>"
+        screen = RichScreen()
+        screen.h("📋 Источники подписок")
+        screen.quote("Активные подписки не найдены.")
+        screen.p("Отправьте ссылку на подписку прямо в чат для её добавления.")
         kb = {"inline_keyboard": [
             [{"text": "◀️ В меню парсера", "callback_data": "parser_menu"}]
         ]}
-        return text, kb
+        return screen.build(), kb
 
-    lines = []
+    rows = []
+    fallback_rows = []
     keyboard = []
     for s in subs:
         i = s["idx"]
         sec_id = s["sec_name"]
         en_ico = "🟢" if s["enabled"] == "1" else "🔴"
-        ua_short = html.escape(s["user_agent"])
-        name_safe = html.escape(s["name"])
-        lines.append(f"{i+1}. {en_ico} <b>{name_safe}</b>\n   └ UA: <code>{ua_short}</code>")
+        ua_short = esc(UA_CHOICES.get(s["user_agent"], s["user_agent"]))
+        name_safe = esc(s["name"])
+        rows.append((f"<b>{i+1}</b>", en_ico, name_safe, f"<code>{ua_short}</code>"))
+        fallback_rows.append(f"{en_ico} <b>{name_safe}</b> — <code>{ua_short}</code>")
         keyboard.append([{"text": f"⚙️ #{i+1} {s['name'][:20]}", "callback_data": f"sub_card:{sec_id}"}])
 
-    text = f"📋 <b>Источники подписок ({len(subs)} шт.)</b>\n\n" + "\n\n".join(lines) + "\n\n<i>Выберите подписку для настройки или удаления:</i>"
+    screen = RichScreen()
+    screen.h(f"📋 Источники подписок ({len(subs)} шт.)")
+    screen.table(["№", "Состояние", "Подписка", "Клиент"], rows,
+                 fallback=fallback_rows)
+    screen.p("Выберите подписку для настройки или удаления:")
+    text = screen.build()
     keyboard.append([{"text": "🔄 Обновить", "callback_data": "subs_list"}, {"text": "◀️ В меню парсера", "callback_data": "parser_menu"}])
     return text, {"inline_keyboard": keyboard}
 
@@ -244,19 +358,26 @@ def get_sub_card_screen(sub_idx):
     if target["url"]:
         parsed = urllib.parse.urlsplit(target["url"])
         domain = parsed.netloc or "н/д"
-        url_preview = html.escape(target["url"][:48]) + ("..." if len(target["url"]) > 48 else "")
+        url_preview = esc(target["url"][:48]) + ("..." if len(target["url"]) > 48 else "")
     else:
         domain = "не задан"
         url_preview = "⚠️ <i>URL не указан в настройках</i>"
 
-    text = (
-        f"📋 <b>Управление подпиской #{target['idx']+1}</b>\n\n"
-        f"• <b>Название:</b> <code>{html.escape(target['name'])}</code>\n"
-        f"• <b>Сервер:</b> <code>{html.escape(domain)}</code>\n"
-        f"• <b>Клиент (UA):</b> <code>{html.escape(ua_title)}</code>\n"
-        f"• <b>Статус:</b> {st_badge}\n"
-        f"• <b>URL:</b> <code>{url_preview}</code>\n"
-    )
+    screen = RichScreen()
+    screen.h(f"📋 Управление подпиской #{target['idx']+1}")
+    screen.kv([
+        ("🏷 Название", f"<code>{esc(target['name'])}</code>"),
+        ("🌐 Сервер", f"<code>{esc(domain)}</code>"),
+        ("👤 Клиент (UA)", f"<code>{esc(ua_title)}</code>"),
+        ("📡 Статус", st_badge),
+        ("🔗 URL", f"<code>{url_preview}</code>"),
+    ])
+    if target["url"]:
+        screen.button_row([
+            {"type": "copy_text", "text": "📋 Копировать URL подписки",
+             "text_to_copy": target["url"], "style": "primary"},
+        ], align="left")
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": btn_en_txt, "callback_data": f"sub_tgl:{sec_id}"}],
         [{"text": f"👤 Сменить UA: {target['user_agent']} ➔", "callback_data": f"sub_cycle_ua:{sec_id}"}],
@@ -268,11 +389,21 @@ def get_sub_card_screen(sub_idx):
 def get_sub_delete_confirm_screen(sub_idx):
     target = resolve_subscription(sub_idx)
     sec_id = target["sec_name"] if target else str(sub_idx)
-    name = html.escape(target["name"]) if target else f"#{sub_idx}"
-    text = (
-        f"⚠️ <b>Удаление подписки</b>\n\n"
-        f"Вы действительно хотите навсегда удалить подписку <b>«{name}»</b> из роутера?"
-    )
+    name = esc(target["name"]) if target else f"#{sub_idx}"
+    screen = RichScreen()
+    screen.h("⚠️ Удаление подписки")
+    screen.quote(f"Вы действительно хотите навсегда удалить подписку "
+                 f"<b>«{name}»</b> из роутера?")
+    if target:
+        host = urllib.parse.urlsplit(target["url"]).netloc if target["url"] else ""
+        enabled = "🟢 активна" if target["enabled"] == "1" else "🔴 отключена"
+        screen.kv([
+            ("🏷 Подписка", f"<b>{name}</b>"),
+            ("🌐 Сервер", f"<code>{esc(host or 'не задан')}</code>"),
+            ("📡 Состояние", enabled),
+        ])
+    screen.p("Действие необратимо: ссылка и настройки подписки будут удалены.")
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "❌ Да, удалить навсегда!", "callback_data": f"sub_del_do:{sec_id}"}],
         [{"text": "↩️ Отмена", "callback_data": f"sub_card:{sec_id}"}]
@@ -283,6 +414,8 @@ def get_sections_menu_screen():
     per_sec = get_uci_val("per_section_config", "0") == "1"
     all_secs = get_all_podkop_sections()
     keyboard = []
+    screen = RichScreen()
+    screen.h("📁 Настройка секций Podkop")
 
     if not per_sec:
         raw_targets = get_uci_val("target_section", "main").split()
@@ -294,42 +427,56 @@ def get_sections_menu_screen():
         g_mode = get_uci_val("update_mode", "replace")
         mode_label = "🔄 Замена серверов" if g_mode == "replace" else "➕ Добавление (без дублей)"
 
-        status_text = (
-            "🌐 <b>Общий режим обновления</b>\n"
-            f"Текущее действие: <b>{mode_label}</b>\n"
-            "Все выбранные секции обновляются по единому правилу."
-        )
+        screen.kv([
+            ("🌐 Общий режим", "включён"),
+            ("Текущее действие", f"<b>{mode_label}</b>"),
+            ("Индивидуальный режим", "❌ выключен"),
+        ])
+        screen.p("Все выбранные секции обновляются по единому правилу.")
         keyboard.append([{"text": "Индивидуальный режим: ❌ ВЫКЛ", "callback_data": "toggle_per_sec"}])
         keyboard.append([{"text": f"Режим: {mode_label}", "callback_data": "toggle_glob_mode"}])
 
+        sec_rows = []
+        fallback_rows = []
         sec_buttons = []
         for s in all_secs:
             is_active = s in target_set
             icon = "✅" if is_active else "⬜"
+            sec_rows.append((esc(s), "✅ обновляется" if is_active else "⬜ пропускается"))
+            fallback_rows.append(f"{icon} <b>{esc(s)}</b>")
             sec_buttons.append({"text": f"{icon} {s}", "callback_data": f"tgl_sec:{s}"})
             if len(sec_buttons) == 2:
                 keyboard.append(sec_buttons)
                 sec_buttons = []
         if sec_buttons:
             keyboard.append(sec_buttons)
+        screen.table(["Секция", "Участие"], sec_rows, fallback=fallback_rows)
     else:
-        status_text = "🎯 <b>Индивидуальный режим</b>\nНажимайте на секцию для изменения её персонального режима:"
+        screen.kv([
+            ("🎯 Индивидуальный режим", "✅ включён"),
+            ("Общий режим", "не используется"),
+        ])
+        screen.p("Нажмите на секцию, чтобы изменить её персональный режим.")
         keyboard.append([{"text": "Индивидуальный режим: ✅ ВКЛ", "callback_data": "toggle_per_sec"}])
 
+        sec_rows = []
+        fallback_rows = []
         for s in all_secs:
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
             s_mode = get_uci_val(f"sec_mode_{s}", "replace")
             if not s_en:
-                badge = "❌ Отключена"
+                badge, short = "❌ Отключена", "отключена"
             elif s_mode == "replace":
-                badge = "🔄 Замена"
+                badge, short = "🔄 Замена", "замена"
             else:
-                badge = "➕ Добавление"
-
+                badge, short = "➕ Добавление", "добавление"
+            sec_rows.append((esc(s), badge))
+            fallback_rows.append(f"• <b>{esc(s)}:</b> {short}")
             keyboard.append([{"text": f"{s}: {badge}", "callback_data": f"cycle_sec:{s}"}])
+        screen.table(["Секция", "Режим"], sec_rows, fallback=fallback_rows)
 
     keyboard.append([{"text": "◀️ Назад в меню парсера", "callback_data": "parser_menu"}])
-    return f"📁 <b>Настройка секций Podkop</b>\n\n{status_text}", {"inline_keyboard": keyboard}
+    return screen.build(), {"inline_keyboard": keyboard}
 
 def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=False, selected_indices=None):
     if selected_indices is None:
@@ -339,7 +486,10 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
     all_secs = get_all_podkop_sections()
     back_btn = {"text": "◀️ К секциям", "callback_data": "servers"} if len(all_secs) > 1 else {"text": "◀️ В меню", "callback_data": "home"}
     if not links:
-        return f"🌐 В секции <b>{html.escape(section)}</b> нет серверов.", {"inline_keyboard": [[back_btn]]}
+        screen = RichScreen()
+        screen.h(f"🌐 Секция {esc(section)}")
+        screen.quote("В этой секции нет серверов.")
+        return screen.build(), {"inline_keyboard": [[back_btn]]}
     if delays_map is not None:
         CACHED_DELAYS[section] = delays_map
     else:
@@ -356,18 +506,31 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
     end_idx = min(start_idx + page_size, total_nodes)
     page_links = links[start_idx:end_idx]
     keyboard = []
+    node_rows = []
+    fallback_nodes = []
     for i, link in enumerate(page_links, start=start_idx):
         tag_cur = f"{section}-{i+1}-out"
         is_active = (not is_auto and tag_cur == active_manual_tag)
         name = get_node_name(link, i)
+        proto = urllib.parse.urlsplit(link).scheme.upper() or "?"
         d = delays_map.get(i, -1) if delays_map else -1
         if d > 0:
             ico = "🟢" if d < 180 else ("🟡" if d < 350 else "🔴")
             prefix = f"{ico} [{d}ms]"
+            ping_cell = f"{ico} {d} ms"
+            state_cell = "🔘 активен" if is_active else "✅ жив"
         elif delays_map and i in delays_map:
             prefix = "❌ [DEAD]"
+            ping_cell = "❌"
+            state_cell = "❌ DEAD"
         else:
             prefix = f"#{i+1}"
+            ping_cell = "—"
+            state_cell = "🔘 активен" if is_active else "—"
+        first_cell = ("☑️" if i in sel_set else "◻️") if delete_mode else str(i + 1)
+        short_name = esc(name[:32]) + ("…" if len(name) > 32 else "")
+        node_rows.append((first_cell, short_name, esc(proto), ping_cell, state_cell))
+        fallback_nodes.append(f"{first_cell} {prefix} <b>{short_name}</b> · {esc(proto)}")
         if delete_mode:
             cb_ico = "☑️" if i in sel_set else "◻️"
             keyboard.append([{"text": f"{cb_ico} {prefix} {name[:20]}", "callback_data": f"tgl_del:{section}:{i}:{page}"}])
@@ -383,12 +546,36 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
         nav_row.append({"text": "➡️", "callback_data": f"{pg_callback_prefix}:{section}:{page+1}"})
     if nav_row:
         keyboard.append(nav_row)
+
+    alive = [d for d in delays_map.values() if d > 0] if delays_map else []
+    dead = [d for d in delays_map.values() if d <= 0] if delays_map else []
+    avg_ping = f"{int(sum(alive) / len(alive))} ms" if alive else "—"
+
+    screen = RichScreen()
+    screen.h(f"🌐 Узлы Podkop [{esc(section)}]")
+    if delete_mode:
+        screen.quote("Режим мультиудаления: отметьте узлы, затем подтвердите удаление.")
+    screen.kv([
+        ("📦 Всего узлов", f"<code>{total_nodes}</code>"),
+        ("📄 Страница", f"<code>{page+1}/{total_pages}</code>"),
+        ("✅ Живых", f"<code>{len(alive)}</code>"),
+        ("❌ DEAD", f"<code>{len(dead)}</code>"),
+        ("⚡ Средний пинг", f"<code>{avg_ping}</code>"),
+        ("🧭 Режим", "🤖 авто (URL-Test)" if is_auto else "⚡ ручной выбор"),
+    ])
+    screen.table(["№", "Узел", "Протокол", "Пинг", "Статус"], node_rows,
+                 fallback=fallback_nodes)
+    screen.p("🟢 &lt; 180 ms · 🟡 &lt; 350 ms · 🔴 ≥ 350 ms")
+    if delete_mode:
+        screen.p(f"Отмечено для удаления: <b>{len(sel_set)}</b>")
+    else:
+        screen.p("Нажмите на узел в списке ниже для управления:")
+
     if delete_mode:
         cnt_sel = len(sel_set)
         keyboard.append([{"text": f"🗑 Подтвердить удаление ({cnt_sel})", "callback_data": f"apply_bdel:{section}:{page}"}])
         keyboard.append([{"text": "❌ Выбрать все [DEAD]", "callback_data": f"sel_dead:{section}:{page}"}])
         keyboard.append([{"text": "◀️ Отмена (выход)", "callback_data": f"exit_del_mode:{section}:{page}"}])
-        title = f"🌐 <b>Узлы Podkop [{html.escape(section)}] [Мультиудаление]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Отметьте узлы для удаления:</i>"
     else:
         auto_label = "✅ Режим: Авто (URL-Test)" if is_auto else "🔄 Включить Авто (URL-Test)"
         keyboard.append([{"text": auto_label, "callback_data": f"auto_mode:{section}:{page}"}])
@@ -397,74 +584,97 @@ def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=Fals
             {"text": "🗑 Мультиудаление", "callback_data": f"enter_del_mode:{section}:{page}"}
         ])
         keyboard.append([back_btn])
-        title = f"🌐 <b>Узлы Podkop [{html.escape(section)}]</b> ({total_nodes} шт., стр. {page+1}/{total_pages}):\n<i>Нажмите для управления:</i>"
-    return title, {"inline_keyboard": keyboard}
+    return screen.build(), {"inline_keyboard": keyboard}
 
 def get_sections_selector_screen():
     all_secs = get_all_podkop_sections()
     keyboard = []
-    lines = []
+    sec_rows = []
+    fallback_rows = []
     for s in all_secs:
         count = len(get_podkop_links(s))
-        lines.append(f"• <b>{html.escape(s)}</b>: <code>{count} узлов</code>")
+        sec_rows.append((esc(s), f"<code>{count}</code>"))
+        fallback_rows.append(f"• <b>{esc(s)}</b>: <code>{count} узлов</code>")
         keyboard.append([{"text": f"📁 Секция: {s} ({count} шт.)", "callback_data": f"sec_view:{s}"}])
 
     keyboard.append([{"text": "🧹 Удалить DEAD из всех секций", "callback_data": "del_dead_all"}])
     keyboard.append([{"text": "◀️ В главное меню", "callback_data": "home"}])
-    text = "📋 <b>Серверы Podkop: выбор секции</b>\n\n" + "\n".join(lines) + "\n\n<i>Выберите секцию для просмотра серверов:</i>"
-    return text, {"inline_keyboard": keyboard}
+    screen = RichScreen()
+    screen.h("📋 Серверы Podkop: выбор секции")
+    screen.table(["Секция", "Узлов"], sec_rows, fallback=fallback_rows)
+    screen.p("Выберите секцию для просмотра серверов:")
+    return screen.build(), {"inline_keyboard": keyboard}
 
 
 def get_del_dead_all_confirm_screen(details, total_dead):
-    lines = []
+    rows = []
+    fallback_rows = []
     for item in details or []:
-        sec = html.escape(str(item.get("section", "?")))
+        sec = esc(str(item.get("section", "?")))
         status = item.get("status")
         total = int(item.get("total", 0))
         dead = int(item.get("dead", 0))
         skipped = int(item.get("skipped", 0))
         if status == "empty":
-            lines.append(f"• <b>{sec}</b>: нет узлов")
+            state = "нет узлов"
+            note = "—"
+            plain = f"• <b>{sec}</b>: нет узлов"
         elif status == "no_data":
-            lines.append(f"• <b>{sec}</b>: пропущено (нет данных Podkop)")
+            state = "нет данных Podkop"
+            note = "пропущено"
+            plain = f"• <b>{sec}</b>: пропущено (нет данных Podkop)"
         elif status == "dead":
-            lines.append(f"• <b>{sec}</b>: мёртвых <b>{dead}</b> из {total}")
+            state = f"🔴 мёртвых <b>{dead}</b>"
+            note = "будет очищена"
+            plain = f"• <b>{sec}</b>: мёртвых <b>{dead}</b> из {total}"
         elif status == "all_dead":
-            lines.append(f"• <b>{sec}</b>: все <b>{total}</b> мёртвые — секция не изменяется")
+            state = f"❌ все <b>{total}</b> мёртвые"
+            note = "не изменяется"
+            plain = (f"• <b>{sec}</b>: все <b>{total}</b> мёртвые — "
+                     "секция не изменяется")
         else:
-            lines.append(f"• <b>{sec}</b>: мёртвых нет ({total} шт.)")
+            state = "✅ мёртвых нет"
+            note = "—"
+            plain = f"• <b>{sec}</b>: мёртвых нет ({total} шт.)"
         if skipped and status != "no_data":
-            lines.append(f"   <i>не проверено: {skipped}</i>")
+            plain += f"\n   <i>не проверено: {skipped}</i>"
+            note += f" · не проверено {skipped}"
+        rows.append((f"<b>{sec}</b>", str(total), state, note))
+        fallback_rows.append(plain)
+
+    screen = RichScreen()
+    has_all_dead = any(item.get("status") == "all_dead" for item in details or [])
+    if total_dead:
+        screen.h("🧹 Проверка завершена")
+    elif has_all_dead:
+        screen.h("⚠️ Удалять нечего")
+    else:
+        screen.h("✅ Мёртвых узлов не найдено")
+    screen.table(["Секция", "Всего", "Мёртвых", "Действие"], rows,
+                 fallback=fallback_rows)
 
     if total_dead:
-        text = (
-            "🧹 <b>Проверка завершена</b>\n\n"
-            + "\n".join(lines) +
-            f"\n\nБудет удалено узлов: <b>{total_dead}</b>.\n"
-            "После удаления Podkop перезапустится <b>один раз</b>.\n\n"
-            "Удалить?"
-        )
+        screen.kv([
+            ("🗑 Будет удалено", f"<b>{total_dead}</b>"),
+            ("♻️ Podkop", "перезапустится <b>один раз</b>"),
+        ])
+        screen.p("Удалить выбранные мёртвые узлы?")
+        text = screen.build()
         kb = {"inline_keyboard": [
             [{"text": f"✅ Удалить {total_dead}", "callback_data": "del_dead_all_do"}],
             [{"text": "❌ Отмена", "callback_data": "servers"}],
         ]}
-    elif any(item.get("status") == "all_dead" for item in details or []):
-        text = (
-            "⚠️ <b>Удалять нечего</b>\n\n"
-            + "\n".join(lines) +
-            "\n\n<i>Секции без живых узлов оставлены без изменений, "
-            "чтобы Podkop мог запуститься. Разберитесь с ними вручную.</i>"
-        )
+    elif has_all_dead:
+        screen.quote("Секции без живых узлов оставлены без изменений, "
+                     "чтобы Podkop мог запуститься. Разберитесь с ними вручную.")
+        text = screen.build()
         kb = {"inline_keyboard": [
             [{"text": "◀️ К секциям", "callback_data": "servers"}],
             [{"text": "🏠 В главное меню", "callback_data": "home"}],
         ]}
     else:
-        text = (
-            "✅ <b>Мёртвых узлов не найдено</b>\n\n"
-            + "\n".join(lines) +
-            "\n\n<i>Podkop не изменялся.</i>"
-        )
+        screen.quote("Podkop не изменялся.")
+        text = screen.build()
         kb = {"inline_keyboard": [
             [{"text": "◀️ К секциям", "callback_data": "servers"}],
             [{"text": "🏠 В главное меню", "callback_data": "home"}],
@@ -506,6 +716,7 @@ def get_system_metrics():
 
     ram_str = "н/д"
     ram_bar = ""
+    ram_pct = None
     try:
         mem = {}
         with open("/proc/meminfo", "r") as f:
@@ -516,20 +727,24 @@ def get_system_metrics():
         avail = mem.get("MemAvailable", mem.get("MemFree", 0)) // 1024
         used = total - avail
         pct = int((used / total) * 100) if total > 0 else 0
+        ram_pct = pct
         filled = pct // 10
         ram_bar = f"[{'█' * filled}{'░' * (10 - filled)}] {pct}%"
         ram_str = f"{used} MB / {total} MB"
     except Exception:
         pass
 
-    text = (
-        "📟 <b>Системные ресурсы роутера</b>\n\n"
-        f"• <b>Время работы:</b> <code>{uptime_str}</code>\n"
-        f"• <b>Температура SoC:</b> <code>{temp_str}</code>\n"
-        f"• <b>Load Average:</b> <code>{load_str}</code>\n"
-        f"• <b>Память RAM:</b> <code>{ram_str}</code>\n"
-        f"  <code>{ram_bar}</code>\n"
-    )
+    screen = RichScreen()
+    screen.h("📟 Системные ресурсы роутера")
+    screen.kv([
+        ("⏱ Время работы", f"<code>{esc(uptime_str)}</code>"),
+        ("🌡 Температура SoC", f"<code>{esc(temp_str)}</code>"),
+        ("📈 Load Average", f"<code>{esc(load_str)}</code>"),
+        ("🧠 Память RAM", f"<code>{esc(ram_str)}</code>"),
+    ])
+    if ram_pct is not None:
+        screen.p(f"Загрузка RAM: {screen.bar(ram_pct)}")
+    text = screen.build()
     kb = {
         "inline_keyboard": [
             [{"text": "🔄 Обновить показатели", "callback_data": "sysinfo"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
@@ -573,10 +788,13 @@ def get_clients_screen(page=0):
             pass
 
     if not clients:
-        text = "👥 <b>Подключенные устройства</b>\n\nАктивные клиенты не обнаружены."
+        screen = RichScreen()
+        screen.h("👥 Подключенные устройства")
+        screen.quote("Активные клиенты не обнаружены.")
         kb = {"inline_keyboard": [
             [{"text": "🗑 Закрыть", "callback_data": "close_msg"}, {"text": "◀️ В главное меню", "callback_data": "home"}]
         ]}
+        return screen.build(), kb
     else:
         wifi_info = get_wifi_stations()
         blocked = get_blocked_macs()
@@ -592,8 +810,9 @@ def get_clients_screen(page=0):
         total_pages = max(1, (len(sorted_ips) + page_size - 1) // page_size)
         page = max(0, min(int(page), total_pages - 1))
         page_ips = sorted_ips[page * page_size:(page + 1) * page_size]
-        lines = []
         keyboard = []
+        rows = []
+        fallback_rows = []
 
         for i, ip in enumerate(page_ips, start=page * page_size + 1):
             c = clients[ip]
@@ -603,23 +822,38 @@ def get_clients_screen(page=0):
 
             if mac in wifi_info:
                 w = wifi_info[mac]
-                tx_part = f" (<code>{w['tx']}</code>)" if w.get("tx") else ""
-                conn_badge = f"🛜 <b>{w['type']}</b> | {w['signal']}{tx_part}"
+                tx_part = f" (<code>{esc(w['tx'])}</code>)" if w.get("tx") else ""
+                conn_badge = (f"🛜 <b>{esc(w['type'])}</b> | "
+                              f"{esc(w['signal'])}{tx_part}")
             else:
-                conn_badge = "🔌 <b>LAN Кабель</b>"
+                conn_badge = "🔌 <b>LAN</b>"
 
-            lines.append(
-                f"{i}. {bl_icon}<b>{html.escape(c['name'])}</b>\n"
-                f"   ├ IP: <code>{html.escape(ip)}</code> | MAC: <code>{html.escape(mac)}</code>\n"
-                f"   └ Связь: {conn_badge}"
+            access = "🚫 заблокирован" if is_bl else "🟢 открыт"
+            rows.append((
+                str(i),
+                f"{bl_icon}<b>{esc(c['name'])}</b>",
+                f"<code>{esc(ip)}</code>",
+                conn_badge,
+                access,
+            ))
+            fallback_rows.append(
+                f"{i}. {bl_icon}<b>{esc(c['name'])}</b>\n"
+                f"   IP: <code>{esc(ip)}</code> · MAC: <code>{esc(mac)}</code>\n"
+                f"   Связь: {conn_badge} · Доступ: {access}"
             )
             keyboard.append([{"text": f"⚙️ {bl_icon}{c['name'][:18]} ({ip})", "callback_data": f"dev:{mac}"}])
 
-        text = (
-            f"👥 <b>Устройства в сети ({len(clients)} шт., стр. {page+1}/{total_pages})</b>\n\n"
-            + "\n\n".join(lines) +
-            "\n\n<i>Выберите устройство для управления доступом:</i>"
-        )
+        screen = RichScreen()
+        screen.h(f"👥 Устройства в сети ({len(clients)} шт.)")
+        blocked_count = len(blocked)
+        screen.kv([
+            ("📄 Страница", f"<code>{page+1}/{total_pages}</code>"),
+            ("🚫 Заблокировано", f"<code>{blocked_count}</code>"),
+        ])
+        screen.table(["№", "Устройство", "IP", "Связь", "Доступ"], rows,
+                     fallback=fallback_rows)
+        screen.p("Выберите устройство для управления доступом:")
+        text = screen.build()
         nav = []
         if page > 0:
             nav.append({"text": "⬅️", "callback_data": f"clients_pg:{page-1}"})
@@ -663,12 +897,18 @@ def get_device_action_screen(mac, force_blocked=None):
         btn_text = "🚫 Заблокировать интернет"
         action = f"blk:{mac_u}"
 
-    text = (
-        f"📱 <b>Управление клиентом: {html.escape(hname)}</b>\n\n"
-        f"• <b>IP адрес:</b> <code>{html.escape(str(ip))}</code>\n"
-        f"• <b>MAC адрес:</b> <code>{html.escape(mac_u)}</code>\n"
-        f"• <b>Статус:</b> {status_badge}\n"
-    )
+    screen = RichScreen()
+    screen.h(f"📱 Управление клиентом: {esc(hname)}")
+    screen.kv([
+        ("🌐 IP адрес", f"<code>{esc(str(ip))}</code>"),
+        ("🔗 MAC адрес", f"<code>{esc(mac_u)}</code>"),
+        ("📡 Статус", status_badge),
+    ])
+    if is_blocked:
+        screen.quote("Устройство не имеет доступа в интернет через этот роутер.")
+    else:
+        screen.quote("Устройство имеет доступ в интернет через этот роутер.")
+    text = screen.build()
     kb = {
         "inline_keyboard": [
             [{"text": btn_text, "callback_data": action}],
@@ -690,20 +930,32 @@ def get_services_status_screen():
     with ThreadPoolExecutor(max_workers=7) as pool:
         results = list(pool.map(check_single_service, targets))
 
-    lines = []
+    rows = []
+    fallback_rows = []
     for name, is_proxied, ok, ms in results:
-        route_badge = "🛡 <i>Прокси</i>" if is_proxied else "🇷🇺 <i>Прямой</i>"
+        route_badge = "🛡 Прокси" if is_proxied else "🇷🇺 Прямой"
         if ok and ms > 0:
             status_badge = f"🟢 <code>{ms} ms</code>"
         else:
             status_badge = "🔴 <b>Блок / Таймаут</b>"
-        lines.append(f"• <b>{name}</b>: {status_badge} | {route_badge}")
+        rows.append((f"<b>{esc(name)}</b>", route_badge, status_badge))
+        fallback_rows.append(f"• <b>{esc(name)}</b>: {status_badge} | {route_badge}")
 
-    text = (
-        "🧭 <b>Маршрутизация и доступность сервисов</b>\n\n"
-        + "\n".join(lines) +
-        "\n\n<i>🛡 Прокси — через туннель Podkop (Fake-IP)\n🇷🇺 Прямой — без VPN через провайдера РФ</i>"
+    screen = RichScreen()
+    screen.h("🧭 Маршрутизация и доступность сервисов")
+    screen.table(["Сервис", "Маршрут", "Ответ"], rows, fallback=fallback_rows)
+    screen.details(
+        "Как читать результат",
+        "<ul>"
+        "<li>🛡 <b>Прокси</b> — трафик идёт через туннель Podkop (Fake-IP);</li>"
+        "<li>🇷🇺 <b>Прямой</b> — без VPN через провайдера РФ;</li>"
+        "<li>🔴 <b>Блок / Таймаут</b> — сервис не ответил за отведённое время.</li>"
+        "</ul>",
+        "🛡 Прокси — через туннель Podkop (Fake-IP)\n"
+        "🇷🇺 Прямой — без VPN через провайдера РФ\n"
+        "🔴 Блок / Таймаут — сервис не ответил",
     )
+    text = screen.build()
     kb = {
         "inline_keyboard": [
             [{"text": "🔄 Перепроверить статус", "callback_data": "check_services"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
@@ -716,18 +968,20 @@ def get_status_screen():
     links = get_podkop_links("main")
     svc_ok, pid, ram_mb, mode_str = get_podkop_service_status()
     st_badge = "🟢 Запущена" if svc_ok else "🔴 Остановлена"
+    is_sync = "⏳ Выполняется" if _parser_running() else "💤 В ожидании"
+    core_badge = f"🟢 <code>PID {esc(pid)}</code> · RAM <code>{esc(ram_mb)}</code>" if pid else "🔴 Остановлен"
 
-    ps_check = subprocess.run(["pgrep", "-f", "subparser.py"], stdout=subprocess.PIPE, text=True)
-    is_sync = "⏳ Выполняется" if ps_check.stdout.strip() else "💤 В ожидании"
-
-    text = (
-        "📊 <b>Детальный статус системы и Podkop</b>\n\n"
-        f"• <b>Служба Podkop:</b> {st_badge}\n"
-        f"• <b>Ядро sing-box:</b> " + (f"🟢 PID {pid} (RAM: <code>{ram_mb}</code>)" if pid else "🔴 Остановлен") + "\n"
-        f"• <b>Режим трафика:</b> <code>{mode_str}</code>\n"
-        f"• <b>Серверов в секции main:</b> <code>{len(links)} шт.</code>\n"
-        f"• <b>Синхронизация SubParser:</b> {is_sync}\n"
-    )
+    screen = RichScreen()
+    screen.h("📊 Статус системы и Podkop")
+    screen.kv([
+        ("🛰 Служба Podkop", st_badge),
+        ("⚙️ Ядро sing-box", core_badge),
+        ("🌐 Режим трафика", f"<code>{esc(mode_str)}</code>"),
+        ("📁 Серверов в секции main", f"<code>{len(links)} шт.</code>"),
+        ("🔄 Синхронизация SubParser", is_sync),
+    ])
+    screen.p("Подробные логи и замер скорости — кнопками ниже.")
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "🚀 Замер скорости канала", "callback_data": "run_speedtest"}],
         [{"text": "📜 Лог системы (logread)", "callback_data": "log_sys"}],
@@ -736,6 +990,17 @@ def get_status_screen():
         [{"text": "🗑 Закрыть", "callback_data": "close_msg"}, {"text": "◀️ В главное меню", "callback_data": "home"}]
     ]}
     return text, kb
+
+def _clean_log_output(text, max_len=3000):
+    """Очищает ANSI escape-последовательности и управляющие символы из логов."""
+    if not text:
+        return ""
+    # Удаляем терминальные цветовые коды ANSI (\x1b[...m)
+    cleaned = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+    # Удаляем непечатаемые символы, кроме перевода строки и табуляции
+    cleaned = "".join(ch for ch in cleaned if ch in ("\n", "\r", "\t") or ord(ch) >= 32)
+    return cleaned[-max_len:]
+
 
 def get_log_screen():
     log_text = "Лог пуст или еще не создан."
@@ -747,8 +1012,21 @@ def get_log_screen():
         except Exception as e:
             log_text = f"Ошибка чтения лога: {e}"
 
-    safe_log = html.escape(log_text[-3000:])
-    text = f"📄 <b>Последние 25 строк лога парсера:</b>\n\n<pre>{safe_log}</pre>"
+    clean_log = _clean_log_output(log_text)
+    safe_log = esc(clean_log)
+    line_count = len(clean_log.strip().splitlines()) if clean_log.strip() else 0
+    screen = RichScreen()
+    screen.h("📄 Лог парсера")
+    screen.p(f"Последние строки лога синхронизации: <code>{line_count}</code>")
+    screen.raw(f"<pre>{safe_log}</pre>", f"<pre>{safe_log}</pre>")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить лог", "data": "view_log"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ К меню парсера", "data": "parser_menu"},
+    ])
+    text = screen.build()
     kb = {
         "inline_keyboard": [
             [{"text": "🔄 Обновить лог", "callback_data": "view_log"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
@@ -767,8 +1045,21 @@ def get_logread_screen():
     except Exception as e:
         out = f"Ошибка чтения logread: {e}"
 
-    safe_out = html.escape(out[-3000:])
-    text = f"📜 <b>Системный лог (последние 25 строк):</b>\n\n<pre>{safe_out}</pre>"
+    clean_out = _clean_log_output(out)
+    safe_out = esc(clean_out)
+    line_count = len(clean_out.strip().splitlines()) if clean_out.strip() else 0
+    screen = RichScreen()
+    screen.h("📜 Системный лог")
+    screen.p(f"logread, последние строки: <code>{line_count}</code>")
+    screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить logread", "data": "log_sys"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ Назад к статусу", "data": "status"},
+    ])
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить logread", "callback_data": "log_sys"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
         [{"text": "◀️ Назад к статусу", "callback_data": "status"}]
@@ -784,8 +1075,21 @@ def get_dmesg_screen():
     except Exception as e:
         out = f"Ошибка чтения dmesg: {e}"
 
-    safe_out = html.escape(out[-3000:])
-    text = f"🖨 <b>Лог ядра dmesg (последние 20 строк):</b>\n\n<pre>{safe_out}</pre>"
+    clean_out = _clean_log_output(out)
+    safe_out = esc(clean_out)
+    line_count = len(clean_out.strip().splitlines()) if clean_out.strip() else 0
+    screen = RichScreen()
+    screen.h("🖨 Лог ядра")
+    screen.p(f"dmesg, последние строки: <code>{line_count}</code>")
+    screen.raw(f"<pre>{safe_out}</pre>", f"<pre>{safe_out}</pre>")
+    screen.button_row([
+        {"type": "callback_data", "text": "🔄 Обновить dmesg", "data": "log_dmesg"},
+        {"type": "callback_data", "text": "🗑 Закрыть", "data": "close_msg"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀️ Назад к статусу", "data": "status"},
+    ])
+    text = screen.build()
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить dmesg", "callback_data": "log_dmesg"}, {"text": "🗑 Закрыть", "callback_data": "close_msg"}],
         [{"text": "◀️ Назад к статусу", "callback_data": "status"}]
@@ -793,7 +1097,14 @@ def get_dmesg_screen():
     return text, kb
 
 def get_reboot_confirm_screen():
-    text = "⚠️ <b>Подтверждение перезагрузки роутера</b>\n\nВы действительно хотите перезагрузить устройство?"
+    screen = RichScreen()
+    screen.h("⚠️ Перезагрузка роутера")
+    screen.quote("Вы действительно хотите перезагрузить устройство? Все соединения будут прерваны на 1–2 минуты.")
+    screen.button_row([
+        {"type": "callback_data", "text": "✅ Да, перезагрузить!", "data": "do_reboot", "style": "danger"},
+        {"type": "callback_data", "text": "❌ Отмена", "data": "home"},
+    ])
+    text = screen.build()
     kb = {
         "inline_keyboard": [
             [{"text": "✅ Да, перезагрузить!", "callback_data": "do_reboot"}],
@@ -844,12 +1155,45 @@ def get_update_screen():
             remote_sha = data.get('sha', '').strip()
             changelog = html.escape(data.get('commit', {}).get('message', ''))
     except Exception:
-        return "❌ <b>Ошибка сети</b>\nНе удалось проверить наличие обновлений на GitHub.", {
-            "inline_keyboard": [
+        # Fallback при исчерпании лимита API GitHub (403 rate limit) или сбое:
+        # получаем последний коммит через публичный Atom-feed без ограничения по rate limit.
+        try:
+            atom_url = f"https://github.com/ib0lit/SubParser/commits/{branch}.atom"
+            req_atom = urllib.request.Request(atom_url, headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+            with urllib.request.urlopen(req_atom, timeout=5, context=get_ssl_ctx()) as resp_atom:
+                atom_text = resp_atom.read().decode('utf-8', errors='ignore')
+                entry_match = re.search(r'<entry>(.*?)</entry>', atom_text, re.DOTALL)
+                block = entry_match.group(1) if entry_match else atom_text
+                sha_match = re.search(r'Commit/([0-9a-fA-F]{40})', block)
+                if sha_match:
+                    remote_sha = sha_match.group(1).strip()
+                title_match = re.search(r'<title>\s*(.*?)\s*</title>', block, re.DOTALL)
+                if title_match:
+                    changelog = html.escape(re.sub(r'\s+', ' ', title_match.group(1).strip()))
+        except Exception:
+            pass
+
+    if not remote_sha:
+        # Если ни API, ни Atom не ответили, пробуем хотя бы raw subparser_version.
+        try:
+            req_v = urllib.request.Request(
+                f"https://raw.githubusercontent.com/ib0lit/SubParser/{branch}/root/etc/subparser_version",
+                headers={'User-Agent': 'OpenWrt-SubParser-Bot'})
+            with urllib.request.urlopen(req_v, timeout=5, context=get_ssl_ctx()) as resp_v:
+                remote_ver = resp_v.read().decode('utf-8').strip()
+        except Exception:
+            screen = RichScreen()
+            screen.h("❌ Ошибка сети")
+            screen.quote("Не удалось проверить наличие обновлений на GitHub.")
+            screen.button_row([
+                {"type": "callback_data", "text": "📦 Выбрать релиз", "data": "check_releases", "style": "primary"},
+                {"type": "url", "text": "🔗 Открыть репозиторий",
+                 "url": "https://github.com/ib0lit/SubParser", "style": "link"},
+            ])
+            return screen.build(), {"inline_keyboard": [
                 [{"text": "📦 Выбрать релиз", "callback_data": "check_releases"}],
                 [{"text": "◀ Главное меню", "callback_data": "home"}],
-            ]
-        }
+            ]}
 
     for version_path in ("root/etc/subparser_pkg_version", "root/etc/subparser_version"):
         try:
@@ -868,40 +1212,83 @@ def get_update_screen():
     elif remote_ver and local_pkg != "unknown":
         is_update_available = (local_pkg != remote_ver)
 
-    installed_line = f"• Установлено: <code>v{html.escape(local_display_ver)}</code>"
+    core_note = ""
     if local_core and local_core != local_display_ver:
-        installed_line += f" (ядро <code>v{html.escape(local_core)}</code>)"
+        core_note = f" · ядро <code>v{esc(local_core)}</code>"
+    release_note = ""
     if local_release:
-        installed_line += f"\n• Тег релиза: <code>{html.escape(local_release)}</code>"
-    if local_sha:
-        installed_line += f"\n• Коммит: <code>{local_sha[:7]}</code>"
+        release_note = f" · релиз <code>{esc(local_release)}</code>"
+
+    branch_btns = [
+        {"text": f"{'🔘' if branch == 'main' else '⚪'} main", "callback_data": "switch_branch_main"},
+        {"text": f"{'🔘' if branch == 'beta' else '⚪'} beta", "callback_data": "switch_branch_beta"},
+    ]
+    rich_branch_row = [
+        {"type": "callback_data", "text": f"{'🔘' if branch == 'main' else '⚪'} main",
+         "data": "switch_branch_main", "style": "primary" if branch == "main" else "link"},
+        {"type": "callback_data", "text": f"{'🔘' if branch == 'beta' else '⚪'} beta",
+         "data": "switch_branch_beta", "style": "primary" if branch == "beta" else "link"},
+    ]
 
     if is_update_available:
-        short_remote_sha = remote_sha[:7] if remote_sha else ""
-        text = (
-            f"🎉 <b>Доступно обновление ветки!</b>\n\n"
-            f"• Ветка: <code>{html.escape(branch)}</code>\n"
-            f"{installed_line}\n"
-            f"• В ветке: <code>v{html.escape(remote_ver)}</code>"
-        )
-        if short_remote_sha:
-            text += f" (<code>{short_remote_sha}</code>)"
-        text += f"\n\n📝 <b>Что нового (последний коммит):</b>\n<i>{changelog}</i>"
-        update_button = {"text": "🔄 Обновить ветку", "callback_data": "do_update"}
+        short_remote_sha = remote_sha[:7] if remote_sha else "н/д"
+        short_local_sha = local_sha[:7] if local_sha else "н/д"
+        screen = RichScreen()
+        screen.h("🎉 Доступно обновление!")
+        screen.kv([
+            ("🌿 Ветка", f"<code>{esc(branch)}</code>"),
+            ("📦 Текущая версия", f"<code>v{esc(local_display_ver)}</code> · "
+                                  f"<code>{esc(short_local_sha)}</code>"),
+            ("🚀 Новая версия", f"<code>v{esc(remote_ver)}</code> · "
+                                f"<code>{esc(short_remote_sha)}</code>"),
+        ])
+        screen.details("📝 Что нового (последний коммит)",
+                       f"<p>{changelog}</p>", f"<i>{changelog}</i>", open=True)
+        screen.button_row([
+            {"type": "callback_data", "text": "🔄 Обновить SubParser", "data": "do_update", "style": "success"},
+        ])
+        screen.button_row([
+            {"type": "callback_data", "text": "📦 Выбрать версию из релизов",
+             "data": "check_releases", "style": "primary"},
+        ])
+        screen.button_row(rich_branch_row)
+        screen.button_row([
+            {"type": "url", "text": "🔗 Коммит на GitHub",
+             "url": f"https://github.com/ib0lit/SubParser/commit/{esc_attr(remote_sha)}",
+             "style": "link"},
+            {"type": "callback_data", "text": "◀ В меню", "data": "home", "style": "link"},
+        ])
+        text = screen.build()
+        kb = {"inline_keyboard": [
+            [{"text": "🔄 Обновить", "callback_data": "do_update"}],
+            [{"text": "📦 Выбрать версию из релизов", "callback_data": "check_releases"}],
+            branch_btns,
+            [{"text": "◀ Главное меню", "callback_data": "home"}]
+        ]}
     else:
-        text = (
-            f"✅ <b>Установлена актуальная версия ветки.</b>\n\n"
-            f"• Ветка: <code>{html.escape(branch)}</code>\n"
-            f"{installed_line}"
-        )
-        update_button = None
+        screen = RichScreen()
+        screen.h("✅ Установлена последняя версия")
+        screen.kv([
+            ("🌿 Ветка", f"<code>{esc(branch)}</code>"),
+            ("📦 Версия", f"<code>v{esc(local_display_ver)}</code>{core_note}{release_note}"),
+            ("🔖 Коммит", f"<code>{esc(local_sha[:7] if local_sha else 'н/д')}</code>"),
+        ])
+        screen.button_row([
+            {"type": "callback_data", "text": "📦 Выбрать версию из релизов",
+             "data": "check_releases", "style": "primary"},
+        ])
+        screen.button_row(rich_branch_row)
+        screen.button_row([
+            {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
+        ])
+        text = screen.build()
+        kb = {"inline_keyboard": [
+            [{"text": "📦 Выбрать версию из релизов", "callback_data": "check_releases"}],
+            branch_btns,
+            [{"text": "◀ Главное меню", "callback_data": "home"}]
+        ]}
 
-    kb_rows = []
-    if update_button:
-        kb_rows.append([update_button])
-    kb_rows.append([{"text": "📦 Выбрать версию из релизов", "callback_data": "check_releases"}])
-    kb_rows.append([{"text": "◀ Главное меню", "callback_data": "home"}])
-    return text, {"inline_keyboard": kb_rows}
+    return text, kb
 
 
 def get_releases_screen():

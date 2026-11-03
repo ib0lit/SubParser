@@ -13,6 +13,7 @@ from .config import (
     BLOCKED_FILE, get_ssl_ctx, get_uci_bool, get_uci_val,
     load_blocked_macs as _load_blocked, save_blocked_macs as _save_blocked,
 )
+from .rich import RichScreen, esc
 
 _FIREWALL_READY = False
 
@@ -206,17 +207,25 @@ def analyze_custom_url(raw_input):
             status_text = "🔴 Ошибка соединения / Блок"
 
         route_badge = "🛡 <b>Туннель Podkop (Fake-IP)</b>" if is_proxied else "🇷🇺 <b>Напрямую без VPN (Провайдер РФ)</b>"
-        return (
-            f"🔍 <b>Диагностика маршрута:</b> <code>{domain}</code>\n\n"
-            f"• <b>Маршрут:</b> {route_badge}\n"
-            f"• <b>Резолв IP:</b> <code>{resolved_ip}</code>\n"
-            f"• <b>Отклик:</b> {status_text}\n"
-            f"• <b>Проверен URL:</b> <code>{test_url[:50]}</code>"
-        )
+        screen = RichScreen()
+        screen.h(f"🔍 Диагностика маршрута: {esc(domain)}")
+        screen.kv([
+            ("🧭 Маршрут", route_badge),
+            ("🌐 Резолв IP", f"<code>{esc(resolved_ip)}</code>"),
+            ("📡 Отклик", status_text),
+            ("🔗 Проверен URL", f"<code>{esc(test_url[:50])}</code>"),
+        ])
+        return screen.build()
     except ValueError as e:
-        return f"⚠️ Недопустимый адрес: {e}"
+        screen = RichScreen()
+        screen.h("⚠️ Недопустимый адрес")
+        screen.quote(esc(e))
+        return screen.build()
     except Exception as e:
-        return f"⚠️ Ошибка при анализе адреса: {e}"
+        screen = RichScreen()
+        screen.h("⚠️ Ошибка при анализе адреса")
+        screen.quote(esc(e))
+        return screen.build()
 
 
 def check_single_service(item):
