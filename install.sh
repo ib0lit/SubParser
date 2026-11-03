@@ -264,6 +264,7 @@ else
     set_default_uci "custom_hour" "3"
     set_default_uci "custom_minute" "0"
     set_default_uci "ping_threshold" "350"
+    set_default_uci "ping_threads" "12"
     set_default_uci "max_jitter" "150"
     set_default_uci "max_best_nodes" "0"
     set_default_uci "max_best_custom" "0"

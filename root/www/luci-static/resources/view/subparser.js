@@ -143,6 +143,11 @@ return view.extend({
         o.datatype = 'uinteger';
         o.default = '350';
 
+        o = s.taboption('general', form.Value, 'ping_threads', _('Потоков пинга'));
+        o.datatype = 'range(1, 64)';
+        o.default = '12';
+        o.description = _('Сколько серверов проверять параллельно. По умолчанию 12. На слабых роутерах рекомендуется 6 — это снизит потребление оперативной памяти.');
+
         o = s.taboption('general', form.ListValue, 'max_best_nodes', _('Лимит лучших узлов'));
         o.value('0', _('Неограниченно'));
         o.value('3', _('Топ-3'));

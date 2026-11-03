@@ -252,8 +252,11 @@ def _teardown_run_log():
 try:
     # 12 параллельных замеров — как в прежних версиях. Привязка к числу ядер
     # (2 ядра → 4 воркера) втрое увеличивала время анализа: замеры в основном
-    # ждут сеть, а не CPU.
-    MAX_WORKERS = 12
+    # ждут сеть, а не CPU. Значение можно уменьшить в LuCI на слабых роутерах.
+    _raw_ping_threads = subprocess.check_output(
+        ["uci", "-q", "get", f"{CONFIG_NAME}.settings.ping_threads"],
+        text=True, stderr=subprocess.DEVNULL).strip()
+    MAX_WORKERS = max(1, min(64, int(_raw_ping_threads)))
 except Exception:
     MAX_WORKERS = 12
 
