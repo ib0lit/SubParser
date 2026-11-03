@@ -302,6 +302,9 @@ else
     set_default_uci "watchdog_test_url" "https://www.gstatic.com/generate_204"
     set_default_uci "watchdog_service_cooldown" "10"
     set_default_uci "watchdog_service_notify" "1"
+    set_default_uci "watchdog_service_active_interval" "1"
+    set_default_uci "watchdog_service_idle_interval" "5"
+    set_default_uci "watchdog_service_traffic_kb" "20"
     set_default_uci "watchdog_restart_podkop" "1"
     set_default_uci "watchdog_emergency" "1"
     set_default_uci "watchdog_notify_recovery" "1"
@@ -353,7 +356,7 @@ python3 -m py_compile /usr/lib/subparser/*.py /usr/bin/subparser-bot.py /usr/bin
 echo "=== [6/7] Регистрация задач и автозапуск ==="
 CRON_TMP="/tmp/cron_subparser_inst.tmp"
 crontab -l 2>/dev/null | grep -v "subparser" > "$CRON_TMP" || true
-echo "*/5 * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1" >> "$CRON_TMP"
+echo "* * * * * /usr/bin/subparser-watchdog.sh >/dev/null 2>&1" >> "$CRON_TMP"
 crontab "$CRON_TMP" 2>/dev/null || true
 rm -f "$CRON_TMP"
 /etc/init.d/cron restart >/dev/null 2>&1 || true

@@ -21,6 +21,32 @@ num() {
     printf '%s' "$_wd_num"
 }
 
+# Счётчики WAN-интерфейса: rx tx. Если интерфейс не определён, суммируем все,
+# кроме lo. Это только индикатор активности, а не точный биллинг.
+wan_counters() {
+    _if=$(ip route show default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+    [ -z "$_if" ] && _if=$(uci -q get network.wan.device)
+    [ -z "$_if" ] && _if=$(uci -q get network.wan.ifname)
+    _rx=0
+    _tx=0
+    if [ -n "$_if" ] && [ -r "/sys/class/net/${_if}/statistics/rx_bytes" ]; then
+        _rx=$(cat "/sys/class/net/${_if}/statistics/rx_bytes" 2>/dev/null)
+        _tx=$(cat "/sys/class/net/${_if}/statistics/tx_bytes" 2>/dev/null)
+    else
+        for _f in /sys/class/net/*/statistics/rx_bytes; do
+            [ -r "$_f" ] || continue
+            _name=${_f#/sys/class/net/}
+            _name=${_name%%/*}
+            [ "$_name" = "lo" ] && continue
+            _rx=$((_rx + $(cat "$_f" 2>/dev/null || echo 0)))
+            _tx=$((_tx + $(cat "${_f%rx_bytes}tx_bytes" 2>/dev/null || echo 0)))
+        done
+    fi
+    case "$_rx" in ''|*[!0-9]*) _rx=0 ;; esac
+    case "$_tx" in ''|*[!0-9]*) _tx=0 ;; esac
+    printf '%s %s' "$_rx" "$_tx"
+}
+
 [ "$(cfg enabled 0)" = "1" ] || exit 0
 [ "$(cfg watchdog_enabled 1)" = "1" ] || exit 0
 
@@ -39,19 +65,77 @@ if command -v flock >/dev/null 2>&1; then
     flock -n 8 2>/dev/null || exit 0
 fi
 
-# Cron запускает скрипт каждую минуту, а фактическую частоту задаёт
-# watchdog_interval. Так настройка применяется без перезаписи crontab.
+# Cron запускает скрипт каждую минуту. Основные проверки идут по
+# watchdog_interval, а сервисы — по своему адаптивному расписанию.
 INTERVAL=$(num "$(cfg watchdog_interval 5)" 5 1 60)
+SERVICES=$(uci -q get subparser.settings.watchdog_services)
+SERVICE_COOLDOWN=$(num "$(cfg watchdog_service_cooldown 10)" 10 1 1440)
+SERVICE_NOTIFY=$(cfg watchdog_service_notify 1)
+SERVICE_ACTIVE_INTERVAL=$(num "$(cfg watchdog_service_active_interval 1)" 1 1 60)
+SERVICE_IDLE_INTERVAL=$(num "$(cfg watchdog_service_idle_interval 5)" 5 1 60)
+SERVICE_TRAFFIC_KB=$(num "$(cfg watchdog_service_traffic_kb 20)" 20 1 100000)
+LAST_SERVICE_FILE="/tmp/subparser_service.last"
+TRAFFIC_FILE="/tmp/subparser_service.traffic"
 NOW=$(date +%s)
+
+MAIN_DUE=1
 if [ -f "$LAST_RUN_FILE" ]; then
     LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null)
     case "$LAST_RUN" in ''|*[!0-9]*) LAST_RUN=0 ;; esac
     if [ "$LAST_RUN" -gt 0 ] && [ $((NOW - LAST_RUN)) -ge 0 ] &&
        [ $((NOW - LAST_RUN)) -lt $((INTERVAL * 60)) ]; then
-        exit 0
+        MAIN_DUE=0
     fi
 fi
-printf '%s\n' "$NOW" > "$LAST_RUN_FILE"
+
+# Адаптивная частота проверки сервисов: при активном трафике чаще, без
+# трафика — реже. Счётчики читаются каждый запуск cron (раз в минуту).
+SERVICE_DUE=0
+SERVICE_ACTIVE=0
+if [ -n "$SERVICES" ]; then
+    set -- $(wan_counters)
+    RX="$1"
+    TX="$2"
+    PREV_TS=0
+    PREV_RX=0
+    PREV_TX=0
+    if [ -f "$TRAFFIC_FILE" ]; then
+        read -r PREV_TS PREV_RX PREV_TX < "$TRAFFIC_FILE" 2>/dev/null || true
+        case "$PREV_TS" in ''|*[!0-9]*) PREV_TS=0 ;; esac
+        case "$PREV_RX" in ''|*[!0-9]*) PREV_RX=0 ;; esac
+        case "$PREV_TX" in ''|*[!0-9]*) PREV_TX=0 ;; esac
+    else
+        # Первый запуск после установки/перезагрузки: не ждём накопления.
+        SERVICE_ACTIVE=1
+    fi
+    if [ "$PREV_TS" -gt 0 ] && [ "$NOW" -gt "$PREV_TS" ]; then
+        ELAPSED=$((NOW - PREV_TS))
+        DELTA=$((RX + TX - PREV_RX - PREV_TX))
+        [ "$DELTA" -lt 0 ] && DELTA=0
+        RATE_KB=$((DELTA / 1024 / ELAPSED))
+        [ "$RATE_KB" -ge "$SERVICE_TRAFFIC_KB" ] && SERVICE_ACTIVE=1
+    fi
+    printf '%s %s %s\n' "$NOW" "$RX" "$TX" > "$TRAFFIC_FILE" 2>/dev/null || true
+
+    SVC_INTERVAL=$SERVICE_IDLE_INTERVAL
+    [ "$SERVICE_ACTIVE" = "1" ] && SVC_INTERVAL=$SERVICE_ACTIVE_INTERVAL
+    if [ ! -f "$LAST_SERVICE_FILE" ]; then
+        SERVICE_DUE=1
+    else
+        LAST_SVC=$(cat "$LAST_SERVICE_FILE" 2>/dev/null)
+        case "$LAST_SVC" in ''|*[!0-9]*) LAST_SVC=0 ;; esac
+        if [ "$LAST_SVC" -le 0 ] || [ $((NOW - LAST_SVC)) -ge $((SVC_INTERVAL * 60 - 5)) ]; then
+            SERVICE_DUE=1
+        fi
+    fi
+fi
+
+if [ "$MAIN_DUE" = "0" ] && [ "$SERVICE_DUE" = "0" ]; then
+    exit 0
+fi
+if [ "$MAIN_DUE" = "1" ]; then
+    printf '%s\n' "$NOW" > "$LAST_RUN_FILE"
+fi
 
 DOWN_WAIT=$(num "$(cfg watchdog_down_wait 10)" 10 2 600)
 RESTART_WAIT=$(num "$(cfg watchdog_restart_wait 15)" 15 2 600)
@@ -68,9 +152,6 @@ EMERGENCY=$(cfg watchdog_emergency 1)
 NOTIFY_RECOVERY=$(cfg watchdog_notify_recovery 1)
 SUB_LIMITS=$(cfg watchdog_sub_limits 1)
 TEST_URL_RAW=$(cfg watchdog_test_url "https://www.gstatic.com/generate_204")
-SERVICES=$(uci -q get subparser.settings.watchdog_services)
-SERVICE_COOLDOWN=$(num "$(cfg watchdog_service_cooldown 10)" 10 1 1440)
-SERVICE_NOTIFY=$(cfg watchdog_service_notify 1)
 
 # Парсер или синхронизация уже работают — не вмешиваемся. Проверяем именно
 # flock, а не факт существования файла (файл остаётся после завершения).
@@ -162,12 +243,17 @@ except Exception:
     pass
 PYEOF
 }
-[ "$SUB_LIMITS" = "1" ] && check_sub_limits
+# Лимиты подписок — часть основной проверки, а не сервисной.
+[ "$SUB_LIMITS" = "1" ] && [ "$MAIN_DUE" = "1" ] && check_sub_limits
 
 # --- Проверка процесса sing-box --------------------------------------------------
 # Процесс может отсутствовать во время перезапуска Podkop или на медленном
 # роутере с большим конфигом, поэтому ждём появления, а не одну фиксированную паузу.
 if ! pidof sing-box >/dev/null 2>&1; then
+    # Сервисный цикл без ядра бессмысленен, и это не повод для перезапуска:
+    # основная проверка сама обработает отсутствие sing-box в свой срок.
+    [ "$MAIN_DUE" = "0" ] && exit 0
+
     WAITED=0
     while [ "$WAITED" -lt "$DOWN_WAIT" ]; do
         sleep 2
@@ -508,6 +594,17 @@ PYEOF
 )
 [ -z "$SECTION_LIST" ] && SECTION_LIST="main"
 
+# --- Сервисный цикл без основной проверки ---------------------------------------
+# Основные проверки не наступили, но сервисы пора проверять: не трогаем
+# процесс/секции, только убеждаемся, что есть WAN, и проверяем сервисы.
+if [ "$MAIN_DUE" = "0" ]; then
+    [ "$WAN_CHECK" = "1" ] && { check_wan_alive || exit 0; }
+    HEALTHY_SECTIONS="$SECTION_LIST"
+    check_services
+    printf '%s\n' "$NOW" > "$LAST_SERVICE_FILE" 2>/dev/null || true
+    exit 0
+fi
+
 # URL проверки кодируется один раз; при сбое python3 используем gstatic.
 TEST_URL=$(TEST_URL_RAW="$TEST_URL_RAW" python3 -c \
     'import os, urllib.parse; print(urllib.parse.quote(os.environ.get("TEST_URL_RAW", ""), safe=""))' 2>/dev/null)
@@ -554,7 +651,11 @@ done
 
 # Точечные проверки сервисов не влияют на признание секции мёртвой: они лишь
 # заставляют URLTest перепроверить узлы и при необходимости сменить активный.
-check_services
+# В основной цикл сервисы попадают только по своему расписанию.
+if [ "$SERVICE_DUE" = "1" ]; then
+    check_services
+    printf '%s\n' "$NOW" > "$LAST_SERVICE_FILE" 2>/dev/null || true
+fi
 
 # Все секции живы. О восстановлении сообщаем только если авария была
 # подтверждена и watchdog уже запускал экстренный отбор узлов: одиночный
