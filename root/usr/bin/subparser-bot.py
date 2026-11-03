@@ -1347,7 +1347,7 @@ def main():
                                         report_cache.get("details_html", ""))
                             if rich_on:
                                 body = (report_cache.get("summary_rich", "") +
-                                        "\n\n🧩 <b>Детали изменений</b>\n" +
+                                        "<br/><br/>🧩 <b>Детали изменений</b><br/>" +
                                         report_cache.get("details_rich", ""))
                                 text = RichText(body, fallback)
                             else:

@@ -1817,7 +1817,9 @@ def _run():
                 sub_lines.append(f"• <b>{html.escape(str(sname))}</b>: {format_bytes(used)} / {format_bytes(tot)} (до {exp_str})")
         if sub_lines:
             msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
-    rich_msg = msg
+    # Rich-сообщения схлопывают переводы строк, поэтому для них явно
+    # расставляем <br/>. Обычный HTML-вариант остаётся с \n.
+    rich_msg = msg.replace("\n", "<br/>")
     change_details_html = ""
     change_details_rich = ""
     reply_markup = None
