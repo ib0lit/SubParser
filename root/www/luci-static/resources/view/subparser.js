@@ -263,28 +263,33 @@ return view.extend({
         self.availableSections.forEach(function(sec) { glob_sec.value(sec, sec); });
         glob_sec.default = self.availableSections;
         glob_sec.depends('per_section_config', '0');
+        glob_sec.retain = true;
 
         var glob_mode = s.taboption('sections', form.ListValue, 'update_mode', _('Режим обновления'));
         glob_mode.value('replace', _('Заменять все серверы'));
         glob_mode.value('append', _('Добавлять к существующим (без дубликатов)'));
         glob_mode.default = 'replace';
         glob_mode.depends('per_section_config', '0');
+        glob_mode.retain = true;
 
         var globPrune = s.taboption('sections', form.Flag, 'prune_dead_append', _('Удалять мёртвые узлы при добавлении'));
         globPrune.default = '0';
         globPrune.depends('per_section_config', '0');
+        globPrune.retain = true;
         globPrune.description = _('В режиме добавления парсер дополнительно проверит уже установленные узлы секции и исключит те, что не отвечают. В режиме замены список и так перезаписывается.');
 
         self.availableSections.forEach(function(sec) {
             var sec_en = s.taboption('sections', form.Flag, 'sec_en_' + sec, _('Обновлять секцию') + ' [' + sec + ']');
             sec_en.default = '1';
             sec_en.depends('per_section_config', '1');
+            sec_en.retain = true;
 
             var sec_m = s.taboption('sections', form.ListValue, 'sec_mode_' + sec, _('Режим для') + ' [' + sec + ']');
             sec_m.value('replace', _('Заменять все серверы'));
             sec_m.value('append', _('Добавлять к существующим (без дубликатов)'));
             sec_m.default = 'replace';
             sec_m.depends('per_section_config', '1');
+            sec_m.retain = true;
 
             var secLimit = s.taboption('sections', form.ListValue, 'sec_limit_' + sec, _('Лимит узлов') + ' [' + sec + ']');
             secLimit.value('inherit', _('Как в глобальных настройках'));
@@ -295,13 +300,16 @@ return view.extend({
             secLimit.value('custom', _('Свой лимит'));
             secLimit.default = 'inherit';
             secLimit.depends('per_section_config', '1');
+            secLimit.retain = true;
 
             var secLimitCustom = s.taboption('sections', form.Value, 'sec_limit_custom_' + sec, _('Свой лимит (число)') + ' [' + sec + ']');
             secLimitCustom.datatype = 'uinteger';
             secLimitCustom.placeholder = '20';
             secLimitCustom.default = '0';
-            secLimitCustom.depends('per_section_config', '1');
-            secLimitCustom.depends('sec_limit_' + sec, 'custom');
+            var customDeps = { per_section_config: '1' };
+            customDeps['sec_limit_' + sec] = 'custom';
+            secLimitCustom.depends(customDeps);
+            secLimitCustom.retain = true;
 
             var secPrune = s.taboption('sections', form.ListValue, 'sec_prune_dead_' + sec, _('Удалять мёртвые при добавлении') + ' [' + sec + ']');
             secPrune.value('inherit', _('Как в глобальных настройках'));
@@ -309,6 +317,7 @@ return view.extend({
             secPrune.value('0', _('Нет'));
             secPrune.default = 'inherit';
             secPrune.depends('per_section_config', '1');
+            secPrune.retain = true;
 
             if (self.subscriptions.length) {
                 var secSubs = s.taboption('sections', form.MultiValue, 'sec_subs_' + sec,
@@ -321,6 +330,7 @@ return view.extend({
                 });
                 secSubs.default = [];
                 secSubs.depends('per_section_config', '1');
+                secSubs.retain = true;
                 secSubs.description = _('Из каких подписок брать новые узлы для этой секции. Ничего не выбрано — все активные подписки. В режиме «Добавлять» уже установленные узлы сохраняются.');
             }
         });
