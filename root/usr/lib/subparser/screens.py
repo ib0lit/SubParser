@@ -250,7 +250,7 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         {"type": "callback_data",
          "text": "🔝 Индивидуальные лимиты" if per_sec else f"🔝 Лимит: {limit_short}",
          "data": "bot_sections_menu" if per_sec else "cycle_limit"},
-        {"type": "callback_data", "text": "✏️ Свой лимит", "data": "ask_custom_limit"},
+        {"type": "callback_data", "text": "✏️", "data": "ask_custom_limit"},
     ])
     screen.button_row([
         {"type": "callback_data", "text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}",
@@ -290,7 +290,7 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
             [
                 {"text": "🔝 Индивидуальные лимиты" if per_sec else f"🔝 Лимит: {limit_short}",
                  "callback_data": "bot_sections_menu" if per_sec else "cycle_limit"},
-                {"text": "✏️ Свой лимит", "callback_data": "ask_custom_limit"}
+                {"text": "✏️", "callback_data": "ask_custom_limit"}
             ],
             [
                 {"text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}", "callback_data": "toggle_prune_menu"}
