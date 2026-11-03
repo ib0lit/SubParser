@@ -244,15 +244,15 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         {"type": "callback_data", "text": "150ms" + (" 🔘" if threshold == "150" else ""), "data": "th:150"},
         {"type": "callback_data", "text": "350ms" + (" 🔘" if threshold == "350" else ""), "data": "th:350"},
         {"type": "callback_data", "text": "500ms" + (" 🔘" if threshold == "500" else ""), "data": "th:500"},
-    ])
-    screen.button_row([
-        {"type": "callback_data", "text": "✏️ Свой пинг", "data": "ask_custom_th"},
-        {"type": "callback_data", "text": "✏️ Свой лимит", "data": "ask_custom_limit"},
+        {"type": "callback_data", "text": "✏️", "data": "ask_custom_th"},
     ])
     screen.button_row([
         {"type": "callback_data",
-         "text": "🔝 Лимиты секций" if per_sec else f"🔝 Лимит: {limit_short}",
+         "text": "🔝 Индивидуальные лимиты" if per_sec else f"🔝 Лимит: {limit_short}",
          "data": "bot_sections_menu" if per_sec else "cycle_limit"},
+        {"type": "callback_data", "text": "✏️ Свой лимит", "data": "ask_custom_limit"},
+    ])
+    screen.button_row([
         {"type": "callback_data", "text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}",
          "data": "toggle_prune_menu"},
     ])
@@ -284,15 +284,15 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
             [
                 {"text": "150ms" + (" 🔘" if threshold == "150" else ""), "callback_data": "th:150"},
                 {"text": "350ms" + (" 🔘" if threshold == "350" else ""), "callback_data": "th:350"},
-                {"text": "500ms" + (" 🔘" if threshold == "500" else ""), "callback_data": "th:500"}
+                {"text": "500ms" + (" 🔘" if threshold == "500" else ""), "callback_data": "th:500"},
+                {"text": "✏️", "callback_data": "ask_custom_th"}
             ],
             [
-                {"text": "✏️ Свой пинг", "callback_data": "ask_custom_th"},
+                {"text": "🔝 Индивидуальные лимиты" if per_sec else f"🔝 Лимит: {limit_short}",
+                 "callback_data": "bot_sections_menu" if per_sec else "cycle_limit"},
                 {"text": "✏️ Свой лимит", "callback_data": "ask_custom_limit"}
             ],
             [
-                {"text": "🔝 Лимиты секций" if per_sec else f"🔝 Лимит: {limit_short}",
-                 "callback_data": "bot_sections_menu" if per_sec else "cycle_limit"},
                 {"text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}", "callback_data": "toggle_prune_menu"}
             ],
             [
