@@ -195,20 +195,28 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         limit_parts = []
         for s in all_secs:
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
+            s_mode = get_uci_val(f"sec_mode_{s}", "replace")
+            if not s_en:
+                icon = "❌"
+            elif s_mode == "replace":
+                icon = "🔄"
+            else:
+                icon = "➕"
+            sec_parts.append(f"{html.escape(s)} {icon}")
             if s_en:
-                sec_parts.append(html.escape(s))
                 limit_parts.append(f"{html.escape(s)} {_section_limit_short(s)}")
-        sections_str = ", ".join(sec_parts) if sec_parts else "Все выключены"
+        sections_str = ", ".join(sec_parts) if sec_parts else "Нет секций"
         per_section_limits = ", ".join(limit_parts) if limit_parts else "Все выключены"
         limit_badge = "Индивидуально"
     else:
         raw_targets = get_uci_val("target_section", "main").split()
-        existing_valid = [s for s in raw_targets if s in all_secs]
-        for s in all_secs:
-            if s not in existing_valid:
-                existing_valid.append(s)
-        target_list = existing_valid if existing_valid else ["main"]
-        sections_str = ", ".join(html.escape(s) for s in target_list)
+        target_set = {s for s in raw_targets if s in all_secs} or set(all_secs)
+        g_icon = "🔄" if get_uci_val("update_mode", "replace") == "replace" else "➕"
+        sec_parts = [
+            f"{html.escape(s)} {g_icon if s in target_set else '❌'}"
+            for s in all_secs
+        ]
+        sections_str = ", ".join(sec_parts) if sec_parts else f"main {g_icon}"
 
     screen = RichScreen()
     screen.h("⚙️ Параметры парсера SubParser")
