@@ -23,6 +23,11 @@ BRANCH_FILE="/etc/subparser_branch"
 # Режим обновления: branch (по умолчанию), latest или тег релиза.
 RELEASE_MODE="${SUBPARSER_RELEASE:-${SUBPARSER_VERSION:-}}"
 RELEASE_TAG=""
+# Локальные режимы нужны, чтобы обновлять устройство без GitHub:
+#   sh update.sh --local [DIR]         — из каталога с подпапкой root/
+#   sh update.sh --archive FILE.tar.gz — из локального архива
+LOCAL_DIR=""
+LOCAL_ARCHIVE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --release|--version)
@@ -31,9 +36,38 @@ while [ $# -gt 0 ]; do
             RELEASE_MODE="$1"
             ;;
         --release=*|--version=*) RELEASE_MODE="${1#*=}" ;;
+        --local)
+            if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then
+                LOCAL_DIR="$2"
+                shift
+            else
+                LOCAL_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+            fi
+            ;;
+        --archive)
+            [ $# -ge 2 ] || { echo "[!] Использование: sh update.sh --archive /path/to/archive.tar.gz"; exit 1; }
+            LOCAL_ARCHIVE="$2"
+            shift
+            ;;
+        -h|--help)
+            echo "Использование:"
+            echo "  sh update.sh                       # обновление с GitHub"
+            echo "  sh update.sh --release latest      # последний релиз"
+            echo "  sh update.sh --local [DIR]         # из локального каталога"
+            echo "  sh update.sh --archive FILE.tar.gz # из локального архива"
+            exit 0
+            ;;
+        *)
+            echo "[!] Неизвестный аргумент: $1"
+            exit 1
+            ;;
     esac
     shift
 done
+if [ -n "$LOCAL_DIR" ] && [ -n "$LOCAL_ARCHIVE" ]; then
+    echo "[!] Нельзя одновременно использовать --local и --archive."
+    exit 1
+fi
 if [ -z "$RELEASE_MODE" ]; then
     RELEASE_MODE=$(uci -q get subparser.settings.update_release 2>/dev/null | tr -d ' \t\r\n' || true)
 fi
@@ -47,7 +81,11 @@ case "$RELEASE_MODE" in
         ;;
 esac
 
-if [ "$RELEASE_MODE" = "branch" ]; then
+if [ -n "$LOCAL_DIR" ] || [ -n "$LOCAL_ARCHIVE" ]; then
+    echo "=== [1/5] Локальный режим: проверка обновлений на GitHub пропущена ==="
+    REMOTE_SHA=""
+    RELEASE_TAG=""
+elif [ "$RELEASE_MODE" = "branch" ]; then
     echo "=== [1/5] Проверка наличия обновлений (ветка: ${BRANCH}) ==="
     REMOTE_SHA=$(curl -sL \
       -H "User-Agent: OpenWrt-SubParser-Updater" \
@@ -92,7 +130,9 @@ for item in data if isinstance(data, list) else []:
       | grep '"sha":' | head -n 1 | cut -d '"' -f 4)
 fi
 
-if [ -z "$REMOTE_SHA" ]; then
+if [ -n "$LOCAL_DIR" ] || [ -n "$LOCAL_ARCHIVE" ]; then
+    echo "[*] Локальный источник: проверка версии на GitHub не требуется."
+elif [ -z "$REMOTE_SHA" ]; then
     echo "[!] Не удалось определить версию на GitHub. Выполняем принудительное обновление..."
 else
     if [ -f "$COMMIT_FILE" ]; then
@@ -147,17 +187,45 @@ else
     echo "[!] Предупреждение: не удалось определить свободное место. Продолжаем..."
 fi
 
-echo "=== [3/5] Загрузка компонентов с GitHub ==="
+echo "=== [3/5] Подготовка компонентов ==="
 TMP_DIR="/tmp/subparser-update"
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
-TARBALL="${TMP_DIR}/subparser.tar.gz"
-if [ -n "$RELEASE_TAG" ]; then
-    RELEASE_URL=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
-        -H "User-Agent: OpenWrt-SubParser-Updater" \
-        "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}" 2>/dev/null \
-        | RELEASE_TAG="$RELEASE_TAG" python3 -c '
+if [ -n "$LOCAL_DIR" ]; then
+    if [ ! -d "$LOCAL_DIR/root" ]; then
+        echo "[!] В каталоге ${LOCAL_DIR} не найдена папка root/."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    SRC_PATH="${LOCAL_DIR}/root"
+    echo "[*] Источник: локальный каталог ${LOCAL_DIR}"
+elif [ -n "$LOCAL_ARCHIVE" ]; then
+    if [ ! -f "$LOCAL_ARCHIVE" ]; then
+        echo "[!] Архив не найден: ${LOCAL_ARCHIVE}"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    if ! gzip -t "$LOCAL_ARCHIVE" 2>/dev/null; then
+        echo "[!] Архив повреждён (проверка gzip не пройдена). Обновление отменено."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    if ! tar -xzf "$LOCAL_ARCHIVE" -C "$TMP_DIR"; then
+        echo "[!] Не удалось распаковать архив. Обновление отменено."
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
+    SRC_PATH="${SRC_PARENT}/root"
+    echo "[*] Источник: локальный архив ${LOCAL_ARCHIVE}"
+else
+    TARBALL="${TMP_DIR}/subparser.tar.gz"
+    if [ -n "$RELEASE_TAG" ]; then
+        RELEASE_URL=$(curl -fsSL --retry 3 --connect-timeout 15 -m 30 \
+            -H "User-Agent: OpenWrt-SubParser-Updater" \
+            "https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}" 2>/dev/null \
+            | RELEASE_TAG="$RELEASE_TAG" python3 -c '
 import json
 import sys
 try:
@@ -171,41 +239,42 @@ for asset in data.get("assets", []) if isinstance(data, dict) else []:
         print(url)
         break
 ' || true)
-    if [ -z "$RELEASE_URL" ]; then
-        RELEASE_URL="https://github.com/${REPO_USER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/subparser-${RELEASE_TAG#v}.tar.gz"
+        if [ -z "$RELEASE_URL" ]; then
+            RELEASE_URL="https://github.com/${REPO_USER}/${REPO_NAME}/releases/download/${RELEASE_TAG}/subparser-${RELEASE_TAG#v}.tar.gz"
+        fi
+        echo "[*] Скачивание релиза ${RELEASE_TAG}: ${RELEASE_URL}"
+        if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
+                "$RELEASE_URL" -o "$TARBALL"; then
+            echo "[!] Не удалось скачать архив релиза ${RELEASE_TAG}."
+            rm -rf "$TMP_DIR"
+            exit 1
+        fi
+    else
+        if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
+                "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
+                -o "$TARBALL"; then
+            echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+            rm -rf "$TMP_DIR"
+            exit 1
+        fi
     fi
-    echo "[*] Скачивание релиза ${RELEASE_TAG}: ${RELEASE_URL}"
-    if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
-            "$RELEASE_URL" -o "$TARBALL"; then
-        echo "[!] Не удалось скачать архив релиза ${RELEASE_TAG}."
+    if ! gzip -t "$TARBALL" 2>/dev/null; then
+        echo "[!] Архив повреждён (проверка gzip не пройдена). Обновление отменено."
         rm -rf "$TMP_DIR"
         exit 1
     fi
-else
-    if ! curl -fL --retry 3 --connect-timeout 15 -m 180 \
-            "https://github.com/${REPO_USER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz?nocache=$(date +%s)" \
-            -o "$TARBALL"; then
-        echo "[!] Не удалось скачать архив ветки ${BRANCH}."
+    if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
+        echo "[!] Не удалось распаковать архив. Обновление отменено."
         rm -rf "$TMP_DIR"
         exit 1
     fi
+    # GitHub заменяет слэши в имени ветки при формировании каталога архива,
+    # поэтому ищем распакованный корень, а не собираем имя вручную.
+    SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
+    SRC_PATH="${SRC_PARENT}/root"
 fi
-if ! gzip -t "$TARBALL" 2>/dev/null; then
-    echo "[!] Архив повреждён (проверка gzip не пройдена). Обновление отменено."
-    rm -rf "$TMP_DIR"
-    exit 1
-fi
-if ! tar -xzf "$TARBALL" -C "$TMP_DIR"; then
-    echo "[!] Не удалось распаковать архив. Обновление отменено."
-    rm -rf "$TMP_DIR"
-    exit 1
-fi
-# GitHub заменяет слэши в имени ветки при формировании каталога архива,
-# поэтому ищем распакованный корень, а не собираем имя вручную.
-SRC_PARENT=$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
-SRC_PATH="${SRC_PARENT}/root"
 if [ ! -d "$SRC_PATH" ]; then
-    echo "[!] В архиве не найдена ожидаемая структура ${SRC_PATH}."
+    echo "[!] В источнике не найдена ожидаемая структура ${SRC_PATH}."
     rm -rf "$TMP_DIR"
     exit 1
 fi
@@ -267,6 +336,9 @@ set_default_uci "update_mode" "replace"
 set_default_uci "prune_dead_append" "0"
 set_default_uci "sec_mode_main" "replace"
 set_default_uci "sec_en_main" "1"
+set_default_uci "sec_limit_main" "inherit"
+set_default_uci "sec_limit_custom_main" "0"
+set_default_uci "sec_prune_dead_main" "inherit"
 set_default_uci "override_fp" "as_is"
 set_default_uci "allow_insecure_tls" "0"
 set_default_uci "allow_local_diag" "0"
@@ -309,20 +381,23 @@ chmod 600 /etc/config/subparser 2>/dev/null || true
 
 printf '%s\n' "$BRANCH" > "$BRANCH_FILE"
 
-if [ -n "$RELEASE_TAG" ]; then
-    printf '%s\n' "$RELEASE_TAG" > "$RELEASE_FILE"
-    uci -q set subparser.settings.update_release="$RELEASE_MODE"
-    if [ -z "$REMOTE_SHA" ] && [ -f "${SRC_PARENT}/COMMIT" ]; then
-        REMOTE_SHA=$(cat "${SRC_PARENT}/COMMIT" 2>/dev/null || true)
+# Локальное обновление не должно менять выбранный GitHub-релиз.
+if [ -z "$LOCAL_DIR" ] && [ -z "$LOCAL_ARCHIVE" ]; then
+    if [ -n "$RELEASE_TAG" ]; then
+        printf '%s\n' "$RELEASE_TAG" > "$RELEASE_FILE"
+        uci -q set subparser.settings.update_release="$RELEASE_MODE"
+        if [ -z "$REMOTE_SHA" ] && [ -f "${SRC_PARENT}/COMMIT" ]; then
+            REMOTE_SHA=$(cat "${SRC_PARENT}/COMMIT" 2>/dev/null || true)
+        fi
+    else
+        rm -f "$RELEASE_FILE"
+        uci -q set subparser.settings.update_release="branch"
     fi
-else
-    rm -f "$RELEASE_FILE"
-    uci -q set subparser.settings.update_release="branch"
-fi
-uci -q commit subparser 2>/dev/null || true
+    uci -q commit subparser 2>/dev/null || true
 
-if [ -n "$REMOTE_SHA" ]; then
-    echo "$REMOTE_SHA" > "$COMMIT_FILE"
+    if [ -n "$REMOTE_SHA" ]; then
+        echo "$REMOTE_SHA" > "$COMMIT_FILE"
+    fi
 fi
 
 echo "=== [5/5] Перезапуск служб и очистка кэша LuCI ==="

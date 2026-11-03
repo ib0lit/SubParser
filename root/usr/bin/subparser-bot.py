@@ -19,7 +19,7 @@ from subparser.config import (
 from subparser.telegram import tg_api, send_msg, edit_msg, delete_msg, answer_callback
 from subparser.subs import (
     detect_is_subscription, add_subscription_to_uci,
-    toggle_sub_enabled, cycle_sub_ua, delete_sub_by_idx
+    toggle_sub_enabled, cycle_sub_ua, delete_sub_by_idx, get_subscriptions
 )
 from subparser.system import (
     init_bot_firewall, get_blocked_macs, save_blocked_macs,
@@ -37,7 +37,7 @@ from subparser.screens import (
     get_parser_menu_screen, get_fp_menu_screen, get_reboot_confirm_screen,
     get_protocols_menu_screen,
     get_sections_menu_screen, get_sections_selector_screen,
-    get_section_settings_screen,
+    get_section_settings_screen, get_section_sources_screen,
     get_del_dead_all_confirm_screen,
     get_servers_screen, get_services_status_screen, get_status_screen, get_system_metrics,
     get_sub_card_screen, get_sub_delete_confirm_screen, get_subs_list_screen
@@ -767,6 +767,51 @@ def main():
                         labels = {"inherit": "как глобально", "1": "удалять", "0": "оставлять"}
                         answer_callback(token, cb_id, f"Мёртвые: {labels[new_val]}")
                         t, kb = get_section_settings_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_sources:"):
+                        sec_name = data.split(":", 1)[1]
+                        answer_callback(token, cb_id, "Источники секции")
+                        t, kb = get_section_sources_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_subs_all:"):
+                        sec_name = data.split(":", 1)[1]
+                        set_uci_list(f"sec_subs_{sec_name}", [])
+                        answer_callback(token, cb_id, "Все подписки")
+                        t, kb = get_section_sources_screen(sec_name)
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data.startswith("sec_sub_tgl:"):
+                        parts = data.split(":", 2)
+                        if len(parts) != 3:
+                            answer_callback(token, cb_id, "Некорректные данные")
+                            continue
+                        _, sec_name, sub_key = parts
+                        opt = f"sec_subs_{sec_name}"
+                        current = get_uci_list(opt)
+                        # Пустой список = «все подписки», поэтому визуально все
+                        # пункты отмечены. Чтобы снять один, разворачиваем его
+                        # в явный список.
+                        if not current:
+                            current = [s.get("sec_name") for s in get_subscriptions()
+                                       if s.get("sec_name")]
+                        if sub_key in current:
+                            if len(current) <= 1:
+                                answer_callback(
+                                    token, cb_id,
+                                    "Нельзя оставить пусто — используйте «Все подписки»")
+                                t, kb = get_section_sources_screen(sec_name)
+                                edit_msg(token, chat_id, msg_id, t, kb)
+                                continue
+                            current = [x for x in current if x != sub_key]
+                            msg = "Подписка исключена"
+                        else:
+                            current.append(sub_key)
+                            msg = "Подписка добавлена"
+                        set_uci_list(opt, current)
+                        answer_callback(token, cb_id, msg)
+                        t, kb = get_section_sources_screen(sec_name)
                         edit_msg(token, chat_id, msg_id, t, kb)
 
                     elif data == "cycle_cron":

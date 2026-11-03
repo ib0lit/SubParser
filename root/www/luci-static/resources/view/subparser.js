@@ -9,6 +9,7 @@ return view.extend({
     availableSections: ['main'],
     githubBranches: ['main'],
     githubReleases: [],
+    subscriptions: [],
 
     load: function() {
         var self = this;
@@ -36,6 +37,15 @@ return view.extend({
                     return links;
                 }).catch(function() {
                     self.githubReleases = [];
+                    return links;
+                });
+            }).then(function(links) {
+                return fs.exec('/usr/bin/subparser-helper.sh', ['get_subscriptions']).then(function(res) {
+                    try { self.subscriptions = JSON.parse(res.stdout.trim() || '[]'); }
+                    catch(e) { self.subscriptions = []; }
+                    return links;
+                }).catch(function() {
+                    self.subscriptions = [];
                     return links;
                 });
             });
@@ -140,7 +150,7 @@ return view.extend({
         o.value('10', _('Топ-10'));
         o.value('custom', _('Свой лимит (Топ-N)'));
         o.default = '0';
-        o.description = _('Сколько лучших узлов оставлять в каждой секции. При индивидуальной настройке секций значение можно переопределить для каждой секции отдельно.');
+        o.description = _('Сколько лучших узлов записывать. В режиме замены это общий размер списка, в режиме добавления — число новых узлов. При индивидуальной настройке секций значение можно переопределить для каждой секции отдельно.');
 
         o = s.taboption('general', form.Value, 'max_best_custom', _('Свой лимит Топ-N'));
         o.datatype = 'uinteger';
@@ -293,6 +303,20 @@ return view.extend({
             secPrune.value('0', _('Нет'));
             secPrune.default = 'inherit';
             secPrune.depends('per_section_config', '1');
+
+            if (self.subscriptions.length) {
+                var secSubs = s.taboption('sections', form.MultiValue, 'sec_subs_' + sec,
+                    _('Подписки-источники для') + ' [' + sec + ']');
+                self.subscriptions.forEach(function(sub) {
+                    var label = sub.name || sub.sec_name;
+                    if (String(sub.enabled) !== '1')
+                        label += ' (' + _('выкл') + ')';
+                    secSubs.value(sub.sec_name, label);
+                });
+                secSubs.default = [];
+                secSubs.depends('per_section_config', '1');
+                secSubs.description = _('Из каких подписок брать новые узлы для этой секции. Ничего не выбрано — все активные подписки. В режиме «Добавлять» уже установленные узлы сохраняются.');
+            }
         });
 
         o = s.taboption('advanced', form.Value, 'stress_top', _('Сколько кандидатов проверять на стабильность'));

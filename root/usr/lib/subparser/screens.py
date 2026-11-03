@@ -6,7 +6,8 @@ import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from .config import (get_ssl_ctx, get_uci_val, get_uci_list, normalize_protocol,
-                     UA_CHOICES, PROTOCOL_CHOICES, LOG_FILE)
+                     UA_CHOICES, PROTOCOL_CHOICES, LOG_FILE,
+                     get_section_subscriptions)
 from .subs import get_subscriptions, resolve_subscription
 from .podkop import (
     get_all_podkop_sections, get_podkop_links, get_node_name,
@@ -478,9 +479,6 @@ def get_sections_menu_screen():
     if not per_sec:
         raw_targets = get_uci_val("target_section", "main").split()
         target_set = set(raw_targets) if raw_targets else set(all_secs)
-        for s in all_secs:
-            if s not in target_set:
-                target_set.add(s)
 
         g_mode = get_uci_val("update_mode", "replace")
         mode_label = "🔄 Замена серверов" if g_mode == "replace" else "➕ Добавление (без дублей)"
@@ -540,13 +538,19 @@ def get_sections_menu_screen():
                 badge, short = "➕ Добавление", "добавление"
             limit_short = _section_limit_badge(s)
             prune_short = "да" if _section_prune_enabled(s) else "нет"
-            sec_rows.append((esc(s), badge, esc(limit_short), prune_short))
-            fallback_rows.append(f"• <b>{esc(s)}:</b> {short}, лимит {limit_short}, мёртвые: {prune_short}")
+            picked_subs = get_section_subscriptions(s)
+            source_short = f"{len(picked_subs)}" if picked_subs else "все"
+            sec_rows.append((esc(s), badge, esc(limit_short), prune_short,
+                             esc(source_short)))
+            fallback_rows.append(
+                f"• <b>{esc(s)}:</b> {short}, лимит {limit_short}, "
+                f"мёртвые: {prune_short}, источники: {source_short}")
             keyboard.append([
                 {"text": f"{s}: {badge}", "callback_data": f"cycle_sec:{s}"},
                 {"text": f"⚙️ {s}", "callback_data": f"sec_screen:{s}"},
             ])
-        screen.table(["Секция", "Режим", "Лимит", "Мёртвые"], sec_rows, fallback=fallback_rows)
+        screen.table(["Секция", "Режим", "Лимит", "Мёртвые", "Источники"],
+                     sec_rows, fallback=fallback_rows)
 
     keyboard.append([{"text": "◀️ Назад в меню парсера", "callback_data": "parser_menu"}])
     return screen.build(), {"inline_keyboard": keyboard}
@@ -575,6 +579,13 @@ def get_section_settings_screen(section):
         prune_label = f"Как глобально · {'вкл' if _global_prune_enabled() else 'выкл'}"
     mode_label = "🔄 Замена" if s_mode == "replace" else "➕ Добавление"
 
+    picked_subs = [k for k in get_section_subscriptions(section) if k]
+    subs_count = len(get_subscriptions())
+    if picked_subs:
+        source_label = f"Выбрано: {len(picked_subs)} из {subs_count}"
+    else:
+        source_label = f"Все активные ({subs_count})"
+
     screen = RichScreen()
     screen.h(f"⚙️ Секция {esc(section)}")
     screen.kv([
@@ -582,10 +593,13 @@ def get_section_settings_screen(section):
         ("🧭 Режим", f"<b>{mode_label}</b>"),
         ("🔝 Лимит узлов", f"<b>{esc(limit_label)}</b>"),
         ("🚮 Мёртвые при добавлении", f"<b>{esc(prune_label)}</b>"),
+        ("📥 Подписки-источники", f"<b>{esc(source_label)}</b>"),
     ])
-    screen.p("Лимит ограничивает число лучших узлов, записываемых в эту секцию. "
+    screen.p("Лимит ограничивает число лучших узлов, записываемых в эту секцию "
+             "(в режиме добавления — только новых). "
              "Очистка мёртвых работает только в режиме добавления: парсер "
-             "дополнительно проверяет текущие узлы секции и исключает неотвечающие.")
+             "дополнительно проверяет текущие узлы секции и исключает неотвечающие. "
+             "Источники определяют, из каких подписок брать новые узлы.")
     screen.button_row([
         {"type": "callback_data", "text": f"📡 Секция: {'вкл' if s_en else 'выкл'}",
          "data": f"sec_toggle:{section}", "style": "primary" if s_en else "link"},
@@ -601,6 +615,8 @@ def get_section_settings_screen(section):
     screen.button_row([
         {"type": "callback_data", "text": f"🚮 Мёртвые: {prune_label}",
          "data": f"sec_cycle_prune:{section}"},
+        {"type": "callback_data", "text": f"📥 Источники: {source_label}",
+         "data": f"sec_sources:{section}"},
     ])
     screen.button_row([
         {"type": "callback_data", "text": "◀️ К секциям", "data": "bot_sections_menu", "style": "link"},
@@ -613,10 +629,55 @@ def get_section_settings_screen(section):
         [{"text": f"🔝 Лимит: {limit_label}", "callback_data": f"sec_cycle_limit:{section}"}],
         [{"text": "✏️ Свой Топ-N", "callback_data": f"sec_ask_limit:{section}"}],
         [{"text": f"🚮 Мёртвые: {prune_label}", "callback_data": f"sec_cycle_prune:{section}"}],
+        [{"text": f"📥 Источники: {source_label}", "callback_data": f"sec_sources:{section}"}],
         [{"text": "◀️ К секциям", "callback_data": "bot_sections_menu"},
          {"text": "◀️ В меню парсера", "callback_data": "parser_menu"}],
     ]}
     return screen.build(), kb
+
+
+def get_section_sources_screen(section):
+    """Выбор подписок-источников для одной секции Podkop."""
+    subs = get_subscriptions()
+    selected = set(get_section_subscriptions(section))
+    all_keys = [s.get("sec_name") for s in subs if s.get("sec_name")]
+    if selected:
+        effective = selected & set(all_keys)
+        summary = (f"Выбрано: <b>{len(effective)}</b> из {len(all_keys)}"
+                   if all_keys else "Выбранные подписки не найдены")
+    else:
+        effective = set(all_keys)
+        summary = f"Все активные подписки (<b>{len(all_keys)}</b>)"
+
+    screen = RichScreen()
+    screen.h(f"📥 Подписки для секции {esc(section)}")
+    screen.p(f"{summary}. Пустой выбор означает «все подписки». "
+             "В режиме «Добавление» уже установленные узлы сохраняются, "
+             "а новые берутся только из выбранных подписок.")
+
+    rows = []
+    fallback_rows = []
+    keyboard = [[{"text": "✅ Все подписки (сбросить фильтр)",
+                  "callback_data": f"sec_subs_all:{section}"}]]
+    for sub in subs:
+        key = sub.get("sec_name")
+        if not key:
+            continue
+        mark = "✅" if key in effective else "⬜"
+        name = str(sub.get("name") or key)
+        if str(sub.get("enabled", "1")) != "1":
+            name += " (выкл)"
+        rows.append((esc(name), "✅ источник" if key in effective else "⬜ пропуск"))
+        fallback_rows.append(f"{mark} <b>{esc(name)}</b>")
+        keyboard.append([{"text": f"{mark} {name[:24]}",
+                          "callback_data": f"sec_sub_tgl:{section}:{key}"}])
+
+    if rows:
+        screen.table(["Подписка", "Источник"], rows, fallback=fallback_rows)
+    keyboard.append([{"text": "◀️ Назад к секции", "callback_data": f"sec_screen:{section}"},
+                     {"text": "◀️ К секциям", "callback_data": "bot_sections_menu"}])
+    return screen.build(), {"inline_keyboard": keyboard}
+
 
 def get_servers_screen(delays_map=None, section="main", page=0, delete_mode=False, selected_indices=None):
     if selected_indices is None:

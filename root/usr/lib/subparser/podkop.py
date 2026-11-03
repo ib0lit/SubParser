@@ -485,13 +485,22 @@ def delete_nodes_batch(indices, section="main", restart=False):
     return True, removed_count
 
 
-def scan_dead_in_all_sections():
-    """Пингует все секции и возвращает план удаления, не меняя конфигурацию.
+def scan_dead_in_all_sections(sections=None, include_delays=False, retries=1):
+    """Пингует секции и возвращает план удаления, не меняя конфигурацию.
 
     Узлы, которых нет в текущем runtime Podkop, не проверяются и в план не
     попадают: удалять непроверенное по ошибке API недопустимо.
+
+    ``sections`` ограничивает проверку выбранными секциями, ``include_delays``
+    добавляет в результат задержки и имена узлов для лога.
     """
-    sections = get_all_podkop_sections()
+    all_sections = get_all_podkop_sections()
+    if sections is None:
+        target_sections = all_sections
+    else:
+        wanted = set(sections)
+        target_sections = [s for s in all_sections if s in wanted]
+
     proxies, api_status = fetch_proxies()
     details = []
     total_dead = 0
@@ -503,14 +512,20 @@ def scan_dead_in_all_sections():
                     "details": []}
         return {"total": 0, "error": "Podkop API недоступен", "details": []}
 
-    for section in sections:
+    for section in target_sections:
         links = get_podkop_links(section)
         if not links:
-            details.append({"section": section, "total": 0, "dead": 0,
-                            "skipped": 0, "status": "empty", "indices": []})
+            detail = {"section": section, "total": 0, "dead": 0,
+                      "skipped": 0, "status": "empty", "indices": [],
+                      "links": []}
+            if include_delays:
+                detail["delays"] = {}
+                detail["names"] = []
+            details.append(detail)
             continue
 
-        delays = batch_ping_nodes(links, section=section, force=True)
+        delays = batch_ping_nodes(links, section=section, force=True,
+                                  retries=retries)
         dead = []
         skipped = 0
         for i in range(len(links)):
@@ -533,10 +548,15 @@ def scan_dead_in_all_sections():
         else:
             status = "no_data" if skipped == len(links) else "clean"
             plan_indices = []
-        details.append({"section": section, "total": len(links),
-                        "dead": len(dead), "skipped": skipped,
-                        "status": status, "indices": plan_indices,
-                        "links": list(links)})
+        detail = {"section": section, "total": len(links),
+                  "dead": len(dead), "skipped": skipped,
+                  "status": status, "indices": plan_indices,
+                  "links": list(links)}
+        if include_delays:
+            detail["delays"] = {str(i): delays.get(i) for i in range(len(links))}
+            detail["names"] = [get_node_name(link, i)
+                               for i, link in enumerate(links)]
+        details.append(detail)
 
     return {"total": total_dead, "error": "", "details": details}
 
@@ -624,7 +644,7 @@ def delete_dead_plan(plan_details):
 
 
 def batch_ping_nodes(links, section="main", force=False, max_workers=10,
-                    request_timeout=2.5, delay_timeout=1800):
+                    request_timeout=2.5, delay_timeout=1800, retries=1):
     results = {}
     if not links:
         return results
@@ -641,17 +661,21 @@ def batch_ping_nodes(links, section="main", force=False, max_workers=10,
                 if hist and hist[-1].get("delay", 0) > 0:
                     results[i] = hist[-1]["delay"]
 
-    missing = [i for i in range(len(links)) if i not in results]
-    if missing:
-        def probe_node(idx):
-            t = urllib.parse.quote(f"{section}-{idx+1}-out")
-            status, data = _api_request(
-                f"/proxies/{t}/delay?url={test_url}&timeout={delay_timeout}",
-                timeout=request_timeout)
-            if status == 200 and isinstance(data, dict):
-                return idx, int(data.get("delay", -1))
-            return idx, -1
+    def probe_node(idx):
+        t = urllib.parse.quote(f"{section}-{idx+1}-out")
+        status, data = _api_request(
+            f"/proxies/{t}/delay?url={test_url}&timeout={delay_timeout}",
+            timeout=request_timeout)
+        if status == 200 and isinstance(data, dict):
+            return idx, int(data.get("delay", -1))
+        return idx, -1
 
+    # Повторные попытки нужны автоматическому удалению мёртвых: одиночный
+    # таймаут не должен приводить к удалению рабочего узла.
+    for _attempt in range(max(1, int(retries))):
+        missing = [i for i in range(len(links)) if results.get(i, -1) <= 0]
+        if not missing:
+            break
         with ThreadPoolExecutor(max_workers=min(max_workers, len(missing))) as pool:
             for idx, delay in pool.map(probe_node, missing):
                 results[idx] = delay

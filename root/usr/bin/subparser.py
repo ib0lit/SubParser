@@ -25,7 +25,8 @@ sys.path.insert(0, "/usr/lib")
 try:
     from subparser.config import (UA_MAP, make_ssl_context, get_uci_bool,
                                   read_json, write_json_atomic,
-                                  PROTOCOL_CHOICES, normalize_protocol, get_uci_list)
+                                  PROTOCOL_CHOICES, normalize_protocol, get_uci_list,
+                                  get_section_subscriptions)
 except Exception:
     UA_MAP = {
         "v2rayN": "v2rayN/6.42",
@@ -80,6 +81,9 @@ except Exception:
         return PROTOCOL_ALIASES.get(value, value)
 
     def get_uci_list(opt):
+        return []
+
+    def get_section_subscriptions(section):
         return []
 
 try:
@@ -1204,24 +1208,34 @@ def _run():
 
     section_limits = {s: resolve_section_limit(s, per_section_config) for s in section_targets}
     section_prune = {s: resolve_section_prune(s, per_section_config) for s in section_targets}
+    section_subs = ({s: set(get_section_subscriptions(s)) for s in section_targets}
+                    if per_section_config else {})
 
     start_time = time.time()
     all_links = []
     seen = set()
+    # Какие подписки дали каждую ссылку. Нужно для выбора источников
+    # в индивидуальном режиме: одна ссылка может встречаться в нескольких подписках.
+    link_sources = {}
+
+    def _sub_key(sub, fallback_idx=0):
+        return str(sub.get("sec_name") or sub.get("name") or f"sub{fallback_idx + 1}")
 
     update_live_progress("⏳ [1/4] Загрузка подписок...", f"Источников: {len(active_subs)}")
     sub_results = {}
     with ThreadPoolExecutor(max_workers=min(4, len(active_subs))) as pool:
         futures = {pool.submit(fetch_single_sub, s): s for s in active_subs}
         for future in as_completed(futures):
+            sub = futures[future]
             try:
-                sub_results[futures[future].get("name", "Подписка")] = future.result()
+                sub_results[_sub_key(sub, sub.get("idx", 0))] = future.result()
             except Exception as e:
                 print(f"[!] Подписка не загружена: {e}")
 
     excluded_total = 0
     for s in active_subs:
-        for l in sub_results.get(s.get("name", "Подписка"), []):
+        sub_key = _sub_key(s, s.get("idx", 0))
+        for l in sub_results.get(sub_key, []):
             if link_protocol(l) in excluded_protocols:
                 excluded_total += 1
                 continue
@@ -1229,6 +1243,7 @@ def _run():
             if fp not in seen:
                 seen.add(fp)
                 all_links.append(l)
+            link_sources.setdefault(fp, set()).add(sub_key)
 
     if excluded_total:
         print(f"[i] Исключено фильтром протоколов: {excluded_total}")
@@ -1351,6 +1366,11 @@ def _run():
                                      "success_count": len(delays), "name": name}
                     print(f"[ALIVE] {min_d:4d} ms | {name}")
                 else:
+                    # Фиксируем мёртвый узел с нулевой задержкой: иначе при
+                    # очистке в режиме добавления он выглядел бы как
+                    # непроверенный и навсегда оставался в секции.
+                    results[link] = {"delay": 0, "jitter": 0, "is_stable": False,
+                                     "success_count": 0, "name": name}
                     print(f"[DEAD ]         | {name}")
 
         print(f"\nОтобрано кандидатов для теста стабильности: {len(stage1_candidates)}")
@@ -1490,14 +1510,30 @@ def _run():
         existing_links = existing_by_section.get(sec)
         if existing_links is None:
             existing_links = read_section_links(sec)
+        original_links = list(existing_links)
+
+        # В индивидуальном режиме секция может брать новые узлы только из
+        # выбранных подписок. Пустой список означает «все подписки».
+        section_pool = list(best)
+        selected_subs = section_subs.get(sec) or set()
+        if selected_subs:
+            section_pool = [
+                l for l in best
+                if link_sources.get(link_fingerprint(l), set()) & selected_subs
+            ]
+            if not section_pool:
+                print(f"[!] Секция '{sec}': по выбранным подпискам нет живых узлов — пропускаем.")
+                section_reports.append(
+                    f"  ▫️ <b>{html.escape(sec)}</b>: нет узлов из выбранных подписок "
+                    "(без изменений)")
+                continue
 
         section_limit = section_limits.get(sec, 0)
-        section_best = best[:section_limit] if section_limit > 0 else list(best)
         if section_limit > 0:
-            print(f"Секция '{sec}': лимит Топ-{section_limit} (кандидатов {len(best)}).")
+            print(f"Секция '{sec}': лимит Топ-{section_limit} (кандидатов {len(section_pool)}).")
 
         if mode == "append":
-            merged = list(existing_links)
+            merged = list(original_links)
             pruned_dead = 0
             if section_prune.get(sec):
                 kept = []
@@ -1512,25 +1548,48 @@ def _run():
 
             existing_fps = {link_fingerprint(x) for x in merged}
             added = 0
-            for idx_b, b in enumerate(section_best):
-                if link_fingerprint(b) not in existing_fps:
-                    merged.append(_prepare_link(b, results, idx_b))
-                    existing_fps.add(link_fingerprint(b))
-                    added += 1
+            # Топ-N в режиме добавления — это N именно новых узлов,
+            # уже установленные узлы лимит не расходуют.
+            for idx_b, b in enumerate(section_pool):
+                if section_limit > 0 and added >= section_limit:
+                    break
+                fp = link_fingerprint(b)
+                if fp in existing_fps:
+                    continue
+                merged.append(_prepare_link(b, results, idx_b))
+                existing_fps.add(fp)
+                added += 1
+
+            if not merged:
+                # Не оставляем секцию пустой: лучше сохранить прежний список,
+                # чем сломать Podkop.
+                print(f"[!] Секция '{sec}': итоговый список пуст — оставляем без изменений.")
+                section_reports.append(
+                    f"  ▫️ <b>{html.escape(sec)}</b>: пропущена (не осталось живых узлов)")
+                continue
+
             target_links = merged
-            before_cnt = len(existing_links)
+            before_cnt = len(original_links)
             after_cnt = len(target_links)
             report = f"  ▫️ <b>{html.escape(sec)}</b>: добавлено +{added} новых"
             if pruned_dead:
                 report += f", удалено мёртвых -{pruned_dead}"
             report += f" (было {before_cnt} → стало {after_cnt})"
         else:
-            target_links = [_prepare_link(b, results, idx_b) for idx_b, b in enumerate(section_best)]
-            before_cnt = len(existing_links)
+            section_best = (section_pool[:section_limit]
+                            if section_limit > 0 else section_pool)
+            target_links = [_prepare_link(b, results, idx_b)
+                            for idx_b, b in enumerate(section_best)]
+            if not target_links:
+                print(f"[!] Секция '{sec}': итоговый список пуст — оставляем без изменений.")
+                section_reports.append(
+                    f"  ▫️ <b>{html.escape(sec)}</b>: пропущена (нет узлов)")
+                continue
+            before_cnt = len(original_links)
             after_cnt = len(target_links)
             report = f"  ▫️ <b>{html.escape(sec)}</b>: полная замена (было {before_cnt} -> стало {after_cnt})"
 
-        if _link_set(target_links) == _link_set(existing_links):
+        if _link_set(target_links) == _link_set(original_links):
             print(f"Секция '{sec}': без изменений ({after_cnt} узлов).")
             section_reports.append(f"  ▫️ <b>{html.escape(sec)}</b>: без изменений ({after_cnt})")
             continue
@@ -1538,9 +1597,10 @@ def _run():
         print(f"Секция '{sec}': запись {after_cnt} узлов (было {before_cnt}).")
         # Запоминаем ручной выбор до перезаписи: после замены списка теги
         # сдвинутся, и старый `sec-N-out` будет указывать на другой сервер.
+        # Используем исходный список: индексы мёртвых узлов уже сдвинуты после фильтрации.
         if selection_proxies is None:
             selection_proxies = get_podkop_proxies()
-        sel_mode, sel_link = capture_selection(sec, existing_links,
+        sel_mode, sel_link = capture_selection(sec, original_links,
                                                selection_proxies)
         if not _write_section_links(sec, target_links):
             write_failed = True

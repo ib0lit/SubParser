@@ -99,6 +99,15 @@ def get_uci_list(opt):
     return [item for item in raw.replace(",", " ").split() if item]
 
 
+def get_section_subscriptions(section):
+    """UCI-секции подписок, выбранные как источники для секции Podkop.
+
+    Пустой список означает «все активные подписки» и сохраняет прежнее
+    поведение парсера.
+    """
+    return get_uci_list(f"sec_subs_{section}")
+
+
 def set_uci_list(opt, values):
     """Полностью заменяет UCI-список значений."""
     try:

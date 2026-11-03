@@ -97,6 +97,30 @@ print(json.dumps(ordered, ensure_ascii=False))
 '
         ;;
 
+    get_subscriptions)
+        # Список подписок для выбора источников в LuCI.
+        python3 - <<'PYEOF'
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib")
+try:
+    from subparser.subs import get_subscriptions
+    subs = get_subscriptions()
+except Exception:
+    subs = []
+
+print(json.dumps([
+    {
+        "sec_name": s.get("sec_name", ""),
+        "name": s.get("name") or s.get("sec_name", ""),
+        "enabled": str(s.get("enabled", "1")),
+    }
+    for s in subs if s.get("sec_name")
+], ensure_ascii=False))
+PYEOF
+        ;;
+
     get_github_releases)
         # Список GitHub Releases для выбора версии в LuCI.
         python3 - <<'PYEOF'
