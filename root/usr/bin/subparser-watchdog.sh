@@ -68,6 +68,9 @@ EMERGENCY=$(cfg watchdog_emergency 1)
 NOTIFY_RECOVERY=$(cfg watchdog_notify_recovery 1)
 SUB_LIMITS=$(cfg watchdog_sub_limits 1)
 TEST_URL_RAW=$(cfg watchdog_test_url "https://www.gstatic.com/generate_204")
+SERVICES=$(uci -q get subparser.settings.watchdog_services)
+SERVICE_COOLDOWN=$(num "$(cfg watchdog_service_cooldown 10)" 10 1 1440)
+SERVICE_NOTIFY=$(cfg watchdog_service_notify 1)
 
 # Парсер или синхронизация уже работают — не вмешиваемся. Проверяем именно
 # flock, а не факт существования файла (файл остаётся после завершения).
@@ -259,6 +262,233 @@ api_get() {
     fi
 }
 
+# --- Точечная проверка сервисов ------------------------------------------------
+# Пользователь задаёт список HTTPS-адресов. Сначала проверяется активный узел.
+# При сбое принудительно перепроверяется urltest-группа. Если сервис не ожил,
+# на следующем цикле (и не чаще кулдауна) все узлы секции проверяются уже по
+# адресу самого сервиса: sing-box сохраняет эти замеры в историю URLTest и
+# может выбрать узел, который реально открывает сервис.
+check_services() {
+    [ -n "$SERVICES" ] || return 0
+    [ -n "$HEALTHY_SECTIONS" ] || return 0
+    API_BASE="$API_BASE" API_SECRET="$API_SECRET" \
+    SECTIONS="$HEALTHY_SECTIONS" SERVICES="$SERVICES" \
+    TEST_TIMEOUT="$TEST_TIMEOUT" HTTP_TIMEOUT="$HTTP_TIMEOUT" \
+    GROUP_TIMEOUT="$GROUP_TIMEOUT" GROUP_RETRY="$GROUP_RETRY" \
+    COOLDOWN="$SERVICE_COOLDOWN" MAX_RUN="$MAX_RUN" \
+    DO_NOTIFY="$SERVICE_NOTIFY" TOKEN="$TOKEN" CHAT_ID="$CHAT_ID" \
+    python3 - <<'PYEOF'
+import html
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+
+API_BASE = os.environ.get("API_BASE", "").rstrip("/")
+API_SECRET = os.environ.get("API_SECRET", "")
+SECTIONS = [s for s in os.environ.get("SECTIONS", "").split() if s]
+SERVICES = [s for s in os.environ.get("SERVICES", "").split() if s]
+TEST_TIMEOUT = int(os.environ.get("TEST_TIMEOUT", "4000") or 4000)
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "8") or 8)
+GROUP_TIMEOUT = int(os.environ.get("GROUP_TIMEOUT", "3000") or 3000)
+GROUP_RETRY = int(os.environ.get("GROUP_RETRY", "3") or 0)
+COOLDOWN = int(os.environ.get("COOLDOWN", "10") or 10) * 60
+MAX_RUN = int(os.environ.get("MAX_RUN", "600") or 600)
+DO_NOTIFY = os.environ.get("DO_NOTIFY", "1") == "1"
+TOKEN = os.environ.get("TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
+STATE_FILE = "/tmp/subparser_service.state"
+START = time.time()
+
+if not API_BASE or not SECTIONS or not SERVICES:
+    raise SystemExit(0)
+
+try:
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        state = json.load(f)
+    if not isinstance(state, dict):
+        state = {}
+except Exception:
+    state = {}
+
+
+def save_state():
+    try:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, STATE_FILE)
+    except Exception:
+        pass
+
+
+def api(path, timeout=None):
+    if timeout is None:
+        timeout = HTTP_TIMEOUT
+    req = urllib.request.Request(API_BASE + path)
+    if API_SECRET:
+        req.add_header("Authorization", "Bearer " + API_SECRET)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def quote(value):
+    return urllib.parse.quote(str(value), safe="")
+
+
+def probe(tag, service):
+    data = api("/proxies/%s/delay?url=%s&timeout=%d"
+               % (quote(tag), quote(service), TEST_TIMEOUT), HTTP_TIMEOUT + 2)
+    if not isinstance(data, dict):
+        return None
+    delay = data.get("delay")
+    return delay if isinstance(delay, int) and delay > 0 else None
+
+
+def selected(tag):
+    data = api("/proxies/" + quote(tag))
+    if not isinstance(data, dict):
+        return None
+    return data.get("now")
+
+
+def resolve_group(proxies, section):
+    tag = section + "-urltest-out"
+    data = proxies.get(tag)
+    if isinstance(data, dict) and str(data.get("type", "")).lower() == "urltest":
+        return tag, data
+    for key, value in proxies.items():
+        if section in key and isinstance(value, dict) and \
+                str(value.get("type", "")).lower() == "urltest":
+            return key, value
+    return None, None
+
+
+def notify(key, text):
+    if not DO_NOTIFY or not TOKEN or not CHAT_ID:
+        return
+    now = time.time()
+    if now - state.get(key, {}).get("last_notify", 0) < COOLDOWN:
+        return
+    state.setdefault(key, {})["last_notify"] = int(now)
+    data = urllib.parse.urlencode({
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.telegram.org/bot%s/sendMessage" % TOKEN, data=data)
+    try:
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception:
+        pass
+
+
+def deep_probe(section, service, deadline):
+    """Проверяет все узлы секции по адресу сервиса."""
+    data = api("/proxies")
+    if not isinstance(data, dict):
+        return False
+    proxies = data.get("proxies", {})
+    tag, group = resolve_group(proxies, section)
+    if not tag:
+        return False
+    for node in group.get("all", []):
+        if node == tag:
+            continue
+        if time.time() > deadline:
+            return False
+        probe(node, service)
+    return True
+
+
+def short_name(tag):
+    return html.escape(str(tag or "?"))
+
+
+deadline = START + max(60, int(MAX_RUN * 0.8))
+for section in SECTIONS:
+    data = api("/proxies")
+    if not isinstance(data, dict):
+        continue
+    tag, group = resolve_group(data.get("proxies", {}), section)
+    if not tag:
+        continue
+
+    for service in SERVICES:
+        if service.lower().startswith("http://"):
+            # Clash API принудительно игнорирует HTTP-адреса.
+            continue
+        key = "%s|%s" % (section, service)
+        st = state.setdefault(key, {})
+        fails = int(st.get("fails", 0) or 0)
+
+        delay = probe(tag, service)
+        if delay:
+            if fails >= 2:
+                notify(key,
+                       "✅ <b>Сервис снова доступен</b>\n"
+                       "Секция <b>%s</b>: <code>%s</code>"
+                       % (html.escape(section), html.escape(service)))
+            st["fails"] = 0
+            continue
+
+        fails += 1
+        st["fails"] = fails
+
+        # Этап 1: дешёвая принудительная проверка всей urltest-группы.
+        before = selected(tag)
+        api("/group/%s/delay?url=%s&timeout=%d"
+            % (quote(tag), quote(service), GROUP_TIMEOUT), HTTP_TIMEOUT + 2)
+        if GROUP_RETRY > 0:
+            time.sleep(GROUP_RETRY)
+        after = selected(tag)
+        if probe(tag, service):
+            st["fails"] = 0
+            if before and after and before != after:
+                notify(key,
+                       "🔁 <b>URLTest переключил узел</b>\n"
+                       "Секция <b>%s</b>: <code>%s</code> → <code>%s</code>\n"
+                       "Причина: недоступен <code>%s</code>"
+                       % (html.escape(section), short_name(before),
+                          short_name(after), html.escape(service)))
+            continue
+
+        # Этап 2: только со второго сбоя и не чаще кулдауна — проверяем все
+        # узлы по адресу сервиса, чтобы URLTest выбрал подходящий.
+        if fails < 2:
+            continue
+        now = time.time()
+        if now - float(st.get("last_deep", 0) or 0) < COOLDOWN:
+            continue
+        st["last_deep"] = int(now)
+
+        before = selected(tag)
+        deep_probe(section, service, deadline)
+        after = selected(tag)
+        if probe(tag, service):
+            st["fails"] = 0
+            notify(key,
+                   "🔁 <b>URLTest выбрал узел по сервису</b>\n"
+                   "Секция <b>%s</b>: <code>%s</code> → <code>%s</code>\n"
+                   "Сервис: <code>%s</code>"
+                   % (html.escape(section), short_name(before),
+                      short_name(after), html.escape(service)))
+        else:
+            notify(key,
+                   "⚠️ <b>Сервис недоступен</b>\n"
+                   "Секция <b>%s</b>: <code>%s</code>\n"
+                   "Ни один проверенный узел не открыл адрес."
+                   % (html.escape(section), html.escape(service)))
+
+save_state()
+PYEOF
+}
+
 if ! api_get "/proxies" 3 | grep -q '"proxies"'; then
     # API может быть недоступен при живом sing-box — не считаем это аварией.
     exit 0
@@ -321,6 +551,10 @@ for SEC in $SECTION_LIST; do
 done
 
 [ "$ABORTED" = "1" ] && exit 0
+
+# Точечные проверки сервисов не влияют на признание секции мёртвой: они лишь
+# заставляют URLTest перепроверить узлы и при необходимости сменить активный.
+check_services
 
 # Все секции живы. О восстановлении сообщаем только если авария была
 # подтверждена и watchdog уже запускал экстренный отбор узлов: одиночный

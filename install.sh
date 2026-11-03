@@ -300,6 +300,8 @@ else
     set_default_uci "watchdog_group_retry" "3"
     set_default_uci "watchdog_max_run" "600"
     set_default_uci "watchdog_test_url" "https://www.gstatic.com/generate_204"
+    set_default_uci "watchdog_service_cooldown" "10"
+    set_default_uci "watchdog_service_notify" "1"
     set_default_uci "watchdog_restart_podkop" "1"
     set_default_uci "watchdog_emergency" "1"
     set_default_uci "watchdog_notify_recovery" "1"
