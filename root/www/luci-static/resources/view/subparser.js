@@ -580,11 +580,11 @@ return view.extend({
         o.depends('watchdog_service_enabled', '1');
         o.description = _('Сколько проверок подряд должны завершиться ошибкой, прежде чем считать сервис недоступным. Значение 2 защищает от одиночных таймаутов.');
 
-        o = s.taboption('services', form.Value, 'watchdog_service_cooldown', _('Кулдаун между переключениями (минут)'));
+        o = s.taboption('services', form.Value, 'watchdog_service_cooldown', _('Кулдаун между уведомлениями (минут)'));
         o.datatype = 'range(1, 1440)';
-        o.default = '10';
+        o.default = '30';
         o.depends('watchdog_service_enabled', '1');
-        o.description = _('Не повторять переключение и уведомление по тому же сервису чаще указанного времени. Защищает от серии тяжёлых переборов узлов.');
+        o.description = _('В течение этого времени новые события по тому же сервису не отправляются отдельным сообщением, а обновляют предыдущее. После окончания окна бот пришлёт новое сообщение. Переключения узлов не ограничиваются.');
 
         o = s.taboption('services', form.Flag, 'watchdog_service_manual_switch', _('Переключать узел при ручном выборе'));
         o.default = '1';

@@ -299,24 +299,62 @@ def log(message):
         pass
 
 
-def notify(message):
-    if not cfg_bool("watchdog_service_notify", True):
-        return
+def _tg_call(method, payload, timeout=8):
+    """Вызов Telegram Bot API. Возвращает result или None при ошибке."""
     token = cfg("tg_bot_token", "")
     chat_id = cfg("tg_chat_id", "")
     if not token or not chat_id:
-        return
-    data = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-    }).encode("utf-8")
+        return None
+    data = dict(payload)
+    data["chat_id"] = chat_id
+    data["parse_mode"] = "HTML"
+    body = urllib.parse.urlencode(data).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.telegram.org/bot%s/sendMessage" % token, data=data)
+        "https://api.telegram.org/bot%s/%s" % (token, method), data=body)
     try:
-        urllib.request.urlopen(req, timeout=8).read()
+        raw = urllib.request.urlopen(req, timeout=timeout).read()
+        result = json.loads(raw.decode("utf-8"))
+        if result.get("ok"):
+            return result.get("result") or {}
+        return None
+    except urllib.error.HTTPError as exc:
+        # Повторное редактирование без изменений Telegram считает ошибкой.
+        try:
+            result = json.loads(exc.read().decode("utf-8"))
+            if "not modified" in str(result.get("description", "")).lower():
+                return {}
+        except Exception:
+            pass
+        return None
     except Exception:
-        pass
+        return None
+
+
+def notify(st, message, cooldown):
+    """Уведомление с окном обновления одного сообщения.
+
+    Пока не истёк кулдаун, новое событие редактирует прошлое сообщение.
+    После окна отправляется отдельное сообщение. Переключения узлов
+    этим окном не ограничиваются.
+    """
+    if not cfg_bool("watchdog_service_notify", True):
+        return
+    now = int(time.time())
+    message_id = st.get("tg_message_id")
+    sent_at = int(st.get("tg_sent_at", 0) or 0)
+    if message_id and now - sent_at < cooldown:
+        edited = message + "\n\n🕒 Обновлено: %s" % \
+            time.strftime("%d.%m %H:%M:%S", time.localtime(now))
+        if _tg_call("editMessageText", {
+                "message_id": message_id, "text": edited}) is not None:
+            st["tg_edited_at"] = now
+            return
+        # Сообщение удалено или слишком старое — отправим новое.
+    result = _tg_call("sendMessage", {"text": message})
+    if isinstance(result, dict) and result.get("message_id"):
+        st["tg_message_id"] = result["message_id"]
+        st["tg_sent_at"] = now
+        st["tg_edited_at"] = 0
 
 
 # --- Трафик WAN ---------------------------------------------------------------
@@ -434,7 +472,7 @@ def load_sections():
 def run_cycle(targets, state):
     timeout_ms = cfg_num("watchdog_service_timeout", 8000, 1000, 30000)
     threshold = cfg_num("watchdog_service_fail_threshold", 2, 1, 5)
-    cooldown = cfg_num("watchdog_service_cooldown", 10, 1, 1440) * 60
+    cooldown = cfg_num("watchdog_service_cooldown", 30, 1, 1440) * 60
     group_retry = cfg_num("watchdog_group_retry", 3, 0, 60)
     manual_switch = cfg_bool("watchdog_service_manual_switch", True)
 
@@ -470,11 +508,6 @@ def run_cycle(targets, state):
             if fails < threshold:
                 continue
 
-            now = int(time.time())
-            if now - int(st.get("last_action", 0) or 0) < cooldown:
-                continue
-            st["last_action"] = now
-
             if info["mode"] == "manual" and manual_switch:
                 switched = switch_to_best(proxies, section, info, target,
                                           timeout_ms)
@@ -483,14 +516,14 @@ def run_cycle(targets, state):
                     log("MANUAL SWITCH %s / %s -> %s (%sms)"
                         % (section, target["label"], switched["node"],
                            switched["delay"]))
-                    notify("🔁 <b>Сервис недоступен, узел переключён</b>\n"
+                    notify(st, "🔁 <b>Сервис недоступен, узел переключён</b>\n"
                            "Секция <b>%s</b>: <code>%s</code>\n"
                            "Узел: <code>%s</code> → <code>%s</code> (%s ms)"
                            % (html.escape(section),
                               html.escape(target["label"]),
                               html.escape(str(info["label"])),
                               html.escape(str(switched["node"])),
-                              switched["delay"]))
+                              switched["delay"]), cooldown)
                     # Следующие цели должны проверяться уже через новый узел.
                     status3, data3 = api("/proxies", timeout=5)
                     if status3 in (200, 204) and isinstance(data3, dict):
@@ -499,21 +532,21 @@ def run_cycle(targets, state):
                         proxies = fresh
                 else:
                     st["notified"] = True
-                    notify("⚠️ <b>Сервис недоступен</b>\n"
+                    notify(st, "⚠️ <b>Сервис недоступен</b>\n"
                            "Секция <b>%s</b>: <code>%s</code>\n"
                            "Ни один узел не открыл адрес."
                            % (html.escape(section),
-                              html.escape(target["label"])))
+                              html.escape(target["label"])), cooldown)
                 continue
 
             group_tag, group = find_group(proxies, section)
             if not group_tag:
                 st["notified"] = True
-                notify("⚠️ <b>Сервис недоступен</b>\n"
+                notify(st, "⚠️ <b>Сервис недоступен</b>\n"
                        "Секция <b>%s</b>: <code>%s</code>\n"
                        "Не найдена URLTest-группа для перепроверки."
                        % (html.escape(section),
-                          html.escape(target["label"])))
+                          html.escape(target["label"])), cooldown)
                 continue
 
             before = str(group.get("now") or info["label"])
@@ -530,18 +563,20 @@ def run_cycle(targets, state):
                         _, group2 = find_group(data2.get("proxies", {}), section)
                         after = str((group2 or {}).get("now") or info2["label"])
                         st["notified"] = True
-                        notify("🔁 <b>URLTest переключил узел</b>\n"
+                        notify(st, "🔁 <b>URLTest переключил узел</b>\n"
                                "Секция <b>%s</b>: <code>%s</code>\n"
                                "Узел: <code>%s</code> → <code>%s</code>"
                                % (html.escape(section),
                                   html.escape(target["label"]),
-                                  html.escape(before), html.escape(after)))
+                                  html.escape(before), html.escape(after)),
+                               cooldown)
                         continue
             st["notified"] = True
-            notify("⚠️ <b>Сервис недоступен</b>\n"
+            notify(st, "⚠️ <b>Сервис недоступен</b>\n"
                    "Секция <b>%s</b>: <code>%s</code>\n"
                    "URLTest перепроверен, рабочий узел не найден."
-                   % (html.escape(section), html.escape(target["label"])))
+                   % (html.escape(section), html.escape(target["label"])),
+                   cooldown)
 
 
 # --- Диагностика --------------------------------------------------------------

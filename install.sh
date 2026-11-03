@@ -306,7 +306,7 @@ else
     set_default_uci "watchdog_service_traffic_kb" "20"
     set_default_uci "watchdog_service_timeout" "8000"
     set_default_uci "watchdog_service_fail_threshold" "2"
-    set_default_uci "watchdog_service_cooldown" "10"
+    set_default_uci "watchdog_service_cooldown" "30"
     set_default_uci "watchdog_service_manual_switch" "1"
     set_default_uci "watchdog_service_notify" "1"
     set_default_uci "watchdog_service_meta" "0"
