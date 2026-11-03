@@ -683,6 +683,21 @@ def main():
                         t, kb = get_parser_menu_screen()
                         edit_msg(token, chat_id, msg_id, t, kb)
 
+                    elif data.startswith("set_limit:"):
+                        new_lim = data.split(":", 1)[1]
+                        set_uci_val("per_section_config", "0")
+                        set_uci_val("max_best_nodes", new_lim)
+                        badge_txt = "Без лимита" if new_lim == "0" else f"Топ-{new_lim}"
+                        answer_callback(token, cb_id, f"Лимит узлов: {badge_txt}")
+                        t, kb = get_parser_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
+                    elif data == "set_per_sec":
+                        set_uci_val("per_section_config", "1")
+                        answer_callback(token, cb_id, "Индивидуальные лимиты включены")
+                        t, kb = get_parser_menu_screen()
+                        edit_msg(token, chat_id, msg_id, t, kb)
+
                     elif data == "disable_per_sec":
                         set_uci_val("per_section_config", "0")
                         answer_callback(token, cb_id, "Индивидуальные лимиты выключены")
