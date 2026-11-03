@@ -1294,46 +1294,84 @@ def get_update_screen():
 def get_releases_screen():
     from .releases import get_releases
     local_pkg, local_core, local_release = _installed_versions()
-    try:
-        releases = get_releases(20)
-    except Exception:
-        text = (
-            "❌ <b>Не удалось получить список релизов</b>\n\n"
-            "Проверьте сеть на роутере или повторите позже."
-        )
-        kb = {"inline_keyboard": [
+
+    def _error_screen():
+        screen = RichScreen()
+        screen.h("❌ Не удалось получить список релизов")
+        screen.quote("Проверьте сеть на роутере или повторите позже.")
+        screen.button_row([
+            {"type": "callback_data", "text": "🔄 Повторить", "data": "check_releases", "style": "primary"},
+        ])
+        screen.button_row([
+            {"type": "callback_data", "text": "◀ Проверить обновления ветки",
+             "data": "check_update", "style": "link"},
+            {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
+        ])
+        return screen.build(), {"inline_keyboard": [
             [{"text": "🔄 Повторить", "callback_data": "check_releases"}],
             [{"text": "◀ Проверить обновления ветки", "callback_data": "check_update"}],
             [{"text": "◀ Главное меню", "callback_data": "home"}],
         ]}
-        return text, kb
 
-    lines = [
-        "📦 <b>Версии SubParser из GitHub Releases</b>\n",
-        f"• Установлено: <code>v{html.escape(local_pkg)}</code> (ядро <code>v{html.escape(local_core)}</code>)",
+    try:
+        releases = get_releases(20)
+    except Exception:
+        return _error_screen()
+
+    screen = RichScreen()
+    screen.h("📦 Версии SubParser из GitHub Releases")
+    info_rows = [
+        ("📦 Установлено", f"<code>v{esc(local_pkg)}</code>"),
+        ("🧩 Ядро", f"<code>v{esc(local_core)}</code>"),
     ]
     if local_release:
-        lines.append(f"• Тег релиза: <code>{html.escape(local_release)}</code>")
-    lines.append("")
-    lines.append("Выберите версию для установки или обновления:")
+        info_rows.append(("🔖 Тег релиза", f"<code>{esc(local_release)}</code>"))
+    screen.kv(info_rows)
+    screen.p("Выберите версию для установки или обновления:")
 
     kb_rows = []
+    table_rows = []
+    release_buttons = []
     for release in releases[:8]:
         tag = release.get("tag", "")
         name = release.get("name") or tag
-        suffix = " · pre-release" if release.get("prerelease") else ""
+        state = "pre-release" if release.get("prerelease") else "stable"
         mark = _release_mark(release, local_pkg)
-        lines.append(f"{mark} <code>{html.escape(tag)}</code>{suffix} — {html.escape(name)}")
+        table_rows.append([
+            mark,
+            f"<code>{esc(tag)}</code>",
+            esc(name),
+            state,
+        ])
         label = f"{mark} {tag}" + (" (beta)" if release.get("prerelease") else "")
         kb_rows.append([{"text": label[:64], "callback_data": f"rel_pick:{tag}"}])
+        release_buttons.append([
+            {"type": "callback_data", "text": label[:64], "data": f"rel_pick:{tag}",
+             "style": "primary" if mark == "✅" else "link"},
+        ])
 
-    if not releases:
-        lines.append("Релизов пока нет.")
+    if releases:
+        screen.table(["", "Тег", "Название", "Статус"], table_rows,
+                     caption="Доступные релизы")
+        for row in release_buttons:
+            screen.button_row(row)
+    else:
+        screen.p("Релизов пока нет.")
+
+    screen.button_row([
+        {"type": "callback_data", "text": "🌿 Обновления из ветки main",
+         "data": "use_branch", "style": "primary"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "◀ Проверить обновления ветки",
+         "data": "check_update", "style": "link"},
+        {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
+    ])
 
     kb_rows.append([{"text": "🌿 Обновления из ветки main", "callback_data": "use_branch"}])
     kb_rows.append([{"text": "◀ Проверить обновления ветки", "callback_data": "check_update"}])
     kb_rows.append([{"text": "◀ Главное меню", "callback_data": "home"}])
-    return "\n".join(lines), {"inline_keyboard": kb_rows}
+    return screen.build(), {"inline_keyboard": kb_rows}
 
 
 def get_release_confirm_screen(tag):
@@ -1343,43 +1381,57 @@ def get_release_confirm_screen(tag):
         selected = normalize_tag(tag)
         release = get_release(selected)
     except Exception:
-        return (
-            "❌ <b>Не удалось загрузить выбранный релиз</b>\n\n"
-            "Возможно, он удалён или GitHub временно недоступен.",
-            {"inline_keyboard": [
-                [{"text": "📦 К списку релизов", "callback_data": "check_releases"}],
-                [{"text": "◀ Главное меню", "callback_data": "home"}],
-            ]}
-        )
+        screen = RichScreen()
+        screen.h("❌ Не удалось загрузить выбранный релиз")
+        screen.quote("Возможно, он удалён или GitHub временно недоступен.")
+        screen.button_row([
+            {"type": "callback_data", "text": "📦 К списку релизов",
+             "data": "check_releases", "style": "primary"},
+            {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
+        ])
+        return screen.build(), {"inline_keyboard": [
+            [{"text": "📦 К списку релизов", "callback_data": "check_releases"}],
+            [{"text": "◀ Главное меню", "callback_data": "home"}],
+        ]}
 
     actual_tag = release.get("tag", tag)
     version = release.get("version", actual_tag.lstrip("v"))
     published = (release.get("published_at") or "")[:10]
     body = (release.get("body") or "").strip()
-    body_html = html.escape(body[:1800]) if body else "Описание не указано."
+    body_plain = html.escape(body[:1800]) if body else "Описание не указано."
+    body_rich = body_plain.replace("\n", "<br/>")
     state = "pre-release" if release.get("prerelease") else "stable"
     already = version == local_pkg or actual_tag == local_pkg or actual_tag == _local_release
 
-    text = (
-        f"📦 <b>Релиз {html.escape(actual_tag)}</b>\n\n"
-        f"• Название: {html.escape(release.get('name') or actual_tag)}\n"
-        f"• Статус: <code>{state}</code>\n"
-    )
+    screen = RichScreen()
+    screen.h(f"📦 Релиз {esc(actual_tag)}")
+    rows = [
+        ("🏷 Название", esc(release.get("name") or actual_tag)),
+        ("📌 Статус", f"<code>{state}</code>"),
+    ]
     if published:
-        text += f"• Опубликован: <code>{html.escape(published)}</code>\n"
-    text += (
-        f"• Сейчас установлено: <code>v{html.escape(local_pkg)}</code>"
-        f" (ядро <code>v{html.escape(local_core)}</code>)\n\n"
-        f"📝 <b>Описание релиза:</b>\n<i>{body_html}</i>\n\n"
-    )
+        rows.append(("📅 Опубликован", f"<code>{esc(published)}</code>"))
+    rows.append(("📦 Сейчас установлено",
+                 f"<code>v{esc(local_pkg)}</code> · ядро <code>v{esc(local_core)}</code>"))
+    screen.kv(rows)
+    screen.details("📝 Описание релиза", f"<p>{body_rich}</p>", f"<i>{body_plain}</i>", open=True)
     if already:
-        text += "ℹ️ Эта версия уже установлена. Установка перезапишет файлы сервиса."
+        screen.quote("ℹ️ Эта версия уже установлена. Установка перезапишет файлы сервиса.")
     else:
-        text += "⚠️ Будут обновлены файлы сервиса. Подписки, настройки и токен бота сохранятся."
+        screen.quote("⚠️ Будут обновлены файлы сервиса. Подписки, настройки и токен бота сохранятся.")
+    screen.button_row([
+        {"type": "callback_data", "text": f"🚀 Установить {actual_tag}"[:64],
+         "data": f"rel_do:{actual_tag}", "style": "success"},
+    ])
+    screen.button_row([
+        {"type": "callback_data", "text": "📦 К списку релизов",
+         "data": "check_releases", "style": "link"},
+        {"type": "callback_data", "text": "◀ Главное меню", "data": "home", "style": "link"},
+    ])
 
     kb = {"inline_keyboard": [
         [{"text": f"🚀 Установить {actual_tag}"[:64], "callback_data": f"rel_do:{actual_tag}"}],
         [{"text": "📦 К списку релизов", "callback_data": "check_releases"}],
         [{"text": "◀ Главное меню", "callback_data": "home"}],
     ]}
-    return text, kb
+    return screen.build(), kb
