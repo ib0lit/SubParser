@@ -12,10 +12,14 @@ telegram.lst, youtube.lst, discord.lst, tiktok.lst). Для Steam и Twitch
 
 SERVICE_PRESETS = {
     "meta": {
-        "label": "Instagram / Meta",
+        "label": "Instagram",
+        # Оба адреса обязательны: комментарии и медиа идут через API
+        # instagram.com, поэтому сбой Instagram не должен маскироваться
+        # доступностью другого сервиса.
+        "require_all": True,
         "urls": [
             "https://www.instagram.com/",
-            "https://www.facebook.com/",
+            "https://www.instagram.com/api/v1/media/0/comments/",
         ],
     },
     "telegram": {

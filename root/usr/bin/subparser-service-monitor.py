@@ -119,7 +119,7 @@ def probe_target(tag, target, timeout_ms):
     """Проверяет все URL сервиса. Успех — хотя бы один ответ."""
     urls = target.get("urls") or []
     results = []
-    delay = None
+    delays = []
     with ThreadPoolExecutor(max_workers=max(1, min(4, len(urls)))) as pool:
         futures = [pool.submit(probe, tag, url, timeout_ms) for url in urls]
         for url, future in zip(urls, futures):
@@ -128,9 +128,16 @@ def probe_target(tag, target, timeout_ms):
             except Exception:
                 value = None
             results.append({"url": url, "delay": value})
-            if value is not None and (delay is None or value < delay):
-                delay = value
-    return {"ok": delay is not None, "delay": delay, "urls": results}
+            if value is not None:
+                delays.append(value)
+    require_all = bool(target.get("require_all"))
+    if require_all:
+        ok = bool(urls) and len(delays) == len(urls)
+        delay = max(delays) if ok else None
+    else:
+        ok = bool(delays)
+        delay = min(delays) if delays else None
+    return {"ok": ok, "delay": delay, "urls": results}
 
 
 # --- Podkop/прокси ------------------------------------------------------------
@@ -388,6 +395,7 @@ def load_targets():
             "id": preset_id,
             "label": preset.get("label", preset_id),
             "urls": list(preset.get("urls") or []),
+            "require_all": bool(preset.get("require_all")),
         })
 
     manual = str(cfg("watchdog_services", "")).split()

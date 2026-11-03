@@ -511,7 +511,7 @@ return view.extend({
 
         // --- Мониторинг сервисов -------------------------------------------------
         var servicePresets = [
-            { id: 'meta', label: 'Instagram / Meta', hint: 'instagram.com, facebook.com' },
+            { id: 'meta', label: 'Instagram', hint: 'сайт instagram.com и API комментариев', all: true },
             { id: 'telegram', label: 'Telegram', hint: 't.me, web.telegram.org' },
             { id: 'youtube', label: 'YouTube', hint: 'youtube.com, youtu.be' },
             { id: 'steam', label: 'Steam', hint: 'steampowered.com, steamcommunity.com' },
@@ -530,7 +530,7 @@ return view.extend({
                 E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Как работает мониторинг сервисов (нажмите, чтобы раскрыть)')),
                 E('div', { 'style': 'margin: 10px 0 0 10px; line-height: 1.5; cursor: default;' }, [
                     E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Проверки выполняются только при активном трафике по WAN. Если трафик стоит, запросы к сервисам не отправляются.')),
-                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Каждый сервис проверяется по нескольким HTTPS-адресам. Сервис считается доступным, если ответил хотя бы один из них.')),
+                    E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Каждый сервис проверяется по нескольким HTTPS-адресам. Обычно достаточно ответа хотя бы одного, но Instagram считается доступным только когда отвечают оба адреса — сайт и API комментариев.')),
                     E('p', { 'style': 'margin: 0 0 8px 0;' }, _('Сбой подтверждается после нескольких неудач подряд. Затем URLTest принудительно перепроверяется, а при ручном выборе монитор может переключить селектор на лучший узел по адресу сервиса.')),
                     E('p', { 'style': 'margin: 0; color: #ffb300;' }, _('Используйте только https:// — Clash API игнорирует HTTP-адреса. Проверка идёт HEAD-запросом через активный узел, поэтому любой HTTP-ответ считается успехом.'))
                 ])
@@ -547,7 +547,8 @@ return view.extend({
             f.default = '0';
             f.rmempty = false;
             f.depends('watchdog_service_enabled', '1');
-            f.description = _('Проверяемые адреса: ') + p.hint;
+            f.description = _('Проверяемые адреса: ') + p.hint +
+                (p.all ? ' ' + _('Сервис считается доступным только если отвечают оба адреса.') : '');
         });
 
         var svcManual = s.taboption('services', form.DynamicList, 'watchdog_services', _('Свои адреса для проверки'));
