@@ -312,7 +312,13 @@ def update_live_progress(step_title, step_desc):
     except Exception:
         pass
 
-def send_telegram_notify(text):
+def send_telegram_notify(text, rich_text=None):
+    """Отправляет отчёт: сначала rich-сообщение, при неудаче — обычный HTML.
+
+    rich_text — необязательный HTML для sendRichMessage (поддерживает
+    раскрываемый <details>). text — обычный HTML-вариант с <blockquote
+    expandable> для клиентов без поддержки rich-сообщений.
+    """
     try:
         token = subprocess.check_output(["uci", "-q", "get", f"{CONFIG_NAME}.settings.tg_bot_token"], text=True).strip()
         chat_id = subprocess.check_output(["uci", "-q", "get", f"{CONFIG_NAME}.settings.tg_chat_id"], text=True).strip()
@@ -324,6 +330,14 @@ def send_telegram_notify(text):
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode("utf-8")
 
+        rich_url = f"https://api.telegram.org/bot{token}/sendRichMessage"
+        rich_data = None
+        if rich_text and get_uci("tg_rich_messages", "1") == "1":
+            rich_data = json.dumps({
+                "chat_id": chat_id,
+                "rich_message": {"html": rich_text},
+            }).encode("utf-8")
+
         print("[*] Ожидание готовности сети для отправки отчета в Telegram...")
         time.sleep(4)
 
@@ -331,6 +345,24 @@ def send_telegram_notify(text):
         retry_delay = 10
 
         for attempt in range(1, max_attempts + 1):
+            if rich_data:
+                try:
+                    req = urllib.request.Request(
+                        rich_url, data=rich_data,
+                        headers={"Content-Type": "application/json",
+                                 "User-Agent": "OpenWrt-SubParser"})
+                    with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
+                        if resp.status == 200:
+                            print(f"[OK] Rich-отчет доставлен в Telegram (попытка {attempt}/{max_attempts}).")
+                            return
+                except Exception as rich_err:
+                    code = getattr(rich_err, "code", None)
+                    print(f"  [!] Rich-сообщение не доставлено ({rich_err}); отправляю обычный HTML.")
+                    # Постоянные ошибки клиента означают, что rich-режим
+                    # недоступен: дальше не тратим попытки на него.
+                    if code and 400 <= code < 500:
+                        rich_data = None
+
             try:
                 req = urllib.request.Request(url, data=data, headers={"User-Agent": "OpenWrt-SubParser"})
                 with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
@@ -1164,7 +1196,7 @@ def _node_name_from_link(link):
         return "узел"
 
 
-def _format_change_spoiler(change_details, results, max_total=40, max_per_list=10):
+def _format_change_details(change_details, results, max_total=40, max_per_list=10):
     blocks = []
     shown = 0
     hidden = 0
@@ -1755,12 +1787,18 @@ def _run():
                 sub_lines.append(f"• <b>{html.escape(str(sname))}</b>: {format_bytes(used)} / {format_bytes(tot)} (до {exp_str})")
         if sub_lines:
             msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
+    rich_msg = msg
     if change_details:
-        details = _format_change_spoiler(change_details, results)
+        details = _format_change_details(change_details, results)
         if details:
-            msg += ("\n\n<tg-spoiler>🧩 <b>Детали изменений</b>\n"
-                    f"{details}</tg-spoiler>")
-    send_telegram_notify(msg)
+            # Обычный HTML: раскрываемый blockquote, работает без rich API.
+            msg += ("\n\n<blockquote expandable>🧩 <b>Детали изменений</b>\n"
+                    f"{details}</blockquote>")
+            # Rich HTML: настоящий сворачиваемый блок <details>.
+            rich_details = details.replace("\n", "<br/>")
+            rich_msg += ("\n\n<details><summary>🧩 <b>Детали изменений</b></summary>"
+                         f"{rich_details}</details>")
+    send_telegram_notify(msg, rich_msg if rich_msg != msg else None)
 
 
 def main():
