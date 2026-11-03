@@ -119,6 +119,24 @@ def _section_limit_badge(section):
     return _limit_badge_from_mode(mode, get_uci_val(f"sec_limit_custom_{section}", "0"))
 
 
+def _limit_short(mode, custom_value="0"):
+    """Компактный лимит для таблиц: ∞ без ограничения, иначе число."""
+    value = _limit_value(mode, custom_value)
+    return "∞" if value <= 0 else str(value)
+
+
+def _global_limit_short():
+    return _limit_short(get_uci_val("max_best_nodes", "0"),
+                        get_uci_val("max_best_custom", "0"))
+
+
+def _section_limit_short(section):
+    mode = get_uci_val(f"sec_limit_{section}", "inherit")
+    if mode in ("", "inherit"):
+        return _global_limit_short()
+    return _limit_short(mode, get_uci_val(f"sec_limit_custom_{section}", "0"))
+
+
 def _section_prune_enabled(section):
     value = get_uci_val(f"sec_prune_dead_{section}", "inherit")
     if value == "1":
@@ -131,6 +149,8 @@ def _section_prune_enabled(section):
 def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
     threshold = get_uci_val("ping_threshold", "350")
     limit_badge = _global_limit_badge()
+    limit_short = _global_limit_short()
+    per_section_limits = ""
     prune_on = _global_prune_enabled()
     filter_ru = get_uci_val("filter_ru", "1")
     cron_int = get_uci_val("interval", "never")
@@ -170,11 +190,15 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
 
     if per_sec:
         sec_parts = []
+        limit_parts = []
         for s in all_secs:
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
             if s_en:
                 sec_parts.append(html.escape(s))
+                limit_parts.append(f"{html.escape(s)} {_section_limit_short(s)}")
         sections_str = ", ".join(sec_parts) if sec_parts else "Все выключены"
+        per_section_limits = ", ".join(limit_parts) if limit_parts else "Все выключены"
+        limit_badge = "Индивидуально"
     else:
         raw_targets = get_uci_val("target_section", "main").split()
         existing_valid = [s for s in raw_targets if s in all_secs]
@@ -186,11 +210,16 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
 
     screen = RichScreen()
     screen.h("⚙️ Параметры парсера SubParser")
-    screen.kv([
+    kv_rows = [
         ("📋 Подписок", f"<code>{subs_count} шт.</code>"),
         ("🎯 Секции Podkop", f"<code>{sections_str}</code>"),
         ("⚡️ Порог пинга", f"<code>{esc(threshold)} ms</code>"),
-        ("🔝 Лимит узлов", f"<code>{esc(limit_badge)}</code>"),
+    ]
+    if per_sec:
+        kv_rows.append(("🔝 Лимиты секций", f"<code>{per_section_limits}</code>"))
+    else:
+        kv_rows.append(("🔝 Лимит узлов", f"<code>{esc(limit_badge)}</code>"))
+    kv_rows.extend([
         ("🚮 Мёртвые при добавлении", "✅ удалять" if prune_on else "❌ оставлять"),
         ("⏰ Расписание", f"<code>{esc(cron_badge)}</code>"),
         ("🇷🇺 Фильтр RU", f"<code>{esc(ru_badge)}</code>"),
@@ -198,11 +227,12 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         ("🚫 Исключённые протоколы", f"<code>{esc(proto_badge)}</code>"),
         ("🔄 Состояние", "⏳ парсер выполняется" if _parser_running() else "💤 готов к запуску"),
     ])
+    screen.kv(kv_rows)
     if prompt_custom_ping:
-        screen.quote("✏️ <b>Введите желаемый пинг (например, 280) "
+        screen.quote("✏️ <b>Введите свой пинг (например, 280) "
                      "в ответном сообщении:</b>")
     elif prompt_custom_limit:
-        screen.quote("✏️ <b>Введите лимит Топ-N (например, 20). 0 — без ограничения:</b>")
+        screen.quote("✏️ <b>Введите свой лимит (например, 20). 0 — без ограничения:</b>")
     else:
         screen.p("Настройте параметры и запустите синхронизацию:")
 
@@ -216,11 +246,13 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
         {"type": "callback_data", "text": "500ms" + (" 🔘" if threshold == "500" else ""), "data": "th:500"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": "✏️ Задать свой пинг", "data": "ask_custom_th"},
-        {"type": "callback_data", "text": f"Лимит: {limit_badge}", "data": "cycle_limit"},
+        {"type": "callback_data", "text": "✏️ Свой пинг", "data": "ask_custom_th"},
+        {"type": "callback_data", "text": "✏️ Свой лимит", "data": "ask_custom_limit"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": "✏️ Свой Топ-N", "data": "ask_custom_limit"},
+        {"type": "callback_data",
+         "text": "🔝 Лимиты секций" if per_sec else f"🔝 Лимит: {limit_short}",
+         "data": "bot_sections_menu" if per_sec else "cycle_limit"},
         {"type": "callback_data", "text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}",
          "data": "toggle_prune_menu"},
     ])
@@ -255,11 +287,12 @@ def get_parser_menu_screen(prompt_custom_ping=False, prompt_custom_limit=False):
                 {"text": "500ms" + (" 🔘" if threshold == "500" else ""), "callback_data": "th:500"}
             ],
             [
-                {"text": "✏️ Задать свой пинг", "callback_data": "ask_custom_th"},
-                {"text": f"Лимит: {limit_badge}", "callback_data": "cycle_limit"}
+                {"text": "✏️ Свой пинг", "callback_data": "ask_custom_th"},
+                {"text": "✏️ Свой лимит", "callback_data": "ask_custom_limit"}
             ],
             [
-                {"text": "✏️ Свой Топ-N", "callback_data": "ask_custom_limit"},
+                {"text": "🔝 Лимиты секций" if per_sec else f"🔝 Лимит: {limit_short}",
+                 "callback_data": "bot_sections_menu" if per_sec else "cycle_limit"},
                 {"text": f"🚮 Мёртвые: {'вкл' if prune_on else 'выкл'}", "callback_data": "toggle_prune_menu"}
             ],
             [
@@ -495,7 +528,9 @@ def get_sections_menu_screen():
         keyboard.append([{"text": "Индивидуальный режим: ❌ ВЫКЛ", "callback_data": "toggle_per_sec"}])
         keyboard.append([
             {"text": f"Режим: {mode_label}", "callback_data": "toggle_glob_mode"},
-            {"text": f"Лимит: {_global_limit_badge()}", "callback_data": "cycle_limit_sections"},
+        ])
+        keyboard.append([
+            {"text": f"Лимит: {_global_limit_short()}", "callback_data": "cycle_limit_sections"},
         ])
         keyboard.append([
             {"text": f"🚮 Мёртвые: {'вкл' if _global_prune_enabled() else 'выкл'}",
@@ -531,25 +566,25 @@ def get_sections_menu_screen():
             s_en = get_uci_val(f"sec_en_{s}", "1") == "1"
             s_mode = get_uci_val(f"sec_mode_{s}", "replace")
             if not s_en:
-                badge, short = "❌ Отключена", "отключена"
+                short, icon = "отключена", "❌"
             elif s_mode == "replace":
-                badge, short = "🔄 Замена", "замена"
+                short, icon = "замена", "🔄"
             else:
-                badge, short = "➕ Добавление", "добавление"
-            limit_short = _section_limit_badge(s)
+                short, icon = "добавление", "➕"
+            limit_short = _section_limit_short(s)
             prune_short = "да" if _section_prune_enabled(s) else "нет"
             picked_subs = get_section_subscriptions(s)
             source_short = f"{len(picked_subs)}" if picked_subs else "все"
-            sec_rows.append((esc(s), badge, esc(limit_short), prune_short,
+            sec_rows.append((esc(s), icon, esc(limit_short), prune_short,
                              esc(source_short)))
             fallback_rows.append(
                 f"• <b>{esc(s)}:</b> {short}, лимит {limit_short}, "
                 f"мёртвые: {prune_short}, источники: {source_short}")
             keyboard.append([
-                {"text": f"{s}: {badge}", "callback_data": f"cycle_sec:{s}"},
-                {"text": f"⚙️ {s}", "callback_data": f"sec_screen:{s}"},
+                {"text": f"{icon} {s}", "callback_data": f"cycle_sec:{s}"},
+                {"text": "⚙️ Настроить", "callback_data": f"sec_screen:{s}"},
             ])
-        screen.table(["Секция", "Режим", "Лимит", "Мёртвые", "Источники"],
+        screen.table(["Секция", "", "Лимит", "Мёртвые", "Источники"],
                      sec_rows, fallback=fallback_rows)
 
     keyboard.append([{"text": "◀️ Назад в меню парсера", "callback_data": "parser_menu"}])
@@ -571,20 +606,26 @@ def get_section_settings_screen(section):
     else:
         limit_label = _limit_badge_from_mode(
             raw_limit, get_uci_val(f"sec_limit_custom_{section}", "0"))
+    limit_button = _section_limit_short(section)
     if raw_prune == "1":
         prune_label = "✅ удалять"
+        prune_button = "вкл"
     elif raw_prune == "0":
         prune_label = "❌ оставлять"
+        prune_button = "выкл"
     else:
         prune_label = f"Как глобально · {'вкл' if _global_prune_enabled() else 'выкл'}"
+        prune_button = "глоб."
     mode_label = "🔄 Замена" if s_mode == "replace" else "➕ Добавление"
 
     picked_subs = [k for k in get_section_subscriptions(section) if k]
     subs_count = len(get_subscriptions())
     if picked_subs:
         source_label = f"Выбрано: {len(picked_subs)} из {subs_count}"
+        source_button = f"{len(picked_subs)}/{subs_count}"
     else:
         source_label = f"Все активные ({subs_count})"
+        source_button = "все"
 
     screen = RichScreen()
     screen.h(f"⚙️ Секция {esc(section)}")
@@ -601,37 +642,37 @@ def get_section_settings_screen(section):
              "дополнительно проверяет текущие узлы секции и исключает неотвечающие. "
              "Источники определяют, из каких подписок брать новые узлы.")
     screen.button_row([
-        {"type": "callback_data", "text": f"📡 Секция: {'вкл' if s_en else 'выкл'}",
+        {"type": "callback_data", "text": f"📡 {'Вкл' if s_en else 'Выкл'}",
          "data": f"sec_toggle:{section}", "style": "primary" if s_en else "link"},
         {"type": "callback_data", "text": f"🧭 {mode_label}",
          "data": f"sec_cycle_mode:{section}"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": f"🔝 Лимит: {limit_label}",
+        {"type": "callback_data", "text": f"🔝 Лимит: {limit_button}",
          "data": f"sec_cycle_limit:{section}"},
-        {"type": "callback_data", "text": "✏️ Свой Топ-N",
+        {"type": "callback_data", "text": "✏️ Свой лимит",
          "data": f"sec_ask_limit:{section}"},
     ])
     screen.button_row([
-        {"type": "callback_data", "text": f"🚮 Мёртвые: {prune_label}",
+        {"type": "callback_data", "text": f"🚮 Мёртвые: {prune_button}",
          "data": f"sec_cycle_prune:{section}"},
-        {"type": "callback_data", "text": f"📥 Источники: {source_label}",
+        {"type": "callback_data", "text": f"📥 Источники: {source_button}",
          "data": f"sec_sources:{section}"},
     ])
     screen.button_row([
         {"type": "callback_data", "text": "◀️ К секциям", "data": "bot_sections_menu", "style": "link"},
-        {"type": "callback_data", "text": "◀️ В меню парсера", "data": "parser_menu", "style": "link"},
+        {"type": "callback_data", "text": "◀️ В меню", "data": "parser_menu", "style": "link"},
     ])
 
     kb = {"inline_keyboard": [
         [{"text": f"📡 Секция: {'вкл' if s_en else 'выкл'}", "callback_data": f"sec_toggle:{section}"}],
         [{"text": f"🧭 Режим: {mode_label}", "callback_data": f"sec_cycle_mode:{section}"}],
-        [{"text": f"🔝 Лимит: {limit_label}", "callback_data": f"sec_cycle_limit:{section}"}],
-        [{"text": "✏️ Свой Топ-N", "callback_data": f"sec_ask_limit:{section}"}],
-        [{"text": f"🚮 Мёртвые: {prune_label}", "callback_data": f"sec_cycle_prune:{section}"}],
-        [{"text": f"📥 Источники: {source_label}", "callback_data": f"sec_sources:{section}"}],
+        [{"text": f"🔝 Лимит: {limit_button}", "callback_data": f"sec_cycle_limit:{section}"}],
+        [{"text": "✏️ Свой лимит", "callback_data": f"sec_ask_limit:{section}"}],
+        [{"text": f"🚮 Мёртвые: {prune_button}", "callback_data": f"sec_cycle_prune:{section}"}],
+        [{"text": f"📥 Источники: {source_button}", "callback_data": f"sec_sources:{section}"}],
         [{"text": "◀️ К секциям", "callback_data": "bot_sections_menu"},
-         {"text": "◀️ В меню парсера", "callback_data": "parser_menu"}],
+         {"text": "◀️ В меню", "callback_data": "parser_menu"}],
     ]}
     return screen.build(), kb
 

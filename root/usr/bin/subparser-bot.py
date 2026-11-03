@@ -739,7 +739,7 @@ def main():
                         if new_val == "custom":
                             set_user_state(user_id, {"waiting_for": "custom_limit_sec",
                                                      "section": sec_name})
-                            answer_callback(token, cb_id, "Введите Топ-N...")
+                            answer_callback(token, cb_id, "Введите свой лимит...")
                             t, kb = get_section_settings_screen(sec_name)
                             edit_msg(token, chat_id, msg_id, t, kb)
                             continue
@@ -751,7 +751,7 @@ def main():
                         sec_name = data.split(":", 1)[1]
                         set_user_state(user_id, {"waiting_for": "custom_limit_sec",
                                                  "section": sec_name})
-                        answer_callback(token, cb_id, "Введите Топ-N...")
+                        answer_callback(token, cb_id, "Введите свой лимит...")
                         t, kb = get_section_settings_screen(sec_name)
                         edit_msg(token, chat_id, msg_id, t, kb)
 

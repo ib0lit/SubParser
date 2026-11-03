@@ -148,16 +148,16 @@ return view.extend({
         o.value('3', _('Топ-3'));
         o.value('5', _('Топ-5'));
         o.value('10', _('Топ-10'));
-        o.value('custom', _('Свой лимит (Топ-N)'));
+        o.value('custom', _('Свой лимит'));
         o.default = '0';
         o.description = _('Сколько лучших узлов записывать. В режиме замены это общий размер списка, в режиме добавления — число новых узлов. При индивидуальной настройке секций значение можно переопределить для каждой секции отдельно.');
 
-        o = s.taboption('general', form.Value, 'max_best_custom', _('Свой лимит Топ-N'));
+        o = s.taboption('general', form.Value, 'max_best_custom', _('Свой лимит (число)'));
         o.datatype = 'uinteger';
         o.placeholder = '20';
         o.default = '0';
         o.depends('max_best_nodes', 'custom');
-        o.description = _('Используется, если выбран «Свой лимит (Топ-N)». 0 — без ограничения.');
+        o.description = _('Используется, если выбран «Свой лимит». 0 — без ограничения.');
 
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
@@ -286,11 +286,11 @@ return view.extend({
             secLimit.value('3', _('Топ-3'));
             secLimit.value('5', _('Топ-5'));
             secLimit.value('10', _('Топ-10'));
-            secLimit.value('custom', _('Свой лимит (Топ-N)'));
+            secLimit.value('custom', _('Свой лимит'));
             secLimit.default = 'inherit';
             secLimit.depends('per_section_config', '1');
 
-            var secLimitCustom = s.taboption('sections', form.Value, 'sec_limit_custom_' + sec, _('Свой лимит Топ-N') + ' [' + sec + ']');
+            var secLimitCustom = s.taboption('sections', form.Value, 'sec_limit_custom_' + sec, _('Свой лимит (число)') + ' [' + sec + ']');
             secLimitCustom.datatype = 'uinteger';
             secLimitCustom.placeholder = '20';
             secLimitCustom.default = '0';
