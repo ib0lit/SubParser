@@ -1196,36 +1196,63 @@ def _node_name_from_link(link):
         return "узел"
 
 
-def _format_change_details(change_details, results, max_total=40, max_per_list=10):
+def _format_change_details(change_details, results, max_chars=None):
+    """Один сервер — одна строка, без повторов по секциям.
+
+    Для каждого сервера собираются все секции, куда он добавлен или откуда
+    удалён. max_chars используется только как технический предохранитель для
+    обычного HTML-сообщения Telegram (лимит 4096 символов); rich-вариант
+    формируется без ограничения.
+    """
+
+    def collect(index):
+        nodes = {}
+        order = []
+        for sec, added, removed in change_details:
+            links = added if index == 1 else removed
+            for link in links:
+                fp = link_fingerprint(link)
+                if fp not in nodes:
+                    nodes[fp] = {"link": link, "sections": []}
+                    order.append(fp)
+                sec_name = str(sec)
+                if sec_name not in nodes[fp]["sections"]:
+                    nodes[fp]["sections"].append(sec_name)
+        return [nodes[fp] for fp in order]
+
+    added_nodes = collect(1)
+    removed_nodes = collect(2)
+
     blocks = []
-    shown = 0
-    hidden = 0
-    for sec, added, removed in change_details:
-        lines = [f"<b>{html.escape(str(sec))}</b>"]
-        for label, links, icon in (("Добавлены", added, "➕"),
-                                   ("Удалены", removed, "➖")):
-            if not links:
+    used = 0
+    truncated = 0
+    for label, nodes, icon in (("Добавлены", added_nodes, "➕"),
+                               ("Удалены", removed_nodes, "➖")):
+        if not nodes:
+            continue
+        header = f"{icon} <b>{label} ({len(nodes)}):</b>"
+        lines = [header]
+        used += len(header) + 1
+        for node in nodes:
+            info = results.get(node["link"], {})
+            name = str(info.get("name") or _node_name_from_link(node["link"]))
+            if len(name) > 64:
+                name = name[:63] + "…"
+            delay = info.get("delay", 0)
+            suffix = f" — {delay} ms" if delay and delay > 0 else ""
+            sections = ", ".join(html.escape(s) for s in node["sections"])
+            line = f"• {html.escape(name)}{suffix} ({sections})"
+            if max_chars is not None and used + len(line) + 1 > max_chars:
+                truncated += 1
                 continue
-            lines.append(f"{icon} <b>{label}:</b>")
-            for link in links[:max_per_list]:
-                if shown >= max_total:
-                    hidden += 1
-                    continue
-                info = results.get(link, {})
-                name = str(info.get("name") or _node_name_from_link(link))
-                if len(name) > 48:
-                    name = name[:47] + "…"
-                delay = info.get("delay", 0)
-                suffix = f" — {delay} ms" if delay and delay > 0 else ""
-                lines.append(f"• {html.escape(name)}{suffix}")
-                shown += 1
-            if len(links) > max_per_list:
-                hidden += len(links) - max_per_list
-                lines.append(f"• … ещё {len(links) - max_per_list}")
+            lines.append(line)
+            used += len(line) + 1
         blocks.append("\n".join(lines))
-    if hidden:
-        blocks.append(f"… скрыто строк: {hidden}")
-    return "\n\n".join(blocks)
+
+    text = "\n\n".join(blocks)
+    if truncated:
+        text += f"\n… ещё {truncated}"
+    return text
 
 
 def _prepare_link(link, results, idx):
@@ -1789,15 +1816,18 @@ def _run():
             msg += "\n\n💳 <b>Лимиты подписок:</b>\n" + "\n".join(sub_lines)
     rich_msg = msg
     if change_details:
-        details = _format_change_details(change_details, results)
-        if details:
-            # Обычный HTML: раскрываемый blockquote, работает без rich API.
+        rich_details = _format_change_details(change_details, results)
+        if rich_details:
+            # Rich HTML: настоящий сворачиваемый блок <details>, все серверы.
+            rich_body = rich_details.replace("\n", "<br/>")
+            rich_msg += ("\n\n<details><summary>🧩 <b>Детали изменений</b></summary>"
+                         f"{rich_body}</details>")
+            # Обычный HTML: тот же список в раскрываемом blockquote. Ограничение
+            # только по длине сообщения Telegram (4096), а не по числу строк.
+            budget = max(400, 3900 - len(msg) - 100)
+            details = _format_change_details(change_details, results, max_chars=budget)
             msg += ("\n\n<blockquote expandable>🧩 <b>Детали изменений</b>\n"
                     f"{details}</blockquote>")
-            # Rich HTML: настоящий сворачиваемый блок <details>.
-            rich_details = details.replace("\n", "<br/>")
-            rich_msg += ("\n\n<details><summary>🧩 <b>Детали изменений</b></summary>"
-                         f"{rich_details}</details>")
     send_telegram_notify(msg, rich_msg if rich_msg != msg else None)
 
 
