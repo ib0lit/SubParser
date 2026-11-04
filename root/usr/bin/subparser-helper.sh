@@ -378,7 +378,7 @@ try:
     sec = os.environ.get("SECTION", "main")
     links = get_podkop_links(sec)
     delays = batch_ping_nodes(links, section=sec, force=True,
-                              max_workers=16, request_timeout=4.0,
+                              max_workers=8, request_timeout=4.0,
                               delay_timeout=3000)
     out = {f"{sec}-{i + 1}-out": d for i, d in delays.items()}
 except Exception:

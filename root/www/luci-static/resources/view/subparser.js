@@ -307,17 +307,53 @@ return view.extend({
             (unknown ? _(' (не измерено: ') + unknown + ')' : '');
     },
 
+    scheduleAutoPings: function(container) {
+        var self = this;
+        if (this._autoPingTimer) clearInterval(this._autoPingTimer);
+        var attempts = 0;
+        this._autoPingTimer = setInterval(function() {
+            attempts++;
+            if (!document.body.contains(container)) {
+                clearInterval(self._autoPingTimer);
+                self._autoPingTimer = null;
+                return;
+            }
+            // У скрытой вкладки offsetParent равен null.
+            if (container.offsetParent === null) {
+                if (attempts > 240) {
+                    clearInterval(self._autoPingTimer);
+                    self._autoPingTimer = null;
+                }
+                return;
+            }
+            clearInterval(self._autoPingTimer);
+            self._autoPingTimer = null;
+            self.autoRefreshPings(container);
+        }, 400);
+    },
+
     autoRefreshPings: function(container) {
         var self = this;
-        Array.prototype.forEach.call(container.querySelectorAll('.subparser-dashboard-section'), function(block) {
-            var sec = block.getAttribute('data-section');
+        var blocks = Array.from(container.querySelectorAll('.subparser-dashboard-section'));
+        var queue = [];
+        blocks.forEach(function(block) {
             var missing = false;
             Array.prototype.forEach.call(block.querySelectorAll('.node-delay-badge'), function(b) {
                 if (self.pingCache[b.getAttribute('data-tag')] === undefined) missing = true;
             });
-            if (missing) self.refreshPings(block, sec);
-            else self.updatePingSummary(block, sec);
+            if (missing) queue.push(block);
+            else self.updatePingSummary(block, block.getAttribute('data-section'));
         });
+
+        // Секции проверяем по очереди, а не все одновременно: так роутер
+        // не захлёбывается, а результаты появляются по мере готовности.
+        var next = function() {
+            if (!queue.length) return;
+            var block = queue.shift();
+            var sec = block.getAttribute('data-section');
+            self.refreshPings(block, sec).then(next);
+        };
+        next();
     },
 
     renderDashboard: function(container) {
@@ -1058,7 +1094,10 @@ return view.extend({
         dummy.rawhtml = true;
         dummy.render = function() { return E('div', {}, [hintBox, toolbar, dashboardContainer]); };
         self.renderDashboard(dashboardContainer);
-        self.autoRefreshPings(dashboardContainer);
+        // Замеры запускаем не при загрузке всей страницы, а когда вкладка
+        // «Дашборд» действительно открыта. Иначе каждый F5 запускал пинги
+        // всех секций и нагружал роутер ещё до отрисовки интерфейса.
+        self.scheduleAutoPings(dashboardContainer);
 
         return m.render();
     },
@@ -1109,10 +1148,18 @@ return view.extend({
             return typeof delay === 'number' && delay > 0;
         };
 
+        var resolveDone;
+        var settled = false;
+        var done = new Promise(function(resolve) { resolveDone = resolve; });
+
         var finish = function(okCount, failed) {
             if (summary) {
                 summary.textContent = _('Секция ') + s + ': ' + okCount + _(' из ') + badges.length +
                     _(' узлов отвечают') + (failed ? _(' (') + failed + _(' с таймаутом)') : '');
+            }
+            if (!settled) {
+                settled = true;
+                resolveDone();
             }
         };
 
@@ -1179,6 +1226,7 @@ return view.extend({
             }
             runMissing(state);
         }).catch(function() { legacy(); });
+        return done;
     },
 
     switchActiveNode: function(block, sec, tag, selectorTag) {
