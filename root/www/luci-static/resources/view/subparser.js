@@ -7,6 +7,7 @@
 return view.extend({
     serverLinks: [],
     dashboardSections: [],
+    pingCache: {},
     availableSections: ['main'],
     githubBranches: ['main'],
     githubReleases: [],
@@ -108,7 +109,7 @@ return view.extend({
         var urltest = secData.urltest || {};
         var apiAvailable = secData.api !== false;
 
-        var baseCardStyle = 'background: #1e1e1e; border-radius: 8px; padding: 12px 14px; ' +
+        var baseCardStyle = 'background: #1e1e1e; border-radius: 7px; padding: 9px 10px; ' +
             'display: flex; flex-direction: column; justify-content: space-between; color: #eee; ' +
             'box-shadow: 0 2px 4px rgba(0,0,0,0.2);';
         var normalBorder = ' border: 1px solid #333;';
@@ -139,15 +140,16 @@ return view.extend({
         var urltestSelected = selector.mode === 'auto' ||
             (selector.now && urltest.tag && selector.now === urltest.tag);
 
-        var activateCurrent = function(ev, tag, alreadyActive, allowed, reason) {
+        var activateCurrent = function(ev, tag, allowed, reason) {
             if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON'))
                 return;
             if (!allowed) {
                 ui.addNotification(null, E('p', reason || _('Clash API Podkop недоступен — переключение невозможно.')), 'warning');
                 return;
             }
-            if (alreadyActive) return;
-            self.switchActiveNode(ev.currentTarget.closest('.subparser-dashboard-section'), sec, tag);
+            var block = ev.currentTarget.closest('.subparser-dashboard-section');
+            if (block.getAttribute('data-active-tag') === tag) return;
+            self.switchActiveNode(block, sec, tag, selector.tag || '');
         };
 
         var urlCard = E('div', {
@@ -161,23 +163,23 @@ return view.extend({
                 var reason = !apiAvailable
                     ? _('Clash API Podkop недоступен — переключение невозможно.')
                     : _('URLTest выключен.');
-                activateCurrent(ev, urltest.tag, urltestSelected,
+                activateCurrent(ev, urltest.tag,
                     apiAvailable && urltest.enabled && !!urltest.tag, reason);
             }
         }, [
-            E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
+            E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 6px;' }, [
                 E('div', { 'style': 'flex: 1; min-width: 0;' }, [
-                    E('div', { 'style': 'font-weight: 700; font-size: 12px; color: #4fc3f7; text-transform: uppercase; letter-spacing: 0.5px;' }, 'URLTest'),
-                    E('div', { 'style': 'margin-top: 6px; font-weight: 600; font-size: 14px; line-height: 1.3; word-break: break-word;' }, urlTitle)
+                    E('div', { 'style': 'font-weight: 700; font-size: 11px; color: #4fc3f7; text-transform: uppercase; letter-spacing: 0.5px;' }, 'URLTest'),
+                    E('div', { 'style': 'margin-top: 4px; font-weight: 600; font-size: 13px; line-height: 1.25; word-break: break-word;' }, urlTitle)
                 ]),
-                E('span', { 'style': 'font-size: 11px; color: #888; white-space: nowrap; text-transform: uppercase;' }, urlState)
+                E('span', { 'style': 'font-size: 10px; color: #888; white-space: nowrap; text-transform: uppercase;' }, urlState)
             ]),
-            E('div', { 'style': 'margin-top: 14px; font-size: 12px; color: #999; line-height: 1.35;' }, urlSubtitle)
+            E('div', { 'style': 'margin-top: 10px; font-size: 11px; color: #999; line-height: 1.3;' }, urlSubtitle)
         ]);
 
         var grid = E('div', {
             'class': 'subparser-node-grid',
-            'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px;'
+            'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 9px; margin-top: 10px;'
         });
 
         grid.appendChild(urlCard);
@@ -190,24 +192,26 @@ return view.extend({
                 var info = self.parseNodeInfo(link);
                 var tag = sec + '-' + (idx + 1) + '-out';
                 var selected = selector.now === tag;
+                var cachedDelay = self.pingCache[tag];
+                var delayInfo = cachedDelay !== undefined ? self.delayInfo(cachedDelay) : { text: '…', color: '#888' };
                 grid.appendChild(E('div', {
                     'id': 'card_' + tag,
                     'title': _('Нажмите, чтобы сделать сервер активным'),
                     'style': baseCardStyle + (selected ? activeBorder : normalBorder) +
                         (apiAvailable ? ' cursor: pointer;' : ''),
                     'click': function(ev) {
-                        activateCurrent(ev, tag, selected, apiAvailable);
+                        activateCurrent(ev, tag, apiAvailable);
                     }
                 }, [
-                    E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
-                        E('div', { 'style': 'font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; flex: 1;' }, info.name),
+                    E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 6px;' }, [
+                        E('div', { 'style': 'font-weight: 600; font-size: 12px; line-height: 1.25; word-break: break-word; flex: 1;' }, info.name),
                         E('input', { 'type': 'checkbox', 'checked': true, 'data-link': link,
-                            'style': 'cursor: pointer; width: 18px; height: 18px; margin-top: 2px;' })
+                            'style': 'cursor: pointer; width: 16px; height: 16px; margin-top: 1px;' })
                     ]),
-                    E('div', { 'style': 'display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px;' }, [
+                    E('div', { 'style': 'display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 11px;' }, [
                         E('span', { 'style': 'color: #999; text-transform: uppercase; font-weight: 500;' }, info.proto),
                         E('span', { 'id': 'badge_' + tag, 'class': 'node-delay-badge', 'data-tag': tag,
-                            'style': 'color: #00e676; font-weight: bold; font-family: monospace; font-size: 13px;' }, '--- ms')
+                            'style': 'color: ' + delayInfo.color + '; font-weight: bold; font-family: monospace; font-size: 12px;' }, delayInfo.text)
                     ])
                 ]));
             });
@@ -216,7 +220,8 @@ return view.extend({
         return E('div', {
             'class': 'cbi-section subparser-dashboard-section',
             'data-section': sec,
-            'style': 'margin-bottom: 22px; padding: 14px; border: 1px solid #333; border-radius: 10px; background: #181818;'
+            'data-active-tag': selector.now || '',
+            'style': 'margin-bottom: 18px; padding: 11px; border: 1px solid #333; border-radius: 9px; background: #181818;'
         }, [
             E('div', { 'style': 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;' }, [
                 E('h3', { 'style': 'margin: 0; font-size: 16px;' }, '📁 ' + sec)
@@ -245,6 +250,74 @@ return view.extend({
                 'style': 'font-size: 12px; color: #888; margin-top: 8px;' }, ''),
             grid
         ]);
+    },
+
+    delayInfo: function(delay) {
+        if (typeof delay === 'number' && delay > 0) {
+            return {
+                text: delay + ' ms',
+                color: delay < 180 ? '#00e676' : (delay < 350 ? '#ffb300' : '#ff5252')
+            };
+        }
+        return { text: 'timeout', color: '#ff5252' };
+    },
+
+    applyActiveCard: function(block, tag) {
+        if (!block) return;
+        block.setAttribute('data-active-tag', tag || '');
+        Array.prototype.forEach.call(block.querySelectorAll('.subparser-node-grid > div[id]'), function(card) {
+            var active = card.id === 'card_' + tag;
+            card.style.border = active ? '2px solid #00e676' : '1px solid #333';
+            card.style.boxShadow = active
+                ? '0 0 0 1px rgba(0,230,118,0.35), 0 2px 10px rgba(0,230,118,0.18)'
+                : '0 2px 4px rgba(0,0,0,0.2)';
+        });
+    },
+
+    clearPingCache: function(sec) {
+        var self = this;
+        if (!sec) {
+            this.pingCache = {};
+            return;
+        }
+        var prefix = sec + '-';
+        Object.keys(this.pingCache).forEach(function(key) {
+            if (key.indexOf(prefix) === 0) delete self.pingCache[key];
+        });
+    },
+
+    updatePingSummary: function(block, sec) {
+        var self = this;
+        var badges = Array.from(block.querySelectorAll('.node-delay-badge'));
+        var summary = block.querySelector('.subparser-ping-summary');
+        if (!summary) return;
+        var ok = 0, failed = 0, unknown = 0;
+        badges.forEach(function(b) {
+            var value = self.pingCache[b.getAttribute('data-tag')];
+            if (value === undefined) unknown++;
+            else if (typeof value === 'number' && value > 0) ok++;
+            else failed++;
+        });
+        if (!badges.length || unknown === badges.length) {
+            summary.textContent = '';
+            return;
+        }
+        summary.textContent = _('Секция ') + sec + ': ' + ok + _(' из ') + badges.length +
+            _(' узлов отвечают') + (failed ? _(' (') + failed + _(' с таймаутом)') : '') +
+            (unknown ? _(' (не измерено: ') + unknown + ')' : '');
+    },
+
+    autoRefreshPings: function(container) {
+        var self = this;
+        Array.prototype.forEach.call(container.querySelectorAll('.subparser-dashboard-section'), function(block) {
+            var sec = block.getAttribute('data-section');
+            var missing = false;
+            Array.prototype.forEach.call(block.querySelectorAll('.node-delay-badge'), function(b) {
+                if (self.pingCache[b.getAttribute('data-tag')] === undefined) missing = true;
+            });
+            if (missing) self.refreshPings(block, sec);
+            else self.updatePingSummary(block, sec);
+        });
     },
 
     renderDashboard: function(container) {
@@ -937,6 +1010,7 @@ return view.extend({
                 E('li', {}, _('Для каждой секции видно, какой сервер выбран в селекторе и какой сервер активен в URLTest (если он включён).')),
                 E('li', {}, _('Карточка URLTest всегда стоит первой и показывает её текущий сервер. Выбор селектора выделен зелёной рамкой.')),
                 E('li', {}, _('Клик по карточке узла сразу переключает на него селектор. Клик по карточке URLTest возвращает авто-режим.')),
+                E('li', {}, _('Пинги измеряются автоматически при открытии дашборда; кнопка «⚡ Пинги секции» перепроверяет задержки вручную.')),
                 E('li', {}, _('Чекбоксы и «💾 Применить» нужны для записи выбранного списка узлов в конфигурацию Podkop.')),
                 E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
                 E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
@@ -984,6 +1058,7 @@ return view.extend({
         dummy.rawhtml = true;
         dummy.render = function() { return E('div', {}, [hintBox, toolbar, dashboardContainer]); };
         self.renderDashboard(dashboardContainer);
+        self.autoRefreshPings(dashboardContainer);
 
         return m.render();
     },
@@ -1013,11 +1088,13 @@ return view.extend({
                         if (unchecked[cb.getAttribute('data-link')]) cb.checked = false;
                     });
             }
+            self.autoRefreshPings(container);
             return data.sections;
         });
     },
 
     refreshPings: function(container, sec) {
+        var self = this;
         var s = sec || 'main';
         var badges = Array.from(container.querySelectorAll('.node-delay-badge'));
         badges.forEach(function(b) { b.innerText = '...'; b.style.color = '#888'; });
@@ -1025,14 +1102,11 @@ return view.extend({
         if (summary) summary.textContent = _('Измерение задержек...');
 
         var setBadge = function(b, delay) {
-            if (typeof delay === 'number' && delay > 0) {
-                b.innerText = delay + ' ms';
-                b.style.color = delay < 180 ? '#00e676' : (delay < 350 ? '#ffb300' : '#ff5252');
-                return true;
-            }
-            b.innerText = 'timeout';
-            b.style.color = '#ff5252';
-            return false;
+            var info = self.delayInfo(delay);
+            self.pingCache[b.getAttribute('data-tag')] = delay;
+            b.innerText = info.text;
+            b.style.color = info.color;
+            return typeof delay === 'number' && delay > 0;
         };
 
         var finish = function(okCount, failed) {
@@ -1107,22 +1181,43 @@ return view.extend({
         }).catch(function() { legacy(); });
     },
 
-    switchActiveNode: function(block, sec, tag) {
+    switchActiveNode: function(block, sec, tag, selectorTag) {
         var self = this;
         if (this.switching) return;
         this.switching = true;
-        return fs.exec('/usr/bin/subparser-helper.sh', ['set_active', sec, tag]).then(function(res) {
-            var data = {};
-            try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
-            if (!data || data.status !== 'ok')
-                throw new Error((data && data.message) || _('Не удалось переключить селектор'));
-            ui.addNotification(null, E('p', {}, _('Секция ') + sec + _(': активный сервер переключён.')), 'info');
-            return self.reloadDashboard(self.dashboardRoot(block));
-        }).catch(function(err) {
-            ui.addNotification(null, E('p', {}, _('Ошибка переключения: ') + (err.message || err)), 'danger');
-        }).then(function() {
-            self.switching = false;
-        });
+
+        // Сразу переносим зелёную рамку: не ждём ответа API, чтобы
+        // переключение ощущалось мгновенным.
+        var secData = null;
+        for (var i = 0; i < (this.dashboardSections || []).length; i++) {
+            if (this.dashboardSections[i].name === sec) { secData = this.dashboardSections[i]; break; }
+        }
+        var previousTag = block.getAttribute('data-active-tag') || '';
+        var previousMode = secData ? secData.selector.mode : 'unknown';
+        var nextMode = (secData && secData.urltest && secData.urltest.tag === tag) ? 'auto' : 'manual';
+        if (secData) {
+            secData.selector.now = tag;
+            secData.selector.mode = nextMode;
+        }
+        this.applyActiveCard(block, tag);
+
+        return fs.exec('/usr/bin/subparser-helper.sh', ['set_active', sec, tag, selectorTag || ''])
+            .then(function(res) {
+                var data = {};
+                try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+                if (!data || data.status !== 'ok')
+                    throw new Error((data && data.message) || _('Не удалось переключить селектор'));
+            }).catch(function(err) {
+                // Возвращаем прежнюю подсветку, если Clash не принял переключение.
+                if (secData) {
+                    secData.selector.now = previousTag;
+                    secData.selector.mode = previousMode;
+                }
+                self.applyActiveCard(block, previousTag);
+                ui.addNotification(null, E('p', {}, _('Ошибка переключения: ') + (err.message || err)), 'danger');
+            }).then(function() {
+                self.switching = false;
+            });
     },
 
     collectSelected: function(block) {
@@ -1158,6 +1253,7 @@ return view.extend({
             if (data.status && data.status !== 'ok') throw new Error(data.message || _('Ошибка записи'));
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Секция ') + s + _(': сохранено узлов — ') + selectedLinks.length), 'info');
+            self.clearPingCache(s);
             return self.reloadDashboard(self.dashboardRoot(block));
         }).catch(function(err) {
             ui.hideModal();
@@ -1200,6 +1296,7 @@ return view.extend({
         chain.then(function() {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Серверы сохранены в Podkop. Секций: ') + jobs.length), 'info');
+            jobs.forEach(function(job) { self.clearPingCache(job.sec); });
             return self.reloadDashboard(root);
         }).catch(function(err) {
             ui.hideModal();

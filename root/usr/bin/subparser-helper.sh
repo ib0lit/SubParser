@@ -305,35 +305,37 @@ PYEOF
 
     set_active)
         # Переключение селектора секции без перехода в Podkop.
+        # Прямой PUT через curl: без запуска Python, чтобы отклик был быстрым.
         TAG="$3"
+        SEL="$4"
+        [ -z "$SEL" ] && SEL="${SECTION}-out"
         case "$TAG" in
             ""|*[!A-Za-z0-9._-]*)
                 echo '{"status": "error", "message": "Недопустимый тег узла"}'
                 exit 1
                 ;;
         esac
-        SECTION="$SECTION" TAG="$TAG" python3 - <<'PYEOF'
-import json
-import os
-import sys
-
-sys.path.insert(0, "/usr/lib")
-section = os.environ.get("SECTION", "main")
-tag = os.environ.get("TAG", "")
-try:
-    from subparser.podkop import switch_to_tag
-    ok, selector = switch_to_tag(section, tag)
-except Exception as exc:
-    print(json.dumps({"status": "error", "message": str(exc)[:200]}, ensure_ascii=False))
-    raise SystemExit(0)
-
-print(json.dumps({
-    "status": "ok" if ok else "error",
-    "message": "" if ok else "Не удалось переключить селектор",
-    "selector": selector,
-    "tag": tag,
-}, ensure_ascii=False))
-PYEOF
+        case "$SEL" in
+            ""|*[!A-Za-z0-9._-]*)
+                echo '{"status": "error", "message": "Недопустимое имя селектора"}'
+                exit 1
+                ;;
+        esac
+        BODY=$(printf '{"name":"%s"}' "$TAG")
+        if [ -n "$API_SECRET" ]; then
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 3 -X PUT \
+                -H "Authorization: Bearer ${API_SECRET}" \
+                -H "Content-Type: application/json" \
+                --data "$BODY" "${API_BASE}/proxies/${SEL}" 2>/dev/null)
+        else
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 3 -X PUT \
+                -H "Content-Type: application/json" \
+                --data "$BODY" "${API_BASE}/proxies/${SEL}" 2>/dev/null)
+        fi
+        case "$CODE" in
+            200|204) echo '{"status": "ok"}' ;;
+            *) echo '{"status": "error", "message": "Не удалось переключить селектор"}' ;;
+        esac
         ;;
 
     save_selected)
