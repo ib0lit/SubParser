@@ -170,11 +170,11 @@ return view.extend({
             E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 6px;' }, [
                 E('div', { 'style': 'flex: 1; min-width: 0;' }, [
                     E('div', { 'style': 'font-weight: 700; font-size: 11px; color: #4fc3f7; text-transform: uppercase; letter-spacing: 0.5px;' }, 'URLTest'),
-                    E('div', { 'style': 'margin-top: 4px; font-weight: 600; font-size: 13px; line-height: 1.25; word-break: break-word;' }, urlTitle)
+                    E('div', { 'data-urltest-title': '1', 'style': 'margin-top: 4px; font-weight: 600; font-size: 13px; line-height: 1.25; word-break: break-word;' }, urlTitle)
                 ]),
-                E('span', { 'style': 'font-size: 10px; color: #888; white-space: nowrap; text-transform: uppercase;' }, urlState)
+                E('span', { 'data-urltest-state': '1', 'style': 'font-size: 10px; color: #888; white-space: nowrap; text-transform: uppercase;' }, urlState)
             ]),
-            E('div', { 'style': 'margin-top: 10px; font-size: 11px; color: #999; line-height: 1.3;' }, urlSubtitle)
+            E('div', { 'data-urltest-sub': '1', 'style': 'margin-top: 10px; font-size: 11px; color: #999; line-height: 1.3;' }, urlSubtitle)
         ]);
 
         var grid = E('div', {
@@ -250,6 +250,26 @@ return view.extend({
                 'style': 'font-size: 12px; color: #888; margin-top: 8px;' }, ''),
             grid
         ]);
+    },
+
+    getPingUrl: function() {
+        try {
+            var saved = window.localStorage.getItem('subparser_ping_url');
+            if (saved) return saved;
+        } catch(e) {}
+        return 'https://www.gstatic.com/generate_204';
+    },
+
+    setPingUrl: function(value) {
+        var url = String(value || '').trim();
+        if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+        try {
+            if (url) window.localStorage.setItem('subparser_ping_url', url);
+            else window.localStorage.removeItem('subparser_ping_url');
+        } catch(e) {}
+        // Замеры привязаны к URL: старые значения больше не актуальны.
+        this.clearPingCache();
+        return url;
     },
 
     delayInfo: function(delay) {
@@ -329,6 +349,7 @@ return view.extend({
             clearInterval(self._autoPingTimer);
             self._autoPingTimer = null;
             self.autoRefreshPings(container);
+            self.startActiveRefresh(container);
         }, 400);
     },
 
@@ -354,6 +375,92 @@ return view.extend({
             self.refreshPings(block, sec).then(next);
         };
         next();
+    },
+
+    applyActiveState: function(block, state) {
+        var self = this;
+        var sec = block.getAttribute('data-section');
+        var secData = null;
+        for (var i = 0; i < (this.dashboardSections || []).length; i++) {
+            if (this.dashboardSections[i].name === sec) { secData = this.dashboardSections[i]; break; }
+        }
+        if (secData) {
+            secData.api = state.api;
+            if (state.selector) secData.selector = state.selector;
+            if (state.urltest) secData.urltest = state.urltest;
+        }
+        var selector = (secData && secData.selector) || state.selector || {};
+        var urltest = (secData && secData.urltest) || state.urltest || {};
+        var apiAvailable = state.api !== false;
+
+        var title, subtitle, stateText;
+        if (!apiAvailable) {
+            title = _('Нет данных');
+            subtitle = _('Clash API Podkop недоступен');
+            stateText = '—';
+        } else if (!urltest.enabled) {
+            title = _('Не включён');
+            subtitle = _('Группа URLTest отсутствует в конфигурации');
+            stateText = _('выкл');
+        } else if (urltest.now) {
+            title = self.nodeNameForTag(secData, urltest.now) || urltest.now;
+            subtitle = _('Сервер, который сейчас выбирает URLTest');
+            stateText = _('авто');
+        } else {
+            title = _('Не выбран');
+            subtitle = _('URLTest включён, но активный сервер не определён');
+            stateText = _('авто');
+        }
+
+        var titleEl = block.querySelector('[data-urltest-title]');
+        var stateEl = block.querySelector('[data-urltest-state]');
+        var subEl = block.querySelector('[data-urltest-sub]');
+        if (titleEl) titleEl.textContent = title;
+        if (stateEl) stateEl.textContent = stateText;
+        if (subEl) subEl.textContent = subtitle;
+
+        this.applyActiveCard(block, selector.now || '');
+    },
+
+    refreshActiveState: function(container) {
+        var self = this;
+        if (this._activeBusy) return Promise.resolve();
+        this._activeBusy = true;
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_active']).then(function(res) {
+            var data = {};
+            try { data = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+            if (!data || !Array.isArray(data.sections)) return;
+            var byName = {};
+            data.sections.forEach(function(st) { byName[st.name] = st; });
+            Array.prototype.forEach.call(
+                container.querySelectorAll('.subparser-dashboard-section'),
+                function(block) {
+                    var state = byName[block.getAttribute('data-section')];
+                    if (state) self.applyActiveState(block, state);
+                });
+        }).catch(function() {
+            // Тихий опрос: при временной недоступности API просто ждём следующий.
+        }).then(function() {
+            self._activeBusy = false;
+        });
+    },
+
+    startActiveRefresh: function(container) {
+        var self = this;
+        if (this._activeTimer) clearInterval(this._activeTimer);
+        this._activeTimer = null;
+        // URLTest переключается внутри sing-box сам: обновляем только
+        // активные узлы, без повторных пингов и полной перерисовки.
+        if (container.offsetParent !== null) self.refreshActiveState(container);
+        this._activeTimer = setInterval(function() {
+            if (!document.body.contains(container)) {
+                clearInterval(self._activeTimer);
+                self._activeTimer = null;
+                return;
+            }
+            if (container.offsetParent === null) return;
+            self.refreshActiveState(container);
+        }, 15000);
     },
 
     renderDashboard: function(container) {
@@ -1047,10 +1154,45 @@ return view.extend({
                 E('li', {}, _('Карточка URLTest всегда стоит первой и показывает её текущий сервер. Выбор селектора выделен зелёной рамкой.')),
                 E('li', {}, _('Клик по карточке узла сразу переключает на него селектор. Клик по карточке URLTest возвращает авто-режим.')),
                 E('li', {}, _('Пинги измеряются автоматически при открытии дашборда; кнопка «⚡ Пинги секции» перепроверяет задержки вручную.')),
+                E('li', {}, _('URL для проверки пингов можно изменить в поле над кнопками — он сохраняется в этом браузере.')),
+                E('li', {}, _('Активный сервер URLTest обновляется автоматически раз в 15 секунд, пока открыта эта вкладка.')),
                 E('li', {}, _('Чекбоксы и «💾 Применить» нужны для записи выбранного списка узлов в конфигурацию Podkop.')),
                 E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
                 E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
             ])
+        ]);
+
+        var pingUrlInput = E('input', {
+            'type': 'text',
+            'class': 'cbi-input-text',
+            'style': 'flex: 1 1 340px; min-width: 240px; font-family: monospace;',
+            'placeholder': self.getPingUrl(),
+            'value': self.getPingUrl(),
+            'change': function(ev) { applyPingUrl(ev.target.value); }
+        });
+
+        // Свой URL проверки: сохраняется в браузере и передаётся в helper.
+        var applyPingUrl = function(value) {
+            var url = self.setPingUrl(value);
+            pingUrlInput.value = url || self.getPingUrl();
+            Array.prototype.forEach.call(
+                dashboardContainer.querySelectorAll('.node-delay-badge'),
+                function(b) { b.innerText = '…'; b.style.color = '#888'; });
+            var summaries = dashboardContainer.querySelectorAll('.subparser-ping-summary');
+            Array.prototype.forEach.call(summaries, function(sm) { sm.textContent = ''; });
+            if (dashboardContainer.offsetParent !== null)
+                self.autoRefreshPings(dashboardContainer);
+        };
+
+        var pingUrlRow = E('div', {
+            'style': 'display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;'
+        }, [
+            E('label', { 'style': 'font-weight: 600; font-size: 13px;' }, _('URL для проверки пингов:')),
+            pingUrlInput,
+            E('button', {
+                'class': 'btn cbi-button-neutral',
+                'click': function(ev) { ev.preventDefault(); applyPingUrl(''); }
+            }, _('↺ По умолчанию'))
         ]);
 
         var toolbar = E('div', { 'style': 'display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;' }, [
@@ -1092,7 +1234,7 @@ return view.extend({
 
         var dummy = s.taboption('dashboard', form.DummyValue, '_dashboard');
         dummy.rawhtml = true;
-        dummy.render = function() { return E('div', {}, [hintBox, toolbar, dashboardContainer]); };
+        dummy.render = function() { return E('div', {}, [hintBox, pingUrlRow, toolbar, dashboardContainer]); };
         self.renderDashboard(dashboardContainer);
         // Замеры запускаем не при загрузке всей страницы, а когда вкладка
         // «Дашборд» действительно открыта. Иначе каждый F5 запускал пинги
@@ -1135,6 +1277,7 @@ return view.extend({
     refreshPings: function(container, sec) {
         var self = this;
         var s = sec || 'main';
+        var pingUrl = self.getPingUrl();
         var badges = Array.from(container.querySelectorAll('.node-delay-badge'));
         badges.forEach(function(b) { b.innerText = '...'; b.style.color = '#888'; });
         var summary = container.querySelector('.subparser-ping-summary');
@@ -1192,7 +1335,7 @@ return view.extend({
                 }
                 var b = state.missing[index++];
                 var tag = b.getAttribute('data-tag');
-                fs.exec('/usr/bin/subparser-helper.sh', ['ping_node', tag]).then(function(nodeRes) {
+                fs.exec('/usr/bin/subparser-helper.sh', ['ping_node', tag, pingUrl]).then(function(nodeRes) {
                     var data = {};
                     try { data = JSON.parse(nodeRes.stdout.trim()); } catch(err) {}
                     if (setBadge(b, data.delay)) state.okCount++; else state.failed++;
@@ -1207,7 +1350,7 @@ return view.extend({
         // Старый путь на случай, если helper ещё не обновлён и не знает
         // действие ping_section.
         var legacy = function() {
-            fs.exec('/usr/bin/subparser-helper.sh', ['ping_group', s]).then(function(res) {
+            fs.exec('/usr/bin/subparser-helper.sh', ['ping_group', s, pingUrl]).then(function(res) {
                 var groupDelays = {};
                 try { groupDelays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
                 runMissing(applyDelays(groupDelays));
@@ -1216,7 +1359,7 @@ return view.extend({
             });
         };
 
-        fs.exec('/usr/bin/subparser-helper.sh', ['ping_section', s]).then(function(res) {
+        fs.exec('/usr/bin/subparser-helper.sh', ['ping_section', s, pingUrl]).then(function(res) {
             var delays = {};
             try { delays = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
             var state = applyDelays(delays);

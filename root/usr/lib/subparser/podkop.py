@@ -322,6 +322,76 @@ def _selector_data(section, proxies):
     return name, data if isinstance(data, dict) else {}
 
 
+def _find_selector_in(section, proxies):
+    """Ищет селектор секции в уже полученном /proxies."""
+    for tag in (f"{section}-out", section):
+        data = proxies.get(tag)
+        if isinstance(data, dict) and \
+                str(data.get("type", "")).lower() == "selector":
+            return tag, data
+    for tag, data in (proxies or {}).items():
+        if section in tag and isinstance(data, dict) and \
+                str(data.get("type", "")).lower() == "selector":
+            return tag, data
+    return None, None
+
+
+def _find_group_in(section, proxies):
+    """Ищет URLTest-группу секции в уже полученном /proxies."""
+    tag = f"{section}-urltest-out"
+    data = proxies.get(tag)
+    if isinstance(data, dict) and \
+            str(data.get("type", "")).lower() == "urltest":
+        return tag, data
+    for key, value in (proxies or {}).items():
+        if section in key and isinstance(value, dict) and \
+                str(value.get("type", "")).lower() == "urltest":
+            return key, value
+    return None, None
+
+
+def get_sections_active_state(sections=None):
+    """Активное состояние селектора и URLTest по всем секциям.
+
+    Один запрос к Clash API на все секции. Возвращает список словарей
+    с полями name/api/selector/urltest. Ссылки узлов сюда не входят:
+    для периодического обновления дашборда они не нужны.
+    """
+    proxies, status = fetch_proxies()
+    api_ok = status in (200, 204)
+    if sections is None:
+        sections = get_all_podkop_sections()
+
+    result = []
+    for section in sections:
+        selector_tag, selector = _find_selector_in(section, proxies)
+        group_tag, group = _find_group_in(section, proxies)
+        now = selector.get("now", "") if isinstance(selector, dict) else ""
+        node = proxies.get(now) if now else None
+        node_type = str(node.get("type", "")).lower() if isinstance(node, dict) else ""
+        if not now:
+            mode = "unknown"
+        elif node_type in ("urltest", "fallback", "loadbalance") or "urltest" in now.lower():
+            mode = "auto"
+        else:
+            mode = "manual"
+        result.append({
+            "name": section,
+            "api": api_ok,
+            "selector": {
+                "tag": selector_tag or "",
+                "now": now,
+                "mode": mode,
+            },
+            "urltest": {
+                "enabled": bool(group_tag),
+                "tag": group_tag or "",
+                "now": group.get("now", "") if isinstance(group, dict) else "",
+            },
+        })
+    return result
+
+
 def _link_from_tag(section, tag, links):
     """Преобразует тег вида `main-3-out` в ссылку из списка секции."""
     prefix = f"{section}-"
@@ -644,12 +714,18 @@ def delete_dead_plan(plan_details):
 
 
 def batch_ping_nodes(links, section="main", force=False, max_workers=10,
-                    request_timeout=2.5, delay_timeout=1800, retries=1):
+                    request_timeout=2.5, delay_timeout=1800, retries=1,
+                    test_url=None):
     results = {}
     if not links:
         return results
 
-    test_url = urllib.parse.quote(TEST_URL_GLOBAL, safe="")
+    # Свой URL для проверки задержки: дашборд передаёт его аргументом,
+    # по умолчанию используется общий generate_204.
+    target_url = str(test_url or "").strip() or TEST_URL_GLOBAL
+    if not target_url.startswith(("http://", "https://")):
+        target_url = TEST_URL_GLOBAL
+    test_url = urllib.parse.quote(target_url, safe="")
 
     # 1. История ядра, если не запрошен принудительный замер.
     if not force:

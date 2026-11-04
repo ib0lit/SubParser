@@ -220,85 +220,58 @@ import json
 import sys
 
 sys.path.insert(0, "/usr/lib")
+
 sections = ["main"]
-proxies = {}
-api_ok = False
+states = []
+links_map = {}
 try:
-    from subparser.podkop import get_all_podkop_sections, get_podkop_links, fetch_proxies
+    from subparser.podkop import (get_all_podkop_sections,
+                                  get_podkop_links,
+                                  get_sections_active_state)
     sections = get_all_podkop_sections()
+    states = get_sections_active_state(sections)
+    for sec in sections:
+        links_map[sec] = get_podkop_links(sec)
 except Exception:
     pass
-if "get_podkop_links" not in globals():
-    def get_podkop_links(section="main"):
-        return []
-try:
-    proxies, api_status = fetch_proxies()
-    api_ok = api_status in (200, 204)
-except Exception:
-    proxies = {}
-    api_ok = False
 
+if not states:
+    states = [{
+        "name": sec,
+        "api": False,
+        "selector": {"tag": f"{sec}-out", "now": "", "mode": "unknown"},
+        "urltest": {"enabled": False, "tag": f"{sec}-urltest-out", "now": ""},
+    } for sec in sections]
 
-def find_selector(section):
-    for tag in (section + "-out", section):
-        data = proxies.get(tag)
-        if isinstance(data, dict) and \
-                str(data.get("type", "")).lower() == "selector":
-            return tag, data
-    for tag, data in proxies.items():
-        if section in tag and isinstance(data, dict) and \
-                str(data.get("type", "")).lower() == "selector":
-            return tag, data
-    return None, None
-
-
-def find_group(section):
-    tag = section + "-urltest-out"
-    data = proxies.get(tag)
-    if isinstance(data, dict) and \
-            str(data.get("type", "")).lower() == "urltest":
-        return tag, data
-    for key, value in proxies.items():
-        if section in key and isinstance(value, dict) and \
-                str(value.get("type", "")).lower() == "urltest":
-            return key, value
-    return None, None
-
-
-result = []
-for section in sections:
-    selector_tag, selector = find_selector(section)
-    group_tag, group = find_group(section)
-    now = selector.get("now", "") if isinstance(selector, dict) else ""
-    node = proxies.get(now) if now else None
-    node_type = str(node.get("type", "")).lower() if isinstance(node, dict) else ""
-    if not now:
-        mode = "unknown"
-    elif node_type in ("urltest", "fallback", "loadbalance") or "urltest" in now.lower():
-        mode = "auto"
-    else:
-        mode = "manual"
-    group_now = group.get("now", "") if isinstance(group, dict) else ""
-    result.append({
-        "name": section,
-        "links": get_podkop_links(section),
-        "api": api_ok,
-        "selector": {
-            "tag": selector_tag or "",
-            "now": now,
-            "mode": mode,
-        },
-        "urltest": {
-            "enabled": bool(group_tag),
-            "tag": group_tag or "",
-            "now": group_now,
-        },
-    })
+for state in states:
+    state["links"] = links_map.get(state.get("name"), [])
 
 print(json.dumps({
     "status": "ok",
-    "api": api_ok,
-    "sections": result,
+    "api": any(bool(s.get("api")) for s in states),
+    "sections": states,
+}, ensure_ascii=False))
+PYEOF
+        ;;
+
+    get_active)
+        # Лёгкое обновление активных узлов без списков ссылок: используется
+        # для периодического опроса URLTest при открытом дашборде.
+        python3 - <<'PYEOF'
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib")
+states = []
+try:
+    from subparser.podkop import get_sections_active_state
+    states = get_sections_active_state()
+except Exception:
+    pass
+print(json.dumps({
+    "status": "ok",
+    "api": any(bool(s.get("api")) for s in states),
+    "sections": states,
 }, ensure_ascii=False))
 PYEOF
         ;;
@@ -366,7 +339,8 @@ PYEOF
     ping_section)
         # Один вызов на всю секцию: Python сам опрашивает узлы параллельно,
         # вместо десятков последовательных запусков curl из LuCI.
-        SECTION="$SECTION" python3 - <<'PYEOF'
+        # Третий аргумент — необязательный URL проверки из дашборда.
+        SECTION="$SECTION" PING_URL="$3" python3 - <<'PYEOF'
 import json
 import os
 import sys
@@ -378,8 +352,9 @@ try:
     sec = os.environ.get("SECTION", "main")
     links = get_podkop_links(sec)
     delays = batch_ping_nodes(links, section=sec, force=True,
-                              max_workers=8, request_timeout=4.0,
-                              delay_timeout=3000)
+                              max_workers=12, request_timeout=3.5,
+                              delay_timeout=2500,
+                              test_url=os.environ.get("PING_URL", ""))
     out = {f"{sec}-{i + 1}-out": d for i, d in delays.items()}
 except Exception:
     out = {}
@@ -388,15 +363,40 @@ PYEOF
         ;;
 
     ping_group)
-        URL="https://www.gstatic.com/generate_204"
-        RES=$(api_get "/group/${SECTION}-urltest-out/delay?url=${URL}&timeout=3000" 10)
+        URL="${3:-https://www.gstatic.com/generate_204}"
+        case "$URL" in
+            http://*|https://*) ;;
+            *) URL="https://www.gstatic.com/generate_204" ;;
+        esac
+        if [ -n "$API_SECRET" ]; then
+            RES=$(curl -s -m 6 -G -H "Authorization: Bearer ${API_SECRET}" \
+                --data-urlencode "url=${URL}" --data "timeout=3000" \
+                "${API_BASE}/group/${SECTION}-urltest-out/delay" 2>/dev/null)
+        else
+            RES=$(curl -s -m 6 -G --data-urlencode "url=${URL}" \
+                --data "timeout=3000" \
+                "${API_BASE}/group/${SECTION}-urltest-out/delay" 2>/dev/null)
+        fi
         [ -n "$RES" ] && echo "$RES" || echo '{}'
         ;;
 
     ping_node)
+        # Второй аргумент — тег узла, третий — необязательный URL проверки.
         TAG="$2"
-        URL="https://www.gstatic.com/generate_204"
-        RES=$(api_get "/proxies/${TAG}/delay?url=${URL}&timeout=3000" 4)
+        URL="${3:-https://www.gstatic.com/generate_204}"
+        case "$URL" in
+            http://*|https://*) ;;
+            *) URL="https://www.gstatic.com/generate_204" ;;
+        esac
+        if [ -n "$API_SECRET" ]; then
+            RES=$(curl -s -m 4 -G -H "Authorization: Bearer ${API_SECRET}" \
+                --data-urlencode "url=${URL}" --data "timeout=2500" \
+                "${API_BASE}/proxies/${TAG}/delay" 2>/dev/null)
+        else
+            RES=$(curl -s -m 4 -G --data-urlencode "url=${URL}" \
+                --data "timeout=2500" \
+                "${API_BASE}/proxies/${TAG}/delay" 2>/dev/null)
+        fi
         [ -n "$RES" ] && echo "$RES" || echo '{"delay": -1}'
         ;;
 
