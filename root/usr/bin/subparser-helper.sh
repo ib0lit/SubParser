@@ -212,6 +212,97 @@ PYEOF
         printf '%s' "$LINKS" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(), ensure_ascii=False))'
         ;;
 
+    get_dashboard)
+        # Один запрос к Clash API на все секции: активный узел селектора,
+        # активный узел URLTest и список ссылок для карточек в LuCI.
+        python3 - <<'PYEOF'
+import json
+import sys
+
+sys.path.insert(0, "/usr/lib")
+sections = ["main"]
+proxies = {}
+api_ok = False
+try:
+    from subparser.podkop import get_all_podkop_sections, get_podkop_links, fetch_proxies
+    sections = get_all_podkop_sections()
+except Exception:
+    pass
+if "get_podkop_links" not in globals():
+    def get_podkop_links(section="main"):
+        return []
+try:
+    proxies, api_status = fetch_proxies()
+    api_ok = api_status in (200, 204)
+except Exception:
+    proxies = {}
+    api_ok = False
+
+
+def find_selector(section):
+    for tag in (section + "-out", section):
+        data = proxies.get(tag)
+        if isinstance(data, dict) and \
+                str(data.get("type", "")).lower() == "selector":
+            return tag, data
+    for tag, data in proxies.items():
+        if section in tag and isinstance(data, dict) and \
+                str(data.get("type", "")).lower() == "selector":
+            return tag, data
+    return None, None
+
+
+def find_group(section):
+    tag = section + "-urltest-out"
+    data = proxies.get(tag)
+    if isinstance(data, dict) and \
+            str(data.get("type", "")).lower() == "urltest":
+        return tag, data
+    for key, value in proxies.items():
+        if section in key and isinstance(value, dict) and \
+                str(value.get("type", "")).lower() == "urltest":
+            return key, value
+    return None, None
+
+
+result = []
+for section in sections:
+    selector_tag, selector = find_selector(section)
+    group_tag, group = find_group(section)
+    now = selector.get("now", "") if isinstance(selector, dict) else ""
+    node = proxies.get(now) if now else None
+    node_type = str(node.get("type", "")).lower() if isinstance(node, dict) else ""
+    if not now:
+        mode = "unknown"
+    elif node_type in ("urltest", "fallback", "loadbalance") or "urltest" in now.lower():
+        mode = "auto"
+    else:
+        mode = "manual"
+    group_now = group.get("now", "") if isinstance(group, dict) else ""
+    result.append({
+        "name": section,
+        "links": get_podkop_links(section),
+        "api": api_ok,
+        "selector": {
+            "tag": selector_tag or "",
+            "now": now,
+            "mode": mode,
+        },
+        "urltest": {
+            "enabled": bool(group_tag),
+            "tag": group_tag or "",
+            "now": group_now,
+        },
+    })
+
+print(json.dumps({
+    "status": "ok",
+    "api": api_ok,
+    "sections": result,
+}, ensure_ascii=False))
+PYEOF
+        ;;
+
     save_selected)
         SRC_FILE="/tmp/subparser_selected.txt"
         if [ ! -s "$SRC_FILE" ]; then

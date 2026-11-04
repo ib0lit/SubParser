@@ -6,6 +6,7 @@
 
 return view.extend({
     serverLinks: [],
+    dashboardSections: [],
     availableSections: ['main'],
     githubBranches: ['main'],
     githubReleases: [],
@@ -13,43 +14,62 @@ return view.extend({
 
     load: function() {
         var self = this;
-        return fs.exec('/usr/bin/subparser-helper.sh', ['get_podkop_sections']).then(function(res) {
-            try { self.availableSections = JSON.parse(res.stdout.trim() || '["main"]'); } catch(e) { self.availableSections = ['main']; }
-            var initialSec = (self.availableSections.indexOf('main') !== -1) ? 'main' : (self.availableSections[0] || 'main');
-            return fs.exec('/usr/bin/subparser-helper.sh', ['get_links', initialSec]);
-        }).then(function(res) {
-            try { return JSON.parse(res.stdout.trim() || '[]'); } catch(e) { return []; }
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_dashboard']).then(function(res) {
+            var data = {};
+            try { data = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+            if (data && Array.isArray(data.sections) && data.sections.length)
+                return data.sections;
+            return self.loadLegacySections();
         }).catch(function() {
-            self.availableSections = ['main'];
-            return [];
-        }).then(function(links) {
+            return self.loadLegacySections();
+        }).then(function(sections) {
+            self.dashboardSections = sections;
+            self.availableSections = sections.map(function(sec) { return sec.name; });
+            if (!self.availableSections.length) self.availableSections = ['main'];
             return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_branches']).then(function(res) {
                 try { self.githubBranches = JSON.parse(res.stdout.trim() || '["main"]'); }
                 catch(e) { self.githubBranches = ['main']; }
-                return links;
             }).catch(function() {
                 self.githubBranches = ['main'];
-                return links;
-            }).then(function(links) {
+            }).then(function() {
                 return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_releases']).then(function(res) {
                     try { self.githubReleases = JSON.parse(res.stdout.trim() || '[]'); }
                     catch(e) { self.githubReleases = []; }
-                    return links;
                 }).catch(function() {
                     self.githubReleases = [];
-                    return links;
                 });
-            }).then(function(links) {
+            }).then(function() {
                 return fs.exec('/usr/bin/subparser-helper.sh', ['get_subscriptions']).then(function(res) {
                     try { self.subscriptions = JSON.parse(res.stdout.trim() || '[]'); }
                     catch(e) { self.subscriptions = []; }
-                    return links;
                 }).catch(function() {
                     self.subscriptions = [];
-                    return links;
                 });
             });
         });
+    },
+
+    loadLegacySections: function() {
+        var self = this;
+        var empty = function(sec) {
+            return { name: sec, links: [],
+                selector: { tag: '', now: '', mode: 'unknown' },
+                urltest: { enabled: false, tag: '', now: '' } };
+        };
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_podkop_sections']).then(function(res) {
+            var sections = ['main'];
+            try {
+                var parsed = JSON.parse(res.stdout.trim() || '["main"]');
+                if (Array.isArray(parsed) && parsed.length) sections = parsed;
+            } catch(e) {}
+            return Promise.all(sections.map(function(sec) {
+                return fs.exec('/usr/bin/subparser-helper.sh', ['get_links', sec]).then(function(r) {
+                    var item = empty(sec);
+                    try { item.links = JSON.parse(r.stdout.trim() || '[]'); } catch(e) {}
+                    return item;
+                }).catch(function() { return empty(sec); });
+            }));
+        }).catch(function() { return [empty('main')]; });
     },
 
     handleSaveApply: function(ev, mode) {
@@ -70,34 +90,132 @@ return view.extend({
         return { proto: proto, name: name, raw: link };
     },
 
-    renderCards: function(container, sec) {
+    nodeNameForTag: function(secData, tag) {
+        if (!tag) return '';
+        var links = (secData && secData.links) || [];
+        var m = /-(\d+)-out$/.exec(tag);
+        if (!m) return '';
+        var idx = parseInt(m[1], 10) - 1;
+        if (idx < 0 || idx >= links.length) return '';
+        return this.parseNodeInfo(links[idx]).name;
+    },
+
+    renderSectionBlock: function(secData) {
         var self = this;
-        var s = sec || 'main';
+        var sec = secData.name || 'main';
+        var links = secData.links || [];
+        var selector = secData.selector || {};
+        var urltest = secData.urltest || {};
+
+        var badge = function(text, color) {
+            return E('span', {
+                'style': 'display: inline-block; padding: 4px 9px; border-radius: 12px; ' +
+                    'background: rgba(255,255,255,0.06); border: 1px solid ' + color + '; color: ' + color + ';'
+            }, text);
+        };
+
+        var activeBadges = [];
+        var apiAvailable = secData.api !== false;
+        if (!apiAvailable) {
+            activeBadges.push(badge(_('Селектор: API недоступен'), '#888'));
+            activeBadges.push(badge(_('URLTest: API недоступен'), '#888'));
+        } else {
+            if (selector.now) {
+                if (selector.mode === 'auto') {
+                    activeBadges.push(badge(_('Селектор: авто (URLTest)'), '#4fc3f7'));
+                } else {
+                    var selName = self.nodeNameForTag(secData, selector.now);
+                    activeBadges.push(badge(_('Селектор: ') + (selName || selector.now), '#00e676'));
+                }
+            } else {
+                activeBadges.push(badge(_('Селектор: нет данных'), '#888'));
+            }
+            if (urltest.enabled) {
+                var urlName = self.nodeNameForTag(secData, urltest.now);
+                activeBadges.push(badge(_('URLTest активен: ') + (urlName || urltest.now || '—'), '#ffb300'));
+            } else {
+                activeBadges.push(badge(_('URLTest выключен'), '#888'));
+            }
+        }
+
+        var grid = E('div', {
+            'class': 'subparser-node-grid',
+            'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px;'
+        });
+
+        if (!links.length) {
+            grid.appendChild(E('div', { 'style': 'padding: 12px; color: #888;' },
+                _('В секции Podkop [' + sec + '] нет серверов.')));
+        } else {
+            links.forEach(function(link, idx) {
+                var info = self.parseNodeInfo(link);
+                var tag = sec + '-' + (idx + 1) + '-out';
+                grid.appendChild(E('div', {
+                    'id': 'card_' + tag,
+                    'style': 'background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: space-between; color: #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'
+                }, [
+                    E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
+                        E('div', { 'style': 'font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; flex: 1;' }, info.name),
+                        E('input', { 'type': 'checkbox', 'checked': true, 'data-link': link,
+                            'style': 'cursor: pointer; width: 18px; height: 18px; margin-top: 2px;' })
+                    ]),
+                    E('div', { 'style': 'display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px;' }, [
+                        E('span', { 'style': 'color: #999; text-transform: uppercase; font-weight: 500;' }, info.proto),
+                        E('span', { 'id': 'badge_' + tag, 'class': 'node-delay-badge', 'data-tag': tag,
+                            'style': 'color: #00e676; font-weight: bold; font-family: monospace; font-size: 13px;' }, '--- ms')
+                    ])
+                ]));
+            });
+        }
+
+        return E('div', {
+            'class': 'cbi-section subparser-dashboard-section',
+            'data-section': sec,
+            'style': 'margin-bottom: 22px; padding: 14px; border: 1px solid #333; border-radius: 10px; background: #181818;'
+        }, [
+            E('div', { 'style': 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;' }, [
+                E('h3', { 'style': 'margin: 0; font-size: 16px;' }, '📁 ' + sec),
+                E('div', { 'class': 'subparser-active-nodes',
+                    'style': 'display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px;' }, activeBadges)
+            ]),
+            E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;' }, [
+                E('button', {
+                    'class': 'btn cbi-button-action',
+                    'click': function(ev) { ev.preventDefault(); self.refreshPings(ev.target.closest('.subparser-dashboard-section'), sec); }
+                }, _('⚡ Пинги секции')),
+                E('button', {
+                    'class': 'btn cbi-button-positive',
+                    'click': function(ev) { ev.preventDefault(); self.saveSectionNodes(ev.target.closest('.subparser-dashboard-section'), sec); }
+                }, _('💾 Применить секцию')),
+                E('button', {
+                    'class': 'btn cbi-button-neutral',
+                    'click': function(ev) {
+                        ev.preventDefault();
+                        var block = ev.target.closest('.subparser-dashboard-section');
+                        var cbs = block.querySelectorAll('.subparser-node-grid input[type="checkbox"]');
+                        var allChecked = Array.from(cbs).every(function(c) { return c.checked; });
+                        cbs.forEach(function(c) { c.checked = !allChecked; });
+                    }
+                }, _('Выделить все / Снять'))
+            ]),
+            E('div', { 'class': 'subparser-ping-summary',
+                'style': 'font-size: 12px; color: #888; margin-top: 8px;' }, ''),
+            grid
+        ]);
+    },
+
+    renderDashboard: function(container) {
+        var self = this;
         container.innerHTML = '';
-        if (!this.serverLinks || this.serverLinks.length === 0) {
-            container.appendChild(E('div', { 'style': 'padding: 15px; color: #888;' }, _('В выбранной секции Podkop [' + s + '] нет серверов.')));
+        var sections = this.dashboardSections || [];
+        if (!sections.length) {
+            container.appendChild(E('div', { 'style': 'padding: 15px; color: #888;' },
+                _('Не удалось получить список секций Podkop.')));
             return;
         }
-        var grid = E('div', { 'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 15px;' });
-        this.serverLinks.forEach(function(link, idx) {
-            var info = self.parseNodeInfo(link);
-            var tag = s + '-' + (idx + 1) + '-out';
-            var card = E('div', {
-                'id': 'card_' + tag,
-                'style': 'background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: space-between; color: #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'
-            }, [
-                E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
-                    E('div', { 'style': 'font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; flex: 1;' }, info.name),
-                    E('input', { 'type': 'checkbox', 'checked': true, 'data-link': link, 'style': 'cursor: pointer; width: 18px; height: 18px; margin-top: 2px;' })
-                ]),
-                E('div', { 'style': 'display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px;' }, [
-                    E('span', { 'style': 'color: #999; text-transform: uppercase; font-weight: 500;' }, info.proto),
-                    E('span', { 'id': 'badge_' + tag, 'class': 'node-delay-badge', 'data-tag': tag, 'style': 'color: #00e676; font-weight: bold; font-family: monospace; font-size: 13px;' }, '--- ms')
-                ])
-            ]);
-            grid.appendChild(card);
+        sections.forEach(function(secData) {
+            container.appendChild(self.renderSectionBlock(secData));
         });
-        container.appendChild(grid);
     },
 
     render: function(loadedLinks) {
@@ -107,6 +225,7 @@ return view.extend({
 
         var s = m.section(form.NamedSection, 'settings', 'subparser', _('Настройки сервиса'));
         s.tab('general', _('⚙ Основные настройки'));
+        s.tab('dashboard', _('📊 Дашборд'));
         s.tab('sections', _('📁 Секции Podkop'));
         s.tab('telegram', _('💬 Telegram'));
         s.tab('subscriptions', _('📋 Подписки'));
@@ -236,10 +355,9 @@ return view.extend({
                             clearInterval(poll);
                             setTimeout(function() {
                                 ui.hideModal();
-                                self.reloadSections(secSelect, dashboardContainer, currentSec).then(function(newSec) {
-                                    currentSec = newSec;
-                                    ui.addNotification(null, E('p', _('Синхронизация завершена. Список узлов обновлён.')), 'info');
-                                });
+                                var root = document.getElementById('subparser_dashboard_box');
+                                if (root) self.reloadDashboard(root);
+                                ui.addNotification(null, E('p', _('Синхронизация завершена. Список узлов обновлён.')), 'info');
                             }, 800);
                         } else if (st.indexOf('"error"') !== -1) {
                             clearInterval(poll);
@@ -764,117 +882,77 @@ return view.extend({
         sub_ver.modalonly = true;
         sub_ver.rmempty = true;
 
-        var s2 = m.section(form.NamedSection, 'settings', 'subparser', _('🌐 Активные узлы в конфигурации Podkop'));
         var dashboardContainer = E('div', { 'id': 'subparser_dashboard_box' });
-
-        var currentSec = (self.availableSections && self.availableSections.indexOf('main') !== -1)
-            ? 'main'
-            : ((self.availableSections && self.availableSections[0]) ? self.availableSections[0] : 'main');
 
         var hintBox = E('details', {
             'class': 'alert-message info',
             'style': 'margin-bottom: 12px; font-size: 13px; cursor: pointer;'
         }, [
-            E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Как работать со списком узлов (нажмите, чтобы раскрыть)')),
+            E('summary', { 'style': 'font-weight: bold; outline: none;' }, _('💡 Как работать с узлами (нажмите, чтобы раскрыть)')),
             E('ul', { 'style': 'margin: 8px 0 0 18px; padding: 0; line-height: 1.5; cursor: default;' }, [
-                E('li', {}, _('Выберите нужный профиль Podkop в выпадающем списке секций.')),
-                E('li', {}, _('Нажмите «⚡ Обновить пинги», чтобы измерить задержку отклика серверов через ядро.')),
-                E('li', {}, _('Снимите галочки с проблемных серверов или оставьте только нужные.')),
-                E('li', {}, _('Нажмите «💾 Применить выбранные узлы» для перезаписи конфигурации профиля и рестарта Podkop.'))
+                E('li', {}, _('На странице показаны все секции Podkop сразу.')),
+                E('li', {}, _('Для каждой секции видно, какой сервер выбран в селекторе и какой сервер активен в URLTest (если он включён).')),
+                E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
+                E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
             ])
         ]);
 
-        var secSelect = E('select', {
-            'class': 'cbi-input-select',
-            'style': 'min-width: 140px; margin-right: 10px; font-weight: bold;',
-            'change': function(ev) {
-                currentSec = ev.target.value;
-                fs.exec('/usr/bin/subparser-helper.sh', ['get_links', currentSec]).then(function(res) {
-                    try { self.serverLinks = JSON.parse(res.stdout.trim() || '[]'); } catch(e) { self.serverLinks = []; }
-                    self.renderCards(dashboardContainer, currentSec);
-                });
-            }
-        });
-        self.availableSections.forEach(function(sname) {
-            var optAttrs = { 'value': sname };
-            if (sname === currentSec) {
-                optAttrs.selected = 'selected';
-            }
-            secSelect.appendChild(E('option', optAttrs, _('Секция: ') + sname));
-        });
-
-        var toolbar = E('div', { 'style': 'display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;' }, [
-            secSelect,
+        var toolbar = E('div', { 'style': 'display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;' }, [
             E('button', {
                 'class': 'btn cbi-button-neutral',
                 'click': function(ev) {
                     ev.preventDefault();
-                    self.reloadSections(secSelect, dashboardContainer, currentSec).then(function(newSec) {
-                        currentSec = newSec;
-                        ui.addNotification(null, E('p', _('Список секций Podkop обновлён.')), 'info');
+                    self.reloadDashboard(dashboardContainer).then(function() {
+                        ui.addNotification(null, E('p', _('Данные секций Podkop обновлены.')), 'info');
+                    }).catch(function(err) {
+                        ui.addNotification(null, E('p', _('Не удалось обновить данные: ') + (err.message || err)), 'danger');
                     });
                 }
-            }, _('🔄 Обновить секции')),
+            }, _('🔄 Обновить данные')),
             E('button', {
                 'class': 'btn cbi-button-action',
-                'click': function(ev) { ev.preventDefault(); self.refreshPings(dashboardContainer, currentSec); }
-            }, _('⚡ Обновить пинги')),
+                'click': function(ev) {
+                    ev.preventDefault();
+                    var blocks = dashboardContainer.querySelectorAll('.subparser-dashboard-section');
+                    Array.prototype.forEach.call(blocks, function(block) {
+                        self.refreshPings(block, block.getAttribute('data-section'));
+                    });
+                }
+            }, _('⚡ Обновить пинги всех секций')),
             E('button', {
                 'class': 'btn cbi-button-positive',
-                'click': function(ev) { ev.preventDefault(); self.saveSelectedNodes(dashboardContainer, currentSec); }
+                'click': function(ev) { ev.preventDefault(); self.saveAllSelected(dashboardContainer); }
             }, _('💾 Применить выбранные узлы')),
             E('button', {
                 'class': 'btn cbi-button-neutral',
                 'click': function(ev) {
                     ev.preventDefault();
-                    var cbs = dashboardContainer.querySelectorAll('input[type="checkbox"]');
+                    var cbs = dashboardContainer.querySelectorAll('.subparser-node-grid input[type="checkbox"]');
                     var allChecked = Array.from(cbs).every(function(c) { return c.checked; });
                     cbs.forEach(function(c) { c.checked = !allChecked; });
                 }
             }, _('Выделить все / Снять'))
         ]);
-        var pingSummary = E('div', {
-            'id': 'subparser_ping_summary',
-            'style': 'font-size: 12px; color: #888; margin-bottom: 8px;'
-        }, '');
 
-        var dummy = s2.option(form.DummyValue, '_dashboard');
+        var dummy = s.taboption('dashboard', form.DummyValue, '_dashboard');
         dummy.rawhtml = true;
-        dummy.render = function() { return E('div', {}, [hintBox, toolbar, pingSummary, dashboardContainer]); };
-        self.renderCards(dashboardContainer, currentSec);
+        dummy.render = function() { return E('div', {}, [hintBox, toolbar, dashboardContainer]); };
+        self.renderDashboard(dashboardContainer);
 
         return m.render();
     },
 
-    reloadLinks: function(container, sec) {
+    reloadDashboard: function(container) {
         var self = this;
-        var s = sec || 'main';
-        return fs.exec('/usr/bin/subparser-helper.sh', ['get_links', s]).then(function(res) {
-            try { self.serverLinks = JSON.parse(res.stdout.trim() || '[]'); } catch(e) { self.serverLinks = []; }
-            self.renderCards(container, s);
-            var summary = document.getElementById('subparser_ping_summary');
-            if (summary) summary.textContent = _('Секция ') + s + ': ' + self.serverLinks.length + _(' узлов.');
-            return self.serverLinks;
-        });
-    },
-
-    reloadSections: function(selectEl, container, currentSec) {
-        var self = this;
-        return fs.exec('/usr/bin/subparser-helper.sh', ['get_podkop_sections']).then(function(res) {
-            var sections = ['main'];
-            try {
-                var parsed = JSON.parse(res.stdout.trim() || '["main"]');
-                if (Array.isArray(parsed) && parsed.length > 0) sections = parsed;
-            } catch(e) {}
-            self.availableSections = sections;
-            var keep = (sections.indexOf(currentSec) !== -1) ? currentSec : sections[0];
-            while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
-            sections.forEach(function(sname) {
-                var optAttrs = { 'value': sname };
-                if (sname === keep) optAttrs.selected = 'selected';
-                selectEl.appendChild(E('option', optAttrs, _('Секция: ') + sname));
-            });
-            return self.reloadLinks(container, keep).then(function() { return keep; });
+        return fs.exec('/usr/bin/subparser-helper.sh', ['get_dashboard']).then(function(res) {
+            var data = {};
+            try { data = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+            if (!data || !Array.isArray(data.sections) || !data.sections.length)
+                throw new Error(_('Не удалось получить данные секций Podkop'));
+            self.dashboardSections = data.sections;
+            self.availableSections = data.sections.map(function(sec) { return sec.name; });
+            self.renderDashboard(container);
+            return data.sections;
         });
     },
 
@@ -882,7 +960,7 @@ return view.extend({
         var s = sec || 'main';
         var badges = Array.from(container.querySelectorAll('.node-delay-badge'));
         badges.forEach(function(b) { b.innerText = '...'; b.style.color = '#888'; });
-        var summary = document.getElementById('subparser_ping_summary');
+        var summary = container.querySelector('.subparser-ping-summary');
         if (summary) summary.textContent = _('Измерение задержек...');
 
         var setBadge = function(b, delay) {
@@ -968,33 +1046,82 @@ return view.extend({
         }).catch(function() { legacy(); });
     },
 
-    saveSelectedNodes: function(container, sec) {
-        var self = this;
-        var s = sec || 'main';
-        var checkboxes = container.querySelectorAll('input[type="checkbox"]:checked');
+    collectSelected: function(block) {
         var selectedLinks = [];
-        checkboxes.forEach(function(cb) {
+        block.querySelectorAll('.subparser-node-grid input[type="checkbox"]:checked').forEach(function(cb) {
             var link = cb.getAttribute('data-link');
             if (link) selectedLinks.push(link);
         });
+        return selectedLinks;
+    },
+
+    dashboardRoot: function(block) {
+        return block.closest('#subparser_dashboard_box') || block;
+    },
+
+    saveSectionNodes: function(block, sec) {
+        var self = this;
+        var s = sec || 'main';
+        var selectedLinks = this.collectSelected(block);
 
         if (selectedLinks.length === 0) {
-            ui.addNotification(null, E('p', {}, _('Выберите хотя бы один сервер!')), 'danger');
+            ui.addNotification(null, E('p', {}, _('Выберите хотя бы один сервер в секции ') + s + '!'), 'danger');
             return;
         }
 
         ui.showModal(_('Сохранение'), [ E('p', { 'class': 'spinning' }, _('Запись выбранных узлов в секцию ' + s + ' (' + selectedLinks.length + ' шт.)...')) ]);
-        var payload = selectedLinks.join('\n') + '\n';
 
-        fs.write('/tmp/subparser_selected.txt', payload).then(function() {
+        fs.write('/tmp/subparser_selected.txt', selectedLinks.join('\n') + '\n').then(function() {
             return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', s]);
         }).then(function(res) {
             var data = {};
             try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
             if (data.status && data.status !== 'ok') throw new Error(data.message || _('Ошибка записи'));
             ui.hideModal();
-            ui.addNotification(null, E('p', {}, _('Серверы успешно сохранены в Podkop! (' + selectedLinks.length + ' шт.)')), 'info');
-            return self.reloadLinks(container, s);
+            ui.addNotification(null, E('p', {}, _('Секция ') + s + _(': сохранено узлов — ') + selectedLinks.length), 'info');
+            return self.reloadDashboard(self.dashboardRoot(block));
+        }).catch(function(err) {
+            ui.hideModal();
+            ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + (err.message || err)), 'danger');
+        });
+    },
+
+    saveAllSelected: function(root) {
+        var self = this;
+        var blocks = root.querySelectorAll('.subparser-dashboard-section');
+        var jobs = [];
+        Array.prototype.forEach.call(blocks, function(block) {
+            var sec = block.getAttribute('data-section');
+            var links = self.collectSelected(block);
+            if (links.length) jobs.push({ sec: sec, links: links });
+        });
+
+        if (!jobs.length) {
+            ui.addNotification(null, E('p', {}, _('Не выбрано ни одного сервера ни в одной секции!')), 'danger');
+            return;
+        }
+
+        ui.showModal(_('Сохранение'), [ E('p', { 'class': 'spinning' },
+            _('Запись выбранных узлов в секции: ') + jobs.map(function(j) { return j.sec; }).join(', ') + '...') ]);
+
+        var chain = Promise.resolve();
+        jobs.forEach(function(job) {
+            chain = chain.then(function() {
+                return fs.write('/tmp/subparser_selected.txt', job.links.join('\n') + '\n').then(function() {
+                    return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', job.sec]);
+                }).then(function(res) {
+                    var data = {};
+                    try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+                    if (data.status && data.status !== 'ok')
+                        throw new Error(job.sec + ': ' + (data.message || _('Ошибка записи')));
+                });
+            });
+        });
+
+        chain.then(function() {
+            ui.hideModal();
+            ui.addNotification(null, E('p', {}, _('Серверы сохранены в Podkop. Секций: ') + jobs.length), 'info');
+            return self.reloadDashboard(root);
         }).catch(function(err) {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + (err.message || err)), 'danger');
