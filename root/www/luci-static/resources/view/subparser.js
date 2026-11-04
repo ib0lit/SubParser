@@ -106,42 +106,61 @@ return view.extend({
         var links = secData.links || [];
         var selector = secData.selector || {};
         var urltest = secData.urltest || {};
-
-        var badge = function(text, color) {
-            return E('span', {
-                'style': 'display: inline-block; padding: 4px 9px; border-radius: 12px; ' +
-                    'background: rgba(255,255,255,0.06); border: 1px solid ' + color + '; color: ' + color + ';'
-            }, text);
-        };
-
-        var activeBadges = [];
         var apiAvailable = secData.api !== false;
+
+        var baseCardStyle = 'background: #1e1e1e; border-radius: 8px; padding: 12px 14px; ' +
+            'display: flex; flex-direction: column; justify-content: space-between; color: #eee; ' +
+            'box-shadow: 0 2px 4px rgba(0,0,0,0.2);';
+        var normalBorder = ' border: 1px solid #333;';
+        var activeBorder = ' border: 2px solid #00e676; box-shadow: 0 0 0 1px rgba(0,230,118,0.35), 0 2px 10px rgba(0,230,118,0.18);';
+
+        // URLTest — отдельная карточка в начале секции. Она показывает сервер,
+        // который выбрала группа URLTest, даже если селектор сейчас указывает
+        // на конкретный узел вручную.
+        var urlTitle, urlSubtitle, urlState;
         if (!apiAvailable) {
-            activeBadges.push(badge(_('Селектор: API недоступен'), '#888'));
-            activeBadges.push(badge(_('URLTest: API недоступен'), '#888'));
+            urlTitle = _('Нет данных');
+            urlSubtitle = _('Clash API Podkop недоступен');
+            urlState = '—';
+        } else if (!urltest.enabled) {
+            urlTitle = _('Не включён');
+            urlSubtitle = _('Группа URLTest отсутствует в конфигурации');
+            urlState = _('выкл');
+        } else if (urltest.now) {
+            urlTitle = self.nodeNameForTag(secData, urltest.now) || urltest.now;
+            urlSubtitle = _('Сервер, который сейчас выбирает URLTest');
+            urlState = _('авто');
         } else {
-            if (selector.now) {
-                if (selector.mode === 'auto') {
-                    activeBadges.push(badge(_('Селектор: авто (URLTest)'), '#4fc3f7'));
-                } else {
-                    var selName = self.nodeNameForTag(secData, selector.now);
-                    activeBadges.push(badge(_('Селектор: ') + (selName || selector.now), '#00e676'));
-                }
-            } else {
-                activeBadges.push(badge(_('Селектор: нет данных'), '#888'));
-            }
-            if (urltest.enabled) {
-                var urlName = self.nodeNameForTag(secData, urltest.now);
-                activeBadges.push(badge(_('URLTest активен: ') + (urlName || urltest.now || '—'), '#ffb300'));
-            } else {
-                activeBadges.push(badge(_('URLTest выключен'), '#888'));
-            }
+            urlTitle = _('Не выбран');
+            urlSubtitle = _('URLTest включён, но активный сервер не определён');
+            urlState = _('авто');
         }
+
+        var urltestSelected = selector.mode === 'auto' ||
+            (selector.now && urltest.tag && selector.now === urltest.tag);
+
+        var urlCard = E('div', {
+            'id': 'card_' + (urltest.tag || (sec + '-urltest-out')),
+            'class': 'subparser-urltest-card',
+            'style': baseCardStyle + (urltestSelected ? activeBorder : normalBorder) +
+                ' background: linear-gradient(135deg, #1b2620, #1e1e1e);'
+        }, [
+            E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
+                E('div', { 'style': 'flex: 1; min-width: 0;' }, [
+                    E('div', { 'style': 'font-weight: 700; font-size: 12px; color: #4fc3f7; text-transform: uppercase; letter-spacing: 0.5px;' }, 'URLTest'),
+                    E('div', { 'style': 'margin-top: 6px; font-weight: 600; font-size: 14px; line-height: 1.3; word-break: break-word;' }, urlTitle)
+                ]),
+                E('span', { 'style': 'font-size: 11px; color: #888; white-space: nowrap; text-transform: uppercase;' }, urlState)
+            ]),
+            E('div', { 'style': 'margin-top: 14px; font-size: 12px; color: #999; line-height: 1.35;' }, urlSubtitle)
+        ]);
 
         var grid = E('div', {
             'class': 'subparser-node-grid',
             'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px;'
         });
+
+        grid.appendChild(urlCard);
 
         if (!links.length) {
             grid.appendChild(E('div', { 'style': 'padding: 12px; color: #888;' },
@@ -150,9 +169,10 @@ return view.extend({
             links.forEach(function(link, idx) {
                 var info = self.parseNodeInfo(link);
                 var tag = sec + '-' + (idx + 1) + '-out';
+                var selected = selector.now === tag;
                 grid.appendChild(E('div', {
                     'id': 'card_' + tag,
-                    'style': 'background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: space-between; color: #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'
+                    'style': baseCardStyle + (selected ? activeBorder : normalBorder)
                 }, [
                     E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
                         E('div', { 'style': 'font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; flex: 1;' }, info.name),
@@ -174,9 +194,7 @@ return view.extend({
             'style': 'margin-bottom: 22px; padding: 14px; border: 1px solid #333; border-radius: 10px; background: #181818;'
         }, [
             E('div', { 'style': 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;' }, [
-                E('h3', { 'style': 'margin: 0; font-size: 16px;' }, '📁 ' + sec),
-                E('div', { 'class': 'subparser-active-nodes',
-                    'style': 'display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px;' }, activeBadges)
+                E('h3', { 'style': 'margin: 0; font-size: 16px;' }, '📁 ' + sec)
             ]),
             E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;' }, [
                 E('button', {
@@ -892,6 +910,7 @@ return view.extend({
             E('ul', { 'style': 'margin: 8px 0 0 18px; padding: 0; line-height: 1.5; cursor: default;' }, [
                 E('li', {}, _('На странице показаны все секции Podkop сразу.')),
                 E('li', {}, _('Для каждой секции видно, какой сервер выбран в селекторе и какой сервер активен в URLTest (если он включён).')),
+                E('li', {}, _('Карточка URLTest всегда стоит первой и показывает её текущий сервер. Выбор селектора выделен зелёной рамкой.')),
                 E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
                 E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
             ])
