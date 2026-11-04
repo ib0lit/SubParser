@@ -308,6 +308,14 @@ def switch_active_node(section, index):
     return False, tag
 
 
+def switch_to_tag(section, tag):
+    """Переключает селектор секции на произвольный тег: узел или URLTest."""
+    selector_name, _ = _find_selector(section)
+    status, _ = _api_request(f"/proxies/{urllib.parse.quote(selector_name)}",
+                             method="PUT", payload={"name": tag}, timeout=3)
+    return status in (200, 204), selector_name
+
+
 def _selector_data(section, proxies):
     """Возвращает (имя селектора, данные) из уже полученного /proxies."""
     name = f"{section}-out"

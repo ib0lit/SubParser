@@ -303,6 +303,39 @@ print(json.dumps({
 PYEOF
         ;;
 
+    set_active)
+        # Переключение селектора секции без перехода в Podkop.
+        TAG="$3"
+        case "$TAG" in
+            ""|*[!A-Za-z0-9._-]*)
+                echo '{"status": "error", "message": "Недопустимый тег узла"}'
+                exit 1
+                ;;
+        esac
+        SECTION="$SECTION" TAG="$TAG" python3 - <<'PYEOF'
+import json
+import os
+import sys
+
+sys.path.insert(0, "/usr/lib")
+section = os.environ.get("SECTION", "main")
+tag = os.environ.get("TAG", "")
+try:
+    from subparser.podkop import switch_to_tag
+    ok, selector = switch_to_tag(section, tag)
+except Exception as exc:
+    print(json.dumps({"status": "error", "message": str(exc)[:200]}, ensure_ascii=False))
+    raise SystemExit(0)
+
+print(json.dumps({
+    "status": "ok" if ok else "error",
+    "message": "" if ok else "Не удалось переключить селектор",
+    "selector": selector,
+    "tag": tag,
+}, ensure_ascii=False))
+PYEOF
+        ;;
+
     save_selected)
         SRC_FILE="/tmp/subparser_selected.txt"
         if [ ! -s "$SRC_FILE" ]; then

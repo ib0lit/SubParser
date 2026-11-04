@@ -139,11 +139,31 @@ return view.extend({
         var urltestSelected = selector.mode === 'auto' ||
             (selector.now && urltest.tag && selector.now === urltest.tag);
 
+        var activateCurrent = function(ev, tag, alreadyActive, allowed, reason) {
+            if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON'))
+                return;
+            if (!allowed) {
+                ui.addNotification(null, E('p', reason || _('Clash API Podkop недоступен — переключение невозможно.')), 'warning');
+                return;
+            }
+            if (alreadyActive) return;
+            self.switchActiveNode(ev.currentTarget.closest('.subparser-dashboard-section'), sec, tag);
+        };
+
         var urlCard = E('div', {
             'id': 'card_' + (urltest.tag || (sec + '-urltest-out')),
             'class': 'subparser-urltest-card',
+            'title': urltest.enabled ? _('Нажмите, чтобы включить авто-режим URLTest') : _('URLTest выключен'),
             'style': baseCardStyle + (urltestSelected ? activeBorder : normalBorder) +
-                ' background: linear-gradient(135deg, #1b2620, #1e1e1e);'
+                ' background: linear-gradient(135deg, #1b2620, #1e1e1e);' +
+                (urltest.enabled && apiAvailable ? ' cursor: pointer;' : ''),
+            'click': function(ev) {
+                var reason = !apiAvailable
+                    ? _('Clash API Podkop недоступен — переключение невозможно.')
+                    : _('URLTest выключен.');
+                activateCurrent(ev, urltest.tag, urltestSelected,
+                    apiAvailable && urltest.enabled && !!urltest.tag, reason);
+            }
         }, [
             E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
                 E('div', { 'style': 'flex: 1; min-width: 0;' }, [
@@ -172,7 +192,12 @@ return view.extend({
                 var selected = selector.now === tag;
                 grid.appendChild(E('div', {
                     'id': 'card_' + tag,
-                    'style': baseCardStyle + (selected ? activeBorder : normalBorder)
+                    'title': _('Нажмите, чтобы сделать сервер активным'),
+                    'style': baseCardStyle + (selected ? activeBorder : normalBorder) +
+                        (apiAvailable ? ' cursor: pointer;' : ''),
+                    'click': function(ev) {
+                        activateCurrent(ev, tag, selected, apiAvailable);
+                    }
                 }, [
                     E('div', { 'style': 'display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;' }, [
                         E('div', { 'style': 'font-weight: 600; font-size: 13px; line-height: 1.3; word-break: break-word; flex: 1;' }, info.name),
@@ -911,6 +936,8 @@ return view.extend({
                 E('li', {}, _('На странице показаны все секции Podkop сразу.')),
                 E('li', {}, _('Для каждой секции видно, какой сервер выбран в селекторе и какой сервер активен в URLTest (если он включён).')),
                 E('li', {}, _('Карточка URLTest всегда стоит первой и показывает её текущий сервер. Выбор селектора выделен зелёной рамкой.')),
+                E('li', {}, _('Клик по карточке узла сразу переключает на него селектор. Клик по карточке URLTest возвращает авто-режим.')),
+                E('li', {}, _('Чекбоксы и «💾 Применить» нужны для записи выбранного списка узлов в конфигурацию Podkop.')),
                 E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
                 E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
             ])
@@ -963,6 +990,14 @@ return view.extend({
 
     reloadDashboard: function(container) {
         var self = this;
+        // Переключение активного узла не должно сбрасывать галочки, которые
+        // пользователь уже расставил для применения списка.
+        var unchecked = {};
+        Array.prototype.forEach.call(
+            container.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]'),
+            function(cb) {
+                if (!cb.checked) unchecked[cb.getAttribute('data-link')] = true;
+            });
         return fs.exec('/usr/bin/subparser-helper.sh', ['get_dashboard']).then(function(res) {
             var data = {};
             try { data = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
@@ -971,6 +1006,13 @@ return view.extend({
             self.dashboardSections = data.sections;
             self.availableSections = data.sections.map(function(sec) { return sec.name; });
             self.renderDashboard(container);
+            if (Object.keys(unchecked).length) {
+                Array.prototype.forEach.call(
+                    container.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]'),
+                    function(cb) {
+                        if (unchecked[cb.getAttribute('data-link')]) cb.checked = false;
+                    });
+            }
             return data.sections;
         });
     },
@@ -1063,6 +1105,24 @@ return view.extend({
             }
             runMissing(state);
         }).catch(function() { legacy(); });
+    },
+
+    switchActiveNode: function(block, sec, tag) {
+        var self = this;
+        if (this.switching) return;
+        this.switching = true;
+        return fs.exec('/usr/bin/subparser-helper.sh', ['set_active', sec, tag]).then(function(res) {
+            var data = {};
+            try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+            if (!data || data.status !== 'ok')
+                throw new Error((data && data.message) || _('Не удалось переключить селектор'));
+            ui.addNotification(null, E('p', {}, _('Секция ') + sec + _(': активный сервер переключён.')), 'info');
+            return self.reloadDashboard(self.dashboardRoot(block));
+        }).catch(function(err) {
+            ui.addNotification(null, E('p', {}, _('Ошибка переключения: ') + (err.message || err)), 'danger');
+        }).then(function() {
+            self.switching = false;
+        });
     },
 
     collectSelected: function(block) {
