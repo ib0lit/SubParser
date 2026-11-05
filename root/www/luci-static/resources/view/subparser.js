@@ -1438,6 +1438,29 @@ return view.extend({
         return run;
     },
 
+    // Ждём маркер фонового перезапуска Podkop. Каждый опрос — отдельный
+    // быстрый запрос, поэтому XHR не упирается в таймаут.
+    waitForRestart: function(token) {
+        var attempts = 0;
+        var done = false;
+        return new Promise(function(resolve) {
+            var tick = function() {
+                if (done) return;
+                if (attempts++ >= 45) { done = true; resolve(); return; }
+                fs.exec('/usr/bin/subparser-helper.sh', ['get_save_status', token])
+                    .then(function(res) {
+                        var data = {};
+                        try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+                        if (data && data.ready) { done = true; resolve(); return; }
+                        setTimeout(tick, 1000);
+                    }).catch(function() {
+                        setTimeout(tick, 1000);
+                    });
+            };
+            setTimeout(tick, 700);
+        });
+    },
+
     selectionForSection: function(sec) {
         var secData = null;
         for (var i = 0; i < (this.dashboardSections || []).length; i++) {
@@ -1486,6 +1509,8 @@ return view.extend({
                 try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
                 if (!data || data.status !== 'ok')
                     throw new Error((data && data.message) || _('Ошибка записи'));
+            }).then(function() {
+                return self.waitForRestart(nonce);
             });
         };
 
@@ -1548,6 +1573,8 @@ return view.extend({
                 try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
                 if (!data || data.status !== 'ok')
                     throw new Error((data && data.message) || _('Ошибка записи'));
+            }).then(function() {
+                return self.waitForRestart(nonce);
             });
         };
 

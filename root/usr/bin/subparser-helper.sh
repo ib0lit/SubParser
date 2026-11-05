@@ -390,7 +390,7 @@ for job in jobs:
 
 try:
     from subparser.podkop import replace_sections_links
-    ok, message = replace_sections_links(jobs)
+    ok, message = replace_sections_links(jobs, token=nonce)
 except Exception as exc:
     ok, message = False, str(exc)[:200] or "Не удалось сохранить узлы"
 
@@ -403,6 +403,26 @@ if ok:
                       "sections": [j["section"] for j in jobs]}, ensure_ascii=False))
 else:
     print(json.dumps({"status": "error", "message": message}, ensure_ascii=False))
+PYEOF
+        ;;
+
+    get_save_status)
+        # Статус фонового перезапуска Podkop после сохранения узлов.
+        # Второй аргумент — nonce сохранения, чтобы не принять старый маркер.
+        TOKEN="$2" python3 - <<'PYEOF'
+import json
+import os
+
+token = os.environ.get("TOKEN", "")
+data = {}
+try:
+    with open("/tmp/subparser_restart_ready.json", "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    data = {}
+ready = bool(data.get("ready")) and \
+    (not token or str(data.get("token", "")) == token)
+print(json.dumps({"ready": ready, "ok": bool(data.get("ok", True))}))
 PYEOF
         ;;
 

@@ -579,13 +579,49 @@ def _wait_for_api(timeout=6):
     return False
 
 
-def replace_sections_links(jobs, restart=True):
+def _spawn_restart_worker(plan, token=""):
+    """Запускает перезапуск Podkop и восстановление выбора в фоне.
+
+    LuCI-запрос не должен ждать рестарт: rpcd обрывает XHR по таймауту, а
+    Podkop может подниматься дольше. Helper отвечает сразу, готовность
+    отмечается в /tmp/subparser_restart_ready.json для опроса из UI.
+    """
+    ready_file = "/tmp/subparser_restart_ready.json"
+    safe_token = "".join(ch for ch in str(token) if ch.isalnum())[:32] or "manual"
+    plan_file = f"/tmp/subparser_restart_plan_{safe_token}.json"
+    try:
+        with open(ready_file, "w", encoding="utf-8") as fh:
+            json.dump({"ready": False, "token": token}, fh)
+    except Exception:
+        pass
+    try:
+        with open(plan_file, "w", encoding="utf-8") as fh:
+            json.dump({"token": token, "restore": plan}, fh, ensure_ascii=False)
+    except Exception:
+        plan_file = ""
+        plan = []
+    try:
+        args = ["python3", "/usr/lib/subparser/podkop_restart.py"]
+        if plan_file:
+            args.append(plan_file)
+        subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+    except Exception:
+        try:
+            subprocess.Popen([PODKOP_INIT, "restart"], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, close_fds=True)
+        except Exception:
+            pass
+
+
+def replace_sections_links(jobs, restart=True, token=""):
     """Перезаписывает списки узлов одной или нескольких секций.
 
-    Все секции пишутся до единственного рестарта Podkop, а ручной выбор
-    восстанавливается после него. Если перезапускать Podkop после каждой
-    секции, восстановленный выбор предыдущей секции сбрасывался следующим
-    рестартом, и активный сервер «перепрыгивал» на URLTest.
+    Все секции пишутся до единственного перезапуска Podkop, а ручной выбор
+    восстанавливается после него. Перезапуск выполняется в фоне: иначе
+    XHR в LuCI обрывался по таймауту.
 
     jobs: список словарей {section, links, selection?}, где selection —
     необязательный {'mode': 'manual'|'auto', 'link': ...}, снятый в LuCI.
@@ -617,20 +653,21 @@ def replace_sections_links(jobs, restart=True):
             return False, f"Не удалось записать конфигурацию секции {section}"
         prepared.append((section, mode, selected_link, clean))
 
-    if restart and prepared and restart_podkop():
-        _wait_for_api()
-        for section, mode, selected_link, links in prepared:
-            if mode == "manual" and selected_link:
-                restore_selection(section, mode, selected_link, links)
+    if restart and prepared:
+        plan = [{"section": section, "mode": mode, "link": selected_link,
+                 "links": links}
+                for section, mode, selected_link, links in prepared
+                if mode == "manual" and selected_link]
+        _spawn_restart_worker(plan, token)
     return True, ""
 
 
-def replace_section_links(section, links, restart=True, selection=None):
+def replace_section_links(section, links, restart=True, selection=None, token=""):
     """Совместимость: перезапись ровно одной секции."""
     job = {"section": section, "links": links}
     if selection is not None:
         job["selection"] = selection
-    return replace_sections_links([job], restart=restart)
+    return replace_sections_links([job], restart=restart, token=token)
 
 
 def delete_node(index, section="main"):
