@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import (LOCK_FILE, TEST_URL_GLOBAL, get_uci_val, get_uci_bool,
                      set_uci_val)
+from .podkop_sections import (PODKOP_SECTION_TYPES, PODKOP_SECTION_OPTIONS,
+                              parse_podkop_sections, get_all_podkop_sections)
 
 CACHED_DELAYS = {}
 PROGRESS_FILE = "/tmp/subparser_progress.json"
@@ -132,43 +134,9 @@ def _api_request(path, method="GET", payload=None, timeout=1.5):
         return None, None
 
 
-# Podkop хранит секции как `config section 'main'`. В старых версиях тип был
-# `podkop`. Тип нужно проверять явно: поиск подстроки `=podkop` находил только
-# `podkop.settings=settings`, поэтому все секции, кроме main, терялись.
-PODKOP_SECTION_TYPES = ("section", "podkop")
-PODKOP_SECTION_OPTIONS = ("urltest_proxy_links", "connection_type", "proxy_string")
-
-
-def parse_podkop_sections(raw_show: str) -> list:
-    """Имена секций Podkop из вывода `uci show podkop`."""
-    detected = []
-
-    def add(name):
-        if name and name != "settings" and name not in detected:
-            detected.append(name)
-
-    for line in (raw_show or "").splitlines():
-        line = line.strip()
-        if not line.startswith("podkop.") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        parts = key.split(".")
-        if len(parts) == 2:
-            if value.strip().strip("'\"") in PODKOP_SECTION_TYPES:
-                add(parts[1])
-        elif len(parts) >= 3 and parts[2] in PODKOP_SECTION_OPTIONS:
-            # Секция без явного типа (или нестандартный тип) — определяем по опциям.
-            add(parts[1])
-    return detected
-
-
-def get_all_podkop_sections():
-    try:
-        raw_secs = subprocess.check_output(["uci", "-q", "show", "podkop"],
-                                           text=True, stderr=subprocess.DEVNULL)
-    except Exception:
-        return ["main"]
-    return parse_podkop_sections(raw_secs) or ["main"]
+# Подробности определения секций и импорт функций — в `podkop_sections`.
+# Модуль вынесен отдельно, чтобы LuCI получал список секций без импорта
+# тяжёлых `urllib`/`concurrent.futures`.
 
 
 def get_managed_podkop_sections():

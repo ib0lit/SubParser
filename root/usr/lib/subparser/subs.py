@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request
 
 from .config import CONFIG_NAME, UA_CHOICES, UA_LIST, UA_MAP, get_ssl_ctx
+from .subs_list import parse_uci_export as _parse_uci_export
 
 
 def get_uci_opt(sec, opt, default=""):
@@ -12,49 +13,6 @@ def get_uci_opt(sec, opt, default=""):
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     val = res.stdout.strip().strip("'\"")
     return val if val else default
-
-
-def _parse_uci_export(raw):
-    """Разбирает `uci export` в словарь секций без запуска `uci` на каждую опцию.
-
-    Один вызов `uci export` заметно быстрее десятков `uci get`, которые
-    выполнялись для каждой подписки при открытии страницы LuCI.
-    """
-    import shlex
-    sections = {}
-    order = []
-    current = None
-    anon_count = {}
-    for line in (raw or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            parts = shlex.split(line, comments=False)
-        except ValueError:
-            continue
-        if not parts:
-            continue
-        if parts[0] == "config" and len(parts) >= 2:
-            stype = parts[1]
-            if len(parts) >= 3:
-                name = parts[2]
-            else:
-                # LuCI-секции подписок анонимные: `uci export` печатает
-                # `config subscription` без имени. Сохраняем совместимое
-                # обращение `@subscription[N]`, как у `uci show`.
-                idx = anon_count.get(stype, 0)
-                anon_count[stype] = idx + 1
-                name = f"@{stype}[{idx}]"
-            if name not in sections:
-                sections[name] = {"type": stype, "options": {}, "lists": {}}
-                order.append(name)
-            current = sections[name]
-        elif parts[0] == "option" and len(parts) >= 3 and current is not None:
-            current["options"][parts[1]] = parts[2]
-        elif parts[0] == "list" and len(parts) >= 3 and current is not None:
-            current["lists"].setdefault(parts[1], []).append(parts[2])
-    return sections, order
 
 
 def get_subscriptions():

@@ -86,14 +86,30 @@ return view.extend({
 
     load: function() {
         var self = this;
-        // Для формы достаточно лёгкого списка секций. Полный дашборд и
-        // сетевые данные GitHub грузим параллельно/в фоне, чтобы страница
-        // не висела на «Loading view...».
-        var sectionsTask = this.execJson('get_podkop_sections', ['main'], 2000).then(function(names) {
-            self.availableSections = Array.isArray(names) && names.length ? names : ['main'];
+        // Для формы нужны список секций и подписок: без них пропадают
+        // индивидуальные блоки и выбор источников. Эти данные читаются из
+        // локального UCI лёгкими модулями и должны успевать даже на слабом
+        // роутере. Прежний таймаут 1.5–2 с обрывал запрос на старте Python,
+        // из-за чего оставалась только main и исчезали источники подписок.
+        var cachedSections = this.readListCache('subparser_podkop_sections');
+        var cachedSubs = this.readListCache('subparser_subscriptions');
+        var sectionsTask = this.execJson('get_podkop_sections',
+            cachedSections || ['main'], 6000).then(function(names) {
+            if (Array.isArray(names) && names.length) {
+                self.availableSections = names;
+                self.writeListCache('subparser_podkop_sections', names);
+            } else {
+                self.availableSections = cachedSections || ['main'];
+            }
             return self.availableSections;
         });
-        var subsTask = this.execJson('get_subscriptions', [], 1500);
+        var subsTask = this.execJson('get_subscriptions',
+            cachedSubs || [], 6000).then(function(list) {
+            var subs = Array.isArray(list) ? list : (cachedSubs || []);
+            if (subs.length)
+                self.writeListCache('subparser_subscriptions', subs);
+            return subs;
+        });
 
         var cachedBranches = this.readListCache('subparser_github_branches');
         var cachedReleases = this.readListCache('subparser_github_releases');

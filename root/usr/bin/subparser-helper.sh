@@ -52,15 +52,17 @@ LOG_FILE="/tmp/subparser_sync.log"
 case "$ACTION" in
     get_podkop_sections)
         # Только чтение. Определение секций — одно на весь проект
-        # (subparser.podkop), иначе типы секций Podkop (`config section`)
-        # расходятся между LuCI, ботом, парсером и watchdog.
+        # (subparser.podkop_sections), иначе типы секций Podkop (`config section`)
+        # расходятся между LuCI, ботом, парсером и watchdog. Импортируем
+        # лёгкий модуль: полный subparser.podkop тянет urllib и на слабых
+        # роутерах не укладывался в таймаут открытия LuCI.
         python3 - <<'PYEOF'
 import json
 import sys
 
 sys.path.insert(0, "/usr/lib")
 try:
-    from subparser.podkop import get_all_podkop_sections
+    from subparser.podkop_sections import get_all_podkop_sections
     sections = get_all_podkop_sections()
 except Exception:
     sections = ["main"]
@@ -98,26 +100,21 @@ print(json.dumps(ordered, ensure_ascii=False))
         ;;
 
     get_subscriptions)
-        # Список подписок для выбора источников в LuCI.
+        # Список подписок для выбора источников в LuCI. Лёгкий модуль
+        # subparser.subs_list не импортирует urllib/config, поэтому страница
+        # не ждёт долгий старт Python на слабом роутере.
         python3 - <<'PYEOF'
 import json
 import sys
 
 sys.path.insert(0, "/usr/lib")
 try:
-    from subparser.subs import get_subscriptions
-    subs = get_subscriptions()
+    from subparser.subs_list import get_subscription_list
+    subs = get_subscription_list()
 except Exception:
     subs = []
 
-print(json.dumps([
-    {
-        "sec_name": s.get("sec_name", ""),
-        "name": s.get("name") or s.get("sec_name", ""),
-        "enabled": str(s.get("enabled", "1")),
-    }
-    for s in subs if s.get("sec_name")
-], ensure_ascii=False))
+print(json.dumps(subs, ensure_ascii=False))
 PYEOF
         ;;
 
