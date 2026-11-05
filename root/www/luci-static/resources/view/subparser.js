@@ -622,7 +622,6 @@ return view.extend({
         s.tab('dashboard', _('📊 Дашборд'));
         s.tab('sections', _('📁 Секции Podkop'));
         s.tab('telegram', _('💬 Telegram'));
-        s.tab('subscriptions', _('📋 Подписки'));
         s.tab('advanced', _('🛠 Дополнительно'));
         s.tab('watchdog', _('🛡 Watchdog'));
         s.tab('services', _('📡 Мониторинг сервисов'));
@@ -1206,7 +1205,9 @@ return view.extend({
         };
 
         var s_subs = m.section(form.GridSection, 'subscription', _('Источники подписок'));
-        s_subs.tab = 'subscriptions';
+        // Источники подписок живут только в «Основных настройках»;
+        // отдельной вкладки «Подписки» больше нет.
+        s_subs.tab = 'general';
         s_subs.addremove = true;
         s_subs.anonymous = true;
 
