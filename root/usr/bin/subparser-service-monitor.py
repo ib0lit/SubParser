@@ -42,6 +42,7 @@ LOG_FILE = "/tmp/subparser_service_monitor.log"
 LOG_MAX = 256 * 1024
 SAMPLE_INTERVAL = 5
 ACTIVE_HOLD = 30
+ACTION_RETRY = 60
 
 
 # --- UCI ----------------------------------------------------------------------
@@ -115,11 +116,29 @@ def probe(tag, url, timeout_ms):
     return None
 
 
+def _target_urls(target):
+    return [url for url in (target.get("urls") or []) if url]
+
+
+def _aggregate_target(target, delays_by_url):
+    """Сводит задержки по адресам в один результат проверки сервиса."""
+    urls = _target_urls(target)
+    delays = [value for value in delays_by_url.values()
+              if isinstance(value, int) and value > 0]
+    if target.get("require_all"):
+        ok = bool(urls) and len(delays) == len(urls)
+        delay = max(delays) if ok else None
+    else:
+        ok = bool(delays)
+        delay = min(delays) if delays else None
+    return ok, delay
+
+
 def probe_target(tag, target, timeout_ms):
-    """Проверяет все URL сервиса. Успех — хотя бы один ответ."""
-    urls = target.get("urls") or []
+    """Проверяет все URL сервиса через конкретный узел."""
+    urls = _target_urls(target)
     results = []
-    delays = []
+    delays = {}
     with ThreadPoolExecutor(max_workers=max(1, min(4, len(urls)))) as pool:
         futures = [pool.submit(probe, tag, url, timeout_ms) for url in urls]
         for url, future in zip(urls, futures):
@@ -128,16 +147,76 @@ def probe_target(tag, target, timeout_ms):
             except Exception:
                 value = None
             results.append({"url": url, "delay": value})
-            if value is not None:
-                delays.append(value)
-    require_all = bool(target.get("require_all"))
-    if require_all:
-        ok = bool(urls) and len(delays) == len(urls)
-        delay = max(delays) if ok else None
-    else:
-        ok = bool(delays)
-        delay = min(delays) if delays else None
+            delays[url] = value
+    ok, delay = _aggregate_target(target, delays)
     return {"ok": ok, "delay": delay, "urls": results}
+
+
+def scan_nodes(nodes, target, timeout_ms, max_workers=10):
+    """Перебирает узлы по всем адресам сервиса общим пулом запросов."""
+    urls = _target_urls(target)
+    if not nodes or not urls:
+        return {}
+    by_node = {name: {} for name in nodes}
+    tasks = [(name, url) for name in nodes for url in urls]
+    with ThreadPoolExecutor(
+            max_workers=max(1, min(max_workers, len(tasks)))) as pool:
+        futures = {pool.submit(probe, name, url, timeout_ms): (name, url)
+                   for name, url in tasks}
+        for future, (name, url) in futures.items():
+            try:
+                value = future.result()
+            except Exception:
+                value = None
+            by_node[name][url] = value
+    result = {}
+    for name in nodes:
+        ok, delay = _aggregate_target(target, by_node[name])
+        result[name] = {"ok": ok, "delay": delay, "urls": by_node[name]}
+    return result
+
+
+def probe_group_nodes(group_tag, target, timeout_ms):
+    """Проверяет всю URLTest-группу по каждому адресу сервиса.
+
+    sing-box сам параллельно тестирует узлы группы, поэтому один запрос
+    на адрес дешевле, чем отдельные запросы по всем узлам.
+    """
+    urls = _target_urls(target)
+    if not group_tag or not urls:
+        return {}
+    maps = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(urls))) as pool:
+        futures = {}
+        for url in urls:
+            path = ("/group/%s/delay?url=%s&timeout=%d"
+                    % (quote(group_tag), quote(url), timeout_ms))
+            futures[pool.submit(api, path, timeout_ms / 1000.0 + 5)] = url
+        for future, url in futures.items():
+            try:
+                status, data = future.result()
+            except Exception:
+                status, data = None, None
+            if status in (200, 204) and isinstance(data, dict):
+                maps[url] = data
+    if not maps:
+        return {}
+    names = set()
+    for data in maps.values():
+        names.update(data.keys())
+    result = {}
+    for name in names:
+        delays = {}
+        for url in urls:
+            value = maps.get(url, {}).get(name)
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = None
+            delays[url] = value if value and value > 0 else None
+        ok, delay = _aggregate_target(target, delays)
+        result[name] = {"ok": ok, "delay": delay}
+    return result
 
 
 # --- Podkop/прокси ------------------------------------------------------------
@@ -167,6 +246,19 @@ def find_group(proxies, section):
     return None, None
 
 
+def _concrete_node(proxies, group):
+    """Возвращает фактически выбранный узел группы, если он известен."""
+    if not isinstance(group, dict):
+        return None
+    name = group.get("now")
+    if name and name in proxies:
+        data = proxies.get(name)
+        if isinstance(data, dict) and str(data.get("type", "")).lower() \
+                not in ("selector", "urltest", "fallback", "loadbalance"):
+            return name
+    return None
+
+
 def resolve_active(proxies, section):
     selector_tag, selector = find_selector(proxies, section)
     if selector:
@@ -174,57 +266,80 @@ def resolve_active(proxies, section):
         if now and now in proxies:
             node = proxies[now]
             ntype = str(node.get("type", "")).lower()
-            mode = "auto" if ntype in ("urltest", "fallback", "loadbalance") \
-                or "urltest" in str(now).lower() else "manual"
+            auto = ntype in ("urltest", "fallback", "loadbalance") or \
+                "urltest" in str(now).lower()
+            if auto:
+                # Проверяем конкретный узел, выбранный группой, а не саму
+                # группу: так результат относится к реальному активному пути.
+                concrete = _concrete_node(proxies, node)
+                return {
+                    "selector_tag": selector_tag,
+                    "active_tag": concrete or now,
+                    "group_tag": now,
+                    "mode": "auto",
+                    "label": concrete or str(node.get("now") or now),
+                }
             return {
                 "selector_tag": selector_tag,
                 "active_tag": now,
-                "mode": mode,
+                "group_tag": None,
+                "mode": "manual",
                 "label": now,
             }
     group_tag, group = find_group(proxies, section)
     if group_tag:
+        concrete = _concrete_node(proxies, group)
         return {
             "selector_tag": selector_tag,
-            "active_tag": group_tag,
+            "active_tag": concrete or group_tag,
+            "group_tag": group_tag,
             "mode": "auto",
-            "label": group.get("now") or group_tag,
+            "label": concrete or str(group.get("now") or group_tag),
         }
     return None
 
 
 def find_nodes(proxies, section):
+    """Все конкретные узлы секции, которые можно выбрать селектором."""
+    nodes = []
+    seen = set()
+
+    def add(name):
+        if name in seen:
+            return
+        data = proxies.get(name)
+        if not isinstance(data, dict):
+            return
+        if str(data.get("type", "")).lower() in \
+                ("selector", "urltest", "fallback", "loadbalance"):
+            return
+        seen.add(name)
+        nodes.append(name)
+
     _, group = find_group(proxies, section)
     if group:
-        nodes = []
         for name in group.get("all") or []:
-            data = proxies.get(name)
-            if not isinstance(data, dict):
-                continue
-            if str(data.get("type", "")).lower() in \
-                    ("selector", "urltest", "fallback", "loadbalance"):
-                continue
-            nodes.append(name)
-        if nodes:
-            return nodes
+            add(name)
+
+    # Добираем узлы секции, которых может не быть в URLTest-группе
+    # (фильтры Podkop, ручной список и т.п.), иначе часть серверов
+    # никогда не проверяется.
+    prefix = section + "-"
+    suffix = "-out"
+    for name in proxies:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        if name[len(prefix):-len(suffix)].isdigit():
+            add(name)
+
+    if nodes:
+        return nodes
+
     _, selector = find_selector(proxies, section)
-    nodes = []
     if selector:
         for name in selector.get("all") or []:
-            data = proxies.get(name)
-            if not isinstance(data, dict):
-                continue
-            if str(data.get("type", "")).lower() in \
-                    ("selector", "urltest", "fallback", "loadbalance"):
-                continue
-            nodes.append(name)
+            add(name)
     return nodes
-
-
-def force_group(group_tag, url, timeout_ms):
-    path = ("/group/%s/delay?url=%s&timeout=%d"
-            % (quote(group_tag), quote(url), timeout_ms))
-    api(path, timeout=timeout_ms / 1000.0 + 2)
 
 
 def switch_selector(selector_tag, name):
@@ -233,39 +348,61 @@ def switch_selector(selector_tag, name):
     return status in (200, 204)
 
 
-def switch_to_best(proxies, section, info, target, timeout_ms):
-    """Перебирает узлы по всем URL сервиса и переключает ручной селектор."""
+def find_working_nodes(nodes, target, timeout_ms, group_tag=None,
+                       precomputed=None):
+    """Возвращает рабочие узлы, отсортированные по задержке."""
+    checked = {}
+    if precomputed:
+        for name in nodes:
+            if name in precomputed:
+                checked[name] = precomputed[name]
+    elif group_tag:
+        # Быстрый путь: sing-box сам параллельно тестирует всю группу.
+        group_results = probe_group_nodes(group_tag, target, timeout_ms)
+        for name in nodes:
+            if name in group_results:
+                checked[name] = group_results[name]
+    missing = [name for name in nodes if name not in checked]
+    if missing:
+        checked.update(scan_nodes(missing, target, timeout_ms))
+
+    working = []
+    for name in nodes:
+        result = checked.get(name)
+        if not result or not result.get("ok"):
+            continue
+        working.append({"node": name, "delay": result.get("delay")})
+    working.sort(key=lambda item: (
+        item["delay"] is None,
+        item["delay"] if item["delay"] is not None else 0))
+    return working
+
+
+def switch_to_best(proxies, section, info, target, timeout_ms,
+                   precomputed=None):
+    """Перебирает все узлы по всем URL сервиса и выбирает лучший."""
     selector_tag = info.get("selector_tag")
     nodes = find_nodes(proxies, section)
     if not selector_tag or not nodes:
         return None
 
-    best = None
-    best_delay = None
-    deadline = time.time() + 45
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for start in range(0, len(nodes), 4):
-            if time.time() >= deadline:
-                break
-            batch = nodes[start:start + 4]
-            futures = {pool.submit(probe_target, node, target, timeout_ms): node
-                       for node in batch}
-            for future in futures:
-                node = futures[future]
-                try:
-                    result = future.result()
-                except Exception:
-                    result = {"ok": False, "delay": None}
-                if result["ok"] and (best_delay is None or
-                                     result["delay"] < best_delay):
-                    best, best_delay = node, result["delay"]
+    selector = proxies.get(selector_tag)
+    if isinstance(selector, dict):
+        allowed = set(selector.get("all") or [])
+        if allowed:
+            nodes = [name for name in nodes if name in allowed] or nodes
 
-    if not best:
-        return None
-    if not switch_selector(selector_tag, best):
-        return None
-    time.sleep(1)
-    return {"node": best, "delay": best_delay}
+    group_tag = info.get("group_tag")
+    if not group_tag:
+        group_tag, _ = find_group(proxies, section)
+    candidates = find_working_nodes(nodes, target, timeout_ms,
+                                    group_tag, precomputed)
+    for candidate in candidates:
+        if not switch_selector(selector_tag, candidate["node"]):
+            continue
+        time.sleep(1)
+        return candidate
+    return None
 
 
 # --- Состояние, лог, уведомления ---------------------------------------------
@@ -300,11 +437,17 @@ def log(message):
 
 
 def _tg_call(method, payload, timeout=8):
-    """Вызов Telegram Bot API. Возвращает result или None при ошибке."""
+    """Вызов Telegram Bot API.
+
+    Возвращает (result, error). error = None при успехе, "gone" — если
+    сообщение уже нельзя редактировать, "transient" — если это временная
+    ошибка (таймаут, 429, сеть). Временную ошибку нельзя превращать в
+    новое сообщение: иначе при каждом сбое сети появляется дубль.
+    """
     token = cfg("tg_bot_token", "")
     chat_id = cfg("tg_chat_id", "")
     if not token or not chat_id:
-        return None
+        return None, "disabled"
     data = dict(payload)
     data["chat_id"] = chat_id
     data["parse_mode"] = "HTML"
@@ -315,19 +458,26 @@ def _tg_call(method, payload, timeout=8):
         raw = urllib.request.urlopen(req, timeout=timeout).read()
         result = json.loads(raw.decode("utf-8"))
         if result.get("ok"):
-            return result.get("result") or {}
-        return None
+            return result.get("result") or {}, None
+        return None, "transient"
     except urllib.error.HTTPError as exc:
-        # Повторное редактирование без изменений Telegram считает ошибкой.
+        description = ""
         try:
             result = json.loads(exc.read().decode("utf-8"))
-            if "not modified" in str(result.get("description", "")).lower():
-                return {}
+            description = str(result.get("description", "")).lower()
         except Exception:
             pass
-        return None
+        # Повторное редактирование без изменений Telegram считает ошибкой.
+        if "not modified" in description:
+            return {}, None
+        if method == "editMessageText" and (
+                "message to edit not found" in description or
+                "message can't be edited" in description or
+                "message_id_invalid" in description):
+            return None, "gone"
+        return None, "transient"
     except Exception:
-        return None
+        return None, "transient"
 
 
 def notify(st, message, cooldown):
@@ -345,16 +495,78 @@ def notify(st, message, cooldown):
     if message_id and now - sent_at < cooldown:
         edited = message + "\n\n🕒 Обновлено: %s" % \
             time.strftime("%d.%m %H:%M:%S", time.localtime(now))
-        if _tg_call("editMessageText", {
-                "message_id": message_id, "text": edited}) is not None:
-            st["tg_edited_at"] = now
+        result, error = _tg_call("editMessageText", {
+            "message_id": message_id, "text": edited})
+        if error != "gone":
+            # Успех или временная ошибка: id сообщения сохраняем, новое
+            # не отправляем. При временной ошибке повторим на следующем
+            # цикле, когда сеть/Telegram придут в себя.
+            if error is None:
+                st["tg_edited_at"] = now
             return
         # Сообщение удалено или слишком старое — отправим новое.
-    result = _tg_call("sendMessage", {"text": message})
-    if isinstance(result, dict) and result.get("message_id"):
+    result, error = _tg_call("sendMessage", {"text": message})
+    if error is None and isinstance(result, dict) and result.get("message_id"):
         st["tg_message_id"] = result["message_id"]
         st["tg_sent_at"] = now
         st["tg_edited_at"] = 0
+
+
+def notify_failure(st, section, target, reason, cooldown):
+    st["notified"] = True
+    st["last_reason"] = reason
+    notify(st, "⚠️ <b>Сервис недоступен</b>\n"
+           "Секция <b>%s</b>: <code>%s</code>\n%s"
+           % (html.escape(section), html.escape(target["label"]), reason),
+           cooldown)
+
+
+def maybe_restore_auto(proxies, section, info, target, st, timeout_ms,
+                       cooldown):
+    """Возвращает селектор в URLTest, когда группа уже выбрала рабочий узел.
+
+    После закрепления на конкретном узле URLTest продолжает работать сам.
+    Как только его выбор снова станет рабочим, возвращаем секцию в авто-
+    режим, чтобы закрепление не оставалось навсегда.
+    """
+    group_tag = st.get("pinned_group")
+    pinned = st.get("pinned_node")
+    if not group_tag or not pinned:
+        return proxies, info
+    if info.get("mode") != "manual" or info.get("active_tag") != pinned:
+        return proxies, info
+
+    now = int(time.time())
+    if now - int(st.get("pinned_check", 0) or 0) < ACTION_RETRY:
+        return proxies, info
+    st["pinned_check"] = now
+
+    _, group = find_group(proxies, section)
+    candidate = _concrete_node(proxies, group) if group else None
+    if not candidate or candidate == pinned or \
+            candidate == st.get("pinned_bad"):
+        return proxies, info
+    checked = probe_target(candidate, target, timeout_ms)
+    if not checked.get("ok"):
+        return proxies, info
+
+    selector_tag = info.get("selector_tag")
+    if not selector_tag or not switch_selector(selector_tag, group_tag):
+        return proxies, info
+    for key in ("pinned_group", "pinned_node", "pinned_bad", "pinned_check"):
+        st.pop(key, None)
+    log("RESTORE URLTEST %s / %s -> %s"
+        % (section, target["label"], group_tag))
+    notify(st, "🔁 <b>Возврат в URLTest</b>\n"
+           "Секция <b>%s</b>: <code>%s</code>\n"
+           "Группа выбрала рабочий узел: <code>%s</code>"
+           % (html.escape(section), html.escape(target["label"]),
+              html.escape(str(candidate))), cooldown)
+    status, data = api("/proxies", timeout=5)
+    if status in (200, 204) and isinstance(data, dict):
+        fresh = data.get("proxies", {})
+        return fresh, resolve_active(fresh, section) or info
+    return proxies, info
 
 
 # --- Трафик WAN ---------------------------------------------------------------
@@ -523,6 +735,9 @@ def run_cycle(targets, state):
                 st["fails"] = 0
                 st["notified"] = False
                 st["last_ok"] = int(time.time())
+                proxies, info = maybe_restore_auto(
+                    proxies, section, info, target, st, timeout_ms, cooldown)
+                save_state(state)
                 continue
 
             fails = int(st.get("fails", 0) or 0) + 1
@@ -533,10 +748,33 @@ def run_cycle(targets, state):
             if fails < threshold:
                 continue
 
-            if info["mode"] == "manual" and manual_switch:
+            # Тяжёлый перебор узлов не чаще раза в минуту: если сервис
+            # лежит у всех провайдеров, не нужно сканировать 25 серверов
+            # каждые 30 секунд. Сообщение при этом продолжаем обновлять.
+            now = int(time.time())
+            if now - int(st.get("last_action", 0) or 0) < ACTION_RETRY:
+                notify_failure(st, section, target,
+                               st.get("last_reason")
+                               or "Повторная проверка отложена.", cooldown)
+                save_state(state)
+                continue
+            st["last_action"] = now
+
+            # Ручной выбор: перебираем узлы по адресам сервиса и
+            # переключаем селектор на лучший.
+            if info["mode"] == "manual":
+                if not manual_switch:
+                    notify_failure(st, section, target,
+                                   "Узел не переключён: "
+                                   "автопереключение отключено.", cooldown)
+                    save_state(state)
+                    continue
                 switched = switch_to_best(proxies, section, info, target,
                                           timeout_ms)
                 if switched:
+                    for key in ("pinned_group", "pinned_node",
+                                "pinned_bad", "pinned_check"):
+                        st.pop(key, None)
                     st["notified"] = True
                     log("MANUAL SWITCH %s / %s -> %s (%sms)"
                         % (section, target["label"], switched["node"],
@@ -549,6 +787,7 @@ def run_cycle(targets, state):
                               html.escape(str(info["label"])),
                               html.escape(str(switched["node"])),
                               switched["delay"]), cooldown)
+                    save_state(state)
                     # Следующие цели должны проверяться уже через новый узел.
                     status3, data3 = api("/proxies", timeout=5)
                     if status3 in (200, 204) and isinstance(data3, dict):
@@ -556,38 +795,39 @@ def run_cycle(targets, state):
                         info = resolve_active(fresh, section) or info
                         proxies = fresh
                 else:
-                    st["notified"] = True
-                    notify(st, "⚠️ <b>Сервис недоступен</b>\n"
-                           "Секция <b>%s</b>: <code>%s</code>\n"
-                           "Ни один узел не открыл адрес."
-                           % (html.escape(section),
-                              html.escape(target["label"])), cooldown)
+                    notify_failure(st, section, target,
+                                   "Ни один узел не открыл адрес.",
+                                   cooldown)
+                    save_state(state)
                 continue
 
-            group_tag, group = find_group(proxies, section)
+            # URLTest: сначала даём группе перепроверить все узлы по
+            # каждому адресу сервиса. Раньше тест шёл только по первому
+            # URL, поэтому для Instagram с require_all группа могла
+            # оставить узел, не открывающий второй адрес.
+            group_tag = info.get("group_tag")
             if not group_tag:
-                st["notified"] = True
-                notify(st, "⚠️ <b>Сервис недоступен</b>\n"
-                       "Секция <b>%s</b>: <code>%s</code>\n"
-                       "Не найдена URLTest-группа для перепроверки."
-                       % (html.escape(section),
-                          html.escape(target["label"])), cooldown)
-                continue
-
-            before = str(group.get("now") or info["label"])
-            force_group(group_tag, (target.get("urls") or [""])[0], timeout_ms)
-            if group_retry > 0:
-                time.sleep(group_retry)
-            status2, data2 = api("/proxies", timeout=5)
-            if status2 in (200, 204) and isinstance(data2, dict):
-                info2 = resolve_active(data2.get("proxies", {}), section)
-                if info2:
+                group_tag, _ = find_group(proxies, section)
+            group_results = {}
+            if group_tag:
+                before = str(info.get("label") or group_tag)
+                group_results = probe_group_nodes(group_tag, target,
+                                                  timeout_ms)
+                log("URLTEST RETRY %s / %s: проверено %d узлов"
+                    % (section, target["label"], len(group_results)))
+                if group_retry > 0:
+                    time.sleep(group_retry)
+                status2, data2 = api("/proxies", timeout=5)
+                if status2 in (200, 204) and isinstance(data2, dict):
+                    fresh = data2.get("proxies", {})
+                    info2 = resolve_active(fresh, section) or info
                     checked = probe_target(info2["active_tag"], target,
                                            timeout_ms)
                     if checked["ok"]:
-                        _, group2 = find_group(data2.get("proxies", {}), section)
-                        after = str((group2 or {}).get("now") or info2["label"])
                         st["notified"] = True
+                        after = str(info2.get("label") or info2["active_tag"])
+                        log("URLTEST SWITCH %s / %s -> %s"
+                            % (section, target["label"], after))
                         notify(st, "🔁 <b>URLTest переключил узел</b>\n"
                                "Секция <b>%s</b>: <code>%s</code>\n"
                                "Узел: <code>%s</code> → <code>%s</code>"
@@ -595,13 +835,55 @@ def run_cycle(targets, state):
                                   html.escape(target["label"]),
                                   html.escape(before), html.escape(after)),
                                cooldown)
+                        save_state(state)
+                        proxies = fresh
+                        info = info2
                         continue
-            st["notified"] = True
-            notify(st, "⚠️ <b>Сервис недоступен</b>\n"
-                   "Секция <b>%s</b>: <code>%s</code>\n"
-                   "URLTest перепроверен, рабочий узел не найден."
-                   % (html.escape(section), html.escape(target["label"])),
-                   cooldown)
+                    proxies = fresh
+                    info = info2
+
+            # URLTest не справился: URLTest-группа продолжает держать узел,
+            # который не открывает сервис (её собственный тест это не
+            # видит). Закрепляем селектор на реально рабочем узле.
+            if manual_switch:
+                best = switch_to_best(proxies, section, info, target,
+                                      timeout_ms, group_results)
+                if best:
+                    st["notified"] = True
+                    st["pinned_group"] = group_tag or ""
+                    st["pinned_node"] = best["node"]
+                    st["pinned_bad"] = str(info.get("label") or "")
+                    st["pinned_check"] = 0
+                    log("PIN %s / %s -> %s (%sms)"
+                        % (section, target["label"], best["node"],
+                           best["delay"]))
+                    notify(st, "🔁 <b>URLTest не справился, выбран "
+                           "рабочий узел</b>\n"
+                           "Секция <b>%s</b>: <code>%s</code>\n"
+                           "Узел: <code>%s</code> → <code>%s</code> (%s ms)\n"
+                           "Селектор закреплён за рабочим узлом."
+                           % (html.escape(section),
+                              html.escape(target["label"]),
+                              html.escape(str(info["label"])),
+                              html.escape(str(best["node"])),
+                              best["delay"]), cooldown)
+                    save_state(state)
+                    status3, data3 = api("/proxies", timeout=5)
+                    if status3 in (200, 204) and isinstance(data3, dict):
+                        fresh = data3.get("proxies", {})
+                        info = resolve_active(fresh, section) or info
+                        proxies = fresh
+                    continue
+
+            if not manual_switch:
+                reason = "Автопереключение отключено в настройках."
+            elif group_tag:
+                reason = ("URLTest перепроверен по всем адресам, "
+                          "рабочий узел не найден.")
+            else:
+                reason = "Не найдена URLTest-группа для перепроверки."
+            notify_failure(st, section, target, reason, cooldown)
+            save_state(state)
 
 
 # --- Диагностика --------------------------------------------------------------
