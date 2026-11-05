@@ -89,8 +89,12 @@ except Exception:
 try:
     from subparser.podkop import (capture_selection, restore_selection,
                                   fetch_proxies, restart_podkop,
-                                  get_proxies as get_podkop_proxies)
+                                  get_proxies as get_podkop_proxies,
+                                  get_podkop_links)
 except Exception:
+    def get_podkop_links(section="main"):
+        return []
+
     def get_podkop_proxies():
         return {}
 
@@ -440,10 +444,10 @@ def resolve_section_prune(section, per_section):
 
 
 def read_section_links(section):
+    # Общий читатель сохраняет границы элементов списка даже для ссылок
+    # с пробелами в имени узла.
     try:
-        out = subprocess.check_output(["uci", "-q", "get", f"podkop.{section}.urltest_proxy_links"],
-                                      text=True, stderr=subprocess.DEVNULL).strip()
-        return [l.strip() for l in out.split() if l.strip()]
+        return get_podkop_links(section)
     except Exception:
         return []
 

@@ -193,7 +193,46 @@ def get_managed_podkop_sections():
         return all_sections
 
 
+def _parse_uci_export_links(raw, section):
+    """Разбирает `uci export` и сохраняет границы элементов списка.
+
+    `uci get` печатает список через пробел, поэтому ссылки с пробелом в
+    имени узла (`#Мой сервер`) рассыпались на несколько «серверов». После
+    сохранения такие обрывки оставались в секции. `uci export` печатает
+    каждый элемент отдельной строкой в кавычках — shlex возвращает его целиком.
+    """
+    import shlex
+    current = None
+    found = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(line, comments=False)
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        if parts[0] == "config" and len(parts) >= 3:
+            current = parts[2]
+        elif parts[0] == "list" and len(parts) >= 3 and \
+                current == section and parts[1] == "urltest_proxy_links":
+            found.extend(parts[2:])
+    return found
+
+
 def get_podkop_links(section="main"):
+    try:
+        raw = subprocess.check_output(["uci", "-q", "export", "podkop"],
+                                      text=True, stderr=subprocess.DEVNULL)
+        links = _parse_uci_export_links(raw, section)
+        # Пустая секция — тоже валидный ответ; fallback нужен только если
+        # экспорт не дал вообще ничего, а старый способ что-то находит.
+        if links:
+            return links
+    except Exception:
+        pass
     try:
         raw = subprocess.check_output(["uci", "-q", "get", f"podkop.{section}.urltest_proxy_links"],
                                       text=True, stderr=subprocess.DEVNULL).strip()
@@ -527,6 +566,71 @@ def _write_links(section, links, restart=False):
         subprocess.Popen("nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &",
                          shell=True)
     return True
+
+
+def _wait_for_api(timeout=6):
+    """Ждёт готовности Clash API после рестарта, чтобы LuCI сразу увидел список."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _proxies, status = fetch_proxies()
+        if status in (200, 204):
+            return True
+        time.sleep(0.7)
+    return False
+
+
+def replace_sections_links(jobs, restart=True):
+    """Перезаписывает списки узлов одной или нескольких секций.
+
+    Все секции пишутся до единственного рестарта Podkop, а ручной выбор
+    восстанавливается после него. Если перезапускать Podkop после каждой
+    секции, восстановленный выбор предыдущей секции сбрасывался следующим
+    рестартом, и активный сервер «перепрыгивал» на URLTest.
+
+    jobs: список словарей {section, links, selection?}, где selection —
+    необязательный {'mode': 'manual'|'auto', 'link': ...}, снятый в LuCI.
+    """
+    prepared = []
+    for job in jobs or []:
+        section = str(job.get("section", "") or "").strip()
+        if not section:
+            return False, "Не указана секция Podkop"
+        clean = [str(link).strip() for link in (job.get("links") or [])
+                 if str(link).strip()]
+        if not clean:
+            return False, f"Нельзя удалить все узлы секции {section}"
+
+        selection = job.get("selection") if isinstance(job, dict) else None
+        if isinstance(selection, dict) and selection.get("mode"):
+            mode = str(selection.get("mode"))
+            selected_link = selection.get("link")
+        else:
+            # Резервный путь: определяем выбор через Clash API до записи.
+            old_links = get_podkop_links(section)
+            try:
+                proxies = get_proxies()
+                mode, selected_link = _capture_selection(section, old_links, proxies)
+            except Exception:
+                mode, selected_link = "unknown", None
+
+        if not _write_links(section, clean):
+            return False, f"Не удалось записать конфигурацию секции {section}"
+        prepared.append((section, mode, selected_link, clean))
+
+    if restart and prepared and restart_podkop():
+        _wait_for_api()
+        for section, mode, selected_link, links in prepared:
+            if mode == "manual" and selected_link:
+                restore_selection(section, mode, selected_link, links)
+    return True, ""
+
+
+def replace_section_links(section, links, restart=True, selection=None):
+    """Совместимость: перезапись ровно одной секции."""
+    job = {"section": section, "links": links}
+    if selection is not None:
+        job["selection"] = selection
+    return replace_sections_links([job], restart=restart)
 
 
 def delete_node(index, section="main"):

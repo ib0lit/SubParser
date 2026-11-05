@@ -312,28 +312,98 @@ PYEOF
         ;;
 
     save_selected)
-        SRC_FILE="/tmp/subparser_selected.txt"
-        if [ ! -s "$SRC_FILE" ]; then
-            echo '{"status": "error", "message": "Файл пуст или не найден"}'
-            exit 1
-        fi
-        TMP_BATCH=$(mktemp /tmp/subparser_uci.XXXXXX) || exit 1
-        printf 'delete podkop.%s.urltest_proxy_links\n' "$SECTION" > "$TMP_BATCH"
-        while IFS= read -r link || [ -n "$link" ]; do
-            link_clean=$(printf '%s' "$link" | tr -d '\r\n')
-            [ -z "$link_clean" ] && continue
-            esc=$(printf '%s' "$link_clean" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-            printf 'add_list podkop.%s.urltest_proxy_links="%s"\n' "$SECTION" "$esc" >> "$TMP_BATCH"
-        done < "$SRC_FILE"
-        if uci -q batch < "$TMP_BATCH" && uci -q commit podkop; then
-            rm -f "$SRC_FILE" "$TMP_BATCH"
-            /etc/init.d/podkop restart >/dev/null 2>&1
-            echo '{"status": "ok"}'
-        else
-            rm -f "$TMP_BATCH"
-            echo '{"status": "error", "message": "Не удалось записать конфигурацию Podkop"}'
-            exit 1
-        fi
+        # Список выбранных узлов пишется LuCI в JSON вместе с именем секции
+        # и одноразовым nonce. Проверка nonce не даёт применить файл,
+        # записанный другой вкладкой или параллельным сохранением, к чужой
+        # секции — раньше из-за общего /tmp-файла узлы «переезжали».
+        SECTION="$SECTION" SAVE_NONCE="$3" python3 - <<'PYEOF'
+import json
+import os
+import sys
+
+sys.path.insert(0, "/usr/lib")
+section = os.environ.get("SECTION", "main")
+nonce = os.environ.get("SAVE_NONCE", "")
+src = "/tmp/subparser_selected.txt"
+
+
+def fail(message):
+    print(json.dumps({"status": "error", "message": message}, ensure_ascii=False))
+    raise SystemExit(0)
+
+
+try:
+    with open(src, "r", encoding="utf-8") as fh:
+        payload = fh.read()
+except Exception:
+    fail("Файл выбранных узлов не найден")
+
+try:
+    data = json.loads(payload)
+except Exception:
+    data = None
+
+jobs = []
+file_nonce = ""
+if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+    file_nonce = str(data.get("nonce", ""))
+    for item in data["jobs"]:
+        if not isinstance(item, dict):
+            continue
+        jobs.append({
+            "section": str(item.get("section", "")).strip(),
+            "links": [str(link).strip() for link in item.get("links", [])
+                      if str(link).strip()],
+            "selection": item.get("selection"),
+        })
+elif isinstance(data, dict):
+    file_section = str(data.get("section", "")).strip()
+    file_nonce = str(data.get("nonce", ""))
+    if file_section and file_section != section:
+        fail("Файл выбранных узлов относится к другой секции")
+    jobs = [{
+        "section": section,
+        "links": [str(link).strip() for link in data.get("links", [])
+                  if str(link).strip()],
+        "selection": data.get("selection"),
+    }]
+elif isinstance(data, list):
+    jobs = [{
+        "section": section,
+        "links": [str(link).strip() for link in data if str(link).strip()],
+    }]
+else:
+    jobs = [{
+        "section": section,
+        "links": [line.strip() for line in payload.splitlines() if line.strip()],
+    }]
+
+if nonce and file_nonce and file_nonce != nonce:
+    fail("Выбор узлов устарел: повторите сохранение")
+if not jobs:
+    fail("Не выбрано ни одного сервера")
+for job in jobs:
+    if not job["section"]:
+        fail("Не указана секция Podkop")
+    if not job["links"]:
+        fail("Не выбрано ни одного сервера в секции " + job["section"])
+
+try:
+    from subparser.podkop import replace_sections_links
+    ok, message = replace_sections_links(jobs)
+except Exception as exc:
+    ok, message = False, str(exc)[:200] or "Не удалось сохранить узлы"
+
+if ok:
+    try:
+        os.remove(src)
+    except Exception:
+        pass
+    print(json.dumps({"status": "ok", "count": sum(len(j["links"]) for j in jobs),
+                      "sections": [j["section"] for j in jobs]}, ensure_ascii=False))
+else:
+    print(json.dumps({"status": "error", "message": message}, ensure_ascii=False))
+PYEOF
         ;;
 
     ping_section)

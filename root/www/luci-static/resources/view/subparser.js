@@ -1157,6 +1157,7 @@ return view.extend({
                 E('li', {}, _('URL для проверки пингов можно изменить в поле над кнопками — он сохраняется в этом браузере.')),
                 E('li', {}, _('Активный сервер URLTest обновляется автоматически раз в 15 секунд, пока открыта эта вкладка.')),
                 E('li', {}, _('Чекбоксы и «💾 Применить» нужны для записи выбранного списка узлов в конфигурацию Podkop.')),
+                E('li', {}, _('Снять все галочки в секции нельзя: Podkop не запустится без узлов. Активный сервер при сохранении сохраняется.')),
                 E('li', {}, _('«⚡ Пинги секции» измеряет задержки серверов этой секции. «💾 Применить секцию» записывает только выбранные узлы этой секции.')),
                 E('li', {}, _('Кнопки сверху обновляют данные и применяют выбор сразу во всех секциях.'))
             ])
@@ -1424,6 +1425,41 @@ return view.extend({
         return block.closest('#subparser_dashboard_box') || block;
     },
 
+    newSaveNonce: function() {
+        return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    },
+
+    // Все сохранения выполняются строго по очереди. Раньше два нажатия
+    // «Применить» могли перезаписать общий /tmp-файл и применить выбор
+    // одной секции к другой.
+    enqueueSave: function(task) {
+        var run = (this._saveQueue || Promise.resolve()).then(task);
+        this._saveQueue = run.then(function() {}, function() {});
+        return run;
+    },
+
+    selectionForSection: function(sec) {
+        var secData = null;
+        for (var i = 0; i < (this.dashboardSections || []).length; i++) {
+            if (this.dashboardSections[i].name === sec) { secData = this.dashboardSections[i]; break; }
+        }
+        if (!secData || !secData.selector) return null;
+        var selector = secData.selector;
+        if (selector.mode === 'auto') return { mode: 'auto', link: null };
+        if (selector.mode !== 'manual' || !selector.now) return null;
+        var prefix = sec + '-';
+        var suffix = '-out';
+        var tag = selector.now;
+        if (tag.indexOf(prefix) !== 0 || tag.slice(-suffix.length) !== suffix)
+            return null;
+        var middle = tag.slice(prefix.length, -suffix.length);
+        if (!/^\d+$/.test(middle)) return null;
+        var index = parseInt(middle, 10) - 1;
+        var links = secData.links || [];
+        if (index < 0 || index >= links.length) return null;
+        return { mode: 'manual', link: links[index] };
+    },
+
     saveSectionNodes: function(block, sec) {
         var self = this;
         var s = sec || 'main';
@@ -1436,12 +1472,24 @@ return view.extend({
 
         ui.showModal(_('Сохранение'), [ E('p', { 'class': 'spinning' }, _('Запись выбранных узлов в секцию ' + s + ' (' + selectedLinks.length + ' шт.)...')) ]);
 
-        fs.write('/tmp/subparser_selected.txt', selectedLinks.join('\n') + '\n').then(function() {
-            return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', s]);
-        }).then(function(res) {
-            var data = {};
-            try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
-            if (data.status && data.status !== 'ok') throw new Error(data.message || _('Ошибка записи'));
+        var task = function() {
+            var nonce = self.newSaveNonce();
+            var payload = JSON.stringify({
+                nonce: nonce,
+                jobs: [{ section: s, links: selectedLinks,
+                         selection: self.selectionForSection(s) }]
+            });
+            return fs.write('/tmp/subparser_selected.txt', payload).then(function() {
+                return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', s, nonce]);
+            }).then(function(res) {
+                var data = {};
+                try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+                if (!data || data.status !== 'ok')
+                    throw new Error((data && data.message) || _('Ошибка записи'));
+            });
+        };
+
+        this.enqueueSave(task).then(function() {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Секция ') + s + _(': сохранено узлов — ') + selectedLinks.length), 'info');
             self.clearPingCache(s);
@@ -1456,11 +1504,25 @@ return view.extend({
         var self = this;
         var blocks = root.querySelectorAll('.subparser-dashboard-section');
         var jobs = [];
+        var empty = [];
         Array.prototype.forEach.call(blocks, function(block) {
             var sec = block.getAttribute('data-section');
+            var boxes = block.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]');
+            if (!boxes.length) return; // в секции нет узлов — сохранять нечего
             var links = self.collectSelected(block);
-            if (links.length) jobs.push({ sec: sec, links: links });
+            if (links.length) jobs.push({ sec: sec, links: links,
+                                          selection: self.selectionForSection(sec) });
+            else empty.push(sec);
         });
+
+        // Раньше такая секция молча пропускалась, и её старые узлы
+        // оставались в Podkop — выглядело как «удалённые серверы вернулись».
+        if (empty.length) {
+            ui.addNotification(null, E('p', {},
+                _('Нельзя удалить все серверы в секции: ') + empty.join(', ') +
+                _('. Оставьте хотя бы один узел, иначе Podkop не запустится.')), 'danger');
+            return;
+        }
 
         if (!jobs.length) {
             ui.addNotification(null, E('p', {}, _('Не выбрано ни одного сервера ни в одной секции!')), 'danger');
@@ -1470,21 +1532,26 @@ return view.extend({
         ui.showModal(_('Сохранение'), [ E('p', { 'class': 'spinning' },
             _('Запись выбранных узлов в секции: ') + jobs.map(function(j) { return j.sec; }).join(', ') + '...') ]);
 
-        var chain = Promise.resolve();
-        jobs.forEach(function(job) {
-            chain = chain.then(function() {
-                return fs.write('/tmp/subparser_selected.txt', job.links.join('\n') + '\n').then(function() {
-                    return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', job.sec]);
-                }).then(function(res) {
-                    var data = {};
-                    try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
-                    if (data.status && data.status !== 'ok')
-                        throw new Error(job.sec + ': ' + (data.message || _('Ошибка записи')));
-                });
+        var task = function() {
+            var nonce = self.newSaveNonce();
+            var payload = JSON.stringify({
+                nonce: nonce,
+                jobs: jobs.map(function(job) {
+                    return { section: job.sec, links: job.links,
+                             selection: job.selection };
+                })
             });
-        });
+            return fs.write('/tmp/subparser_selected.txt', payload).then(function() {
+                return fs.exec('/usr/bin/subparser-helper.sh', ['save_selected', jobs[0].sec, nonce]);
+            }).then(function(res) {
+                var data = {};
+                try { data = JSON.parse((res.stdout || '').trim()); } catch(e) {}
+                if (!data || data.status !== 'ok')
+                    throw new Error((data && data.message) || _('Ошибка записи'));
+            });
+        };
 
-        chain.then(function() {
+        this.enqueueSave(task).then(function() {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Серверы сохранены в Podkop. Секций: ') + jobs.length), 'info');
             jobs.forEach(function(job) { self.clearPingCache(job.sec); });
