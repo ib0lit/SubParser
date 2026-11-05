@@ -27,8 +27,8 @@ def _singbox_pid():
         return ""
 
 
-def restart_podkop(timeout=60):
-    """Перезапускает Podkop и ждёт, пока sing-box действительно поднимется.
+def _podkop_action(action, timeout=60):
+    """Запускает действие init-скрипта Podkop и ждёт новый процесс sing-box.
 
     Возвращает True только при подтверждённом новом процессе. Раньше запуск
     шёл через `nohup sh -c ... &`: если nohup отсутствовал в системе, команда
@@ -36,7 +36,7 @@ def restart_podkop(timeout=60):
     """
     old_pid = _singbox_pid()
     try:
-        proc = subprocess.Popen([PODKOP_INIT, "restart"],
+        proc = subprocess.Popen([PODKOP_INIT, action],
                                 stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -56,6 +56,24 @@ def restart_podkop(timeout=60):
             return True
         time.sleep(2)
     return False
+
+
+def reload_podkop(timeout=60):
+    """Перечитывает конфиг Podkop без полного restart.
+
+    `reload` перезапускает sing-box и nft-правила, но не трогает dnsmasq,
+    поэтому обновление списка узлов не вызывает лишний перезапуск DNS.
+    """
+    return _podkop_action("reload", timeout=timeout)
+
+
+def restart_podkop(timeout=60):
+    """Полный перезапуск Podkop, включая dnsmasq.
+
+    Нужен для ручного рестарта и восстановления после сбоя, когда требуется
+    заново применить все настройки службы, а не только список узлов.
+    """
+    return _podkop_action("restart", timeout=timeout)
 
 
 def get_lan_ip():
@@ -535,7 +553,7 @@ def reset_to_auto_urltest(section="main"):
     return status in (200, 204)
 
 
-def _write_links(section, links, restart=False):
+def _write_links(section, links, reload=False):
     """Атомарная перезапись списка ссылок. Бэкап делает вызывающая сторона."""
     # Пустая секция ломает запуск Podkop, поэтому последний узел не удаляем.
     if not links:
@@ -551,8 +569,8 @@ def _write_links(section, links, restart=False):
                             stderr=subprocess.DEVNULL)
     if commit.returncode != 0:
         return False
-    if restart:
-        subprocess.Popen("nohup sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &",
+    if reload:
+        subprocess.Popen("nohup sh -c 'sleep 2 && /etc/init.d/podkop reload' >/dev/null 2>&1 &",
                          shell=True)
     return True
 
@@ -569,10 +587,10 @@ def _wait_for_api(timeout=6):
 
 
 def _spawn_restart_worker(plan, token=""):
-    """Запускает перезапуск Podkop и восстановление выбора в фоне.
+    """Запускает перезагрузку Podkop и восстановление выбора в фоне.
 
-    LuCI-запрос не должен ждать рестарт: rpcd обрывает XHR по таймауту, а
-    Podkop может подниматься дольше. Helper отвечает сразу, готовность
+    LuCI-запрос не должен ждать перезагрузку: rpcd обрывает XHR по таймауту,
+    а Podkop может подниматься дольше. Helper отвечает сразу, готовность
     отмечается в /tmp/subparser_restart_ready.json для опроса из UI.
     """
     ready_file = "/tmp/subparser_restart_ready.json"
@@ -598,18 +616,18 @@ def _spawn_restart_worker(plan, token=""):
                          start_new_session=True, close_fds=True)
     except Exception:
         try:
-            subprocess.Popen([PODKOP_INIT, "restart"], stdin=subprocess.DEVNULL,
+            subprocess.Popen([PODKOP_INIT, "reload"], stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True, close_fds=True)
         except Exception:
             pass
 
 
-def replace_sections_links(jobs, restart=True, token=""):
+def replace_sections_links(jobs, reload=True, token=""):
     """Перезаписывает списки узлов одной или нескольких секций.
 
-    Все секции пишутся до единственного перезапуска Podkop, а ручной выбор
-    восстанавливается после него. Перезапуск выполняется в фоне: иначе
+    Все секции пишутся до единственной перезагрузки Podkop, а ручной выбор
+    восстанавливается после неё. Перезагрузка выполняется в фоне: иначе
     XHR в LuCI обрывался по таймауту.
 
     jobs: список словарей {section, links, selection?}, где selection —
@@ -642,7 +660,7 @@ def replace_sections_links(jobs, restart=True, token=""):
             return False, f"Не удалось записать конфигурацию секции {section}"
         prepared.append((section, mode, selected_link, clean))
 
-    if restart and prepared:
+    if reload and prepared:
         plan = [{"section": section, "mode": mode, "link": selected_link,
                  "links": links}
                 for section, mode, selected_link, links in prepared
@@ -651,12 +669,12 @@ def replace_sections_links(jobs, restart=True, token=""):
     return True, ""
 
 
-def replace_section_links(section, links, restart=True, selection=None, token=""):
+def replace_section_links(section, links, reload=True, selection=None, token=""):
     """Совместимость: перезапись ровно одной секции."""
     job = {"section": section, "links": links}
     if selection is not None:
         job["selection"] = selection
-    return replace_sections_links([job], restart=restart, token=token)
+    return replace_sections_links([job], reload=reload, token=token)
 
 
 def delete_node(index, section="main"):
@@ -666,12 +684,12 @@ def delete_node(index, section="main"):
     if len(links) <= 1:
         return False, "Нельзя удалить последний узел секции"
     removed = links.pop(index)
-    if not _write_links(section, links, restart=True):
+    if not _write_links(section, links, reload=True):
         return False, "Не удалось записать конфигурацию"
     return True, get_node_name(removed, index)
 
 
-def delete_nodes_batch(indices, section="main", restart=False):
+def delete_nodes_batch(indices, section="main", reload=False):
     links = get_podkop_links(section)
     if not links or not indices:
         return False, 0
@@ -680,7 +698,7 @@ def delete_nodes_batch(indices, section="main", restart=False):
     removed_count = len(links) - len(new_links)
     if not new_links:
         return False, 0
-    if not _write_links(section, new_links, restart=restart):
+    if not _write_links(section, new_links, reload=reload):
         return False, 0
     return True, removed_count
 
@@ -762,7 +780,7 @@ def scan_dead_in_all_sections(sections=None, include_delays=False, retries=1):
 
 
 def delete_dead_plan(plan_details):
-    """Удаляет узлы из готового плана и перезапускает Podkop один раз."""
+    """Удаляет узлы из готового плана и перезагружает Podkop один раз."""
     total_deleted = 0
     details = []
     restore_plan = []
@@ -803,7 +821,7 @@ def delete_dead_plan(plan_details):
             proxies = get_proxies()
         selection_mode, selected_link = _capture_selection(section, links, proxies)
 
-        ok, deleted = delete_nodes_batch(indices, section=section, restart=False)
+        ok, deleted = delete_nodes_batch(indices, section=section, reload=False)
         if not ok:
             result["status"] = "error"
             details.append(result)
@@ -828,19 +846,19 @@ def delete_dead_plan(plan_details):
         result["status"] = "deleted"
         details.append(result)
 
-    restarted = restart_podkop() if total_deleted else False
+    reloaded = reload_podkop() if total_deleted else False
 
     # Возвращаем ручной выбор на тот же сервер по ссылке, а не по старому
     # индексу. Если был urltest — оставляем urltest. Если выбранный узел сам
     # удалён — секция остаётся на urltest.
     for result, section, mode, link, new_links in restore_plan:
-        if not restarted and mode != "auto":
+        if not reloaded and mode != "auto":
             result["selection"] = "not_restarted"
         else:
             result["selection"] = restore_selection(section, mode, link, new_links)
 
     return {"total": total_deleted, "changed": bool(total_deleted),
-            "restarted": restarted, "error": "", "details": details}
+            "restarted": reloaded, "error": "", "details": details}
 
 
 def _normalize_test_url(test_url):

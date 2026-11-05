@@ -88,7 +88,7 @@ except Exception:
 
 try:
     from subparser.podkop import (capture_selection, restore_selection,
-                                  fetch_proxies, restart_podkop,
+                                  fetch_proxies, reload_podkop,
                                   get_proxies as get_podkop_proxies,
                                   get_podkop_links)
 except Exception:
@@ -101,9 +101,9 @@ except Exception:
     def fetch_proxies():
         return {}, None
 
-    def restart_podkop(timeout=60):
+    def reload_podkop(timeout=60):
         try:
-            subprocess.run(["/etc/init.d/podkop", "restart"],
+            subprocess.run(["/etc/init.d/podkop", "reload"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             return True
         except Exception:
@@ -1737,9 +1737,9 @@ def _run():
                              "Выполнен откат к предыдущей версии.")
         return
 
-    podkop_restarted = False
+    podkop_reloaded = False
     if changed_sections:
-        update_live_progress("♻️ [4/4] Обновление Podkop...", "Запись серверов в UCI и перезапуск службы...")
+        update_live_progress("♻️ [4/4] Обновление Podkop...", "Запись серверов в UCI и перезагрузка службы...")
         commit = subprocess.run(["uci", "commit", "podkop"], stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
         if commit.returncode != 0:
@@ -1747,9 +1747,9 @@ def _run():
             _restore_podkop_backup()
             send_telegram_notify("🔴 <b>SubParser Alert</b>\nОшибка commit Podkop. Выполнен откат.")
             return
-        print("[i] Перезапуск службы Podkop...")
-        restart_podkop(timeout=30)
-        podkop_restarted = True
+        print("[i] Перезагрузка службы Podkop...")
+        reload_podkop(timeout=30)
+        podkop_reloaded = True
         print("[i] Ожидание готовности Podkop...")
         if not _wait_podkop_ready(timeout=60):
             print("[!] Podkop не поднялся после обновления — откатываем конфигурацию.")
@@ -1794,7 +1794,7 @@ def _run():
         top_lines.append(f"{m} <code>{d} ms</code> (±{jit}) — {nm}")
     top_text = "\n".join(top_lines)
     sections_block = "\n".join(section_reports + selection_notes)
-    status_line = "🟢 <b>SubParser: Podkop обновлен</b>" if podkop_restarted else "⚪ <b>SubParser: состав узлов без изменений</b>"
+    status_line = "🟢 <b>SubParser: Podkop обновлен</b>" if podkop_reloaded else "⚪ <b>SubParser: состав узлов без изменений</b>"
 
     msg = (
         f"{status_line}\n\n"

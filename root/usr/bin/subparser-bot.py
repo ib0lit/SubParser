@@ -1089,7 +1089,7 @@ def main():
                             continue
 
                         edit_msg(token, chat_id, msg_id,
-                                 _rich_wait("🧹 <b>Удаляю узлы и перезапускаю Podkop...</b>"),
+                                 _rich_wait("🧹 <b>Удаляю узлы и перезагружаю Podkop...</b>"),
                                  {"inline_keyboard": []})
                         from subparser.podkop import delete_dead_plan
                         res = delete_dead_plan(stored.get("details", []))
@@ -1151,10 +1151,10 @@ def main():
                         screen = RichScreen()
                         if total_deleted:
                             screen.h(f"🧹 Удалено мёртвых узлов: {total_deleted}")
-                            note = ("Podkop перезапущен."
+                            note = ("Podkop перезагружен."
                                     if res.get("restarted")
-                                    else "⚠️ Podkop не удалось перезапустить — "
-                                         "перезапустите вручную.")
+                                    else "⚠️ Podkop не удалось перезагрузить — "
+                                         "перезагрузите вручную.")
                             screen.table(["Секция", "Удалено", "Всего", "Примечание"],
                                          rows, fallback=fallback_lines)
                             screen.quote(note)
@@ -1163,12 +1163,12 @@ def main():
                             screen.h("⚠️ Ничего не удалено")
                             screen.table(["Секция", "Удалено", "Всего", "Примечание"],
                                          rows, fallback=fallback_lines)
-                            screen.quote("Podkop не перезапускался.")
+                            screen.quote("Podkop не перезагружался.")
                         else:
                             screen.h("✅ Мёртвых узлов не найдено")
                             screen.table(["Секция", "Удалено", "Всего", "Примечание"],
                                          rows, fallback=fallback_lines)
-                            screen.quote("Podkop не перезапускался.")
+                            screen.quote("Podkop не перезагружался.")
                         text = screen.build()
                         kb = {"inline_keyboard": [
                             [{"text": "◀️ К секциям", "callback_data": "servers"}],
@@ -1305,10 +1305,10 @@ def main():
                         CACHED_DELAYS[sec_name] = new_delays
 
                         msg_alert = (f"🗑 <b>Удалено узлов: {deleted} шт.</b>\n"
-                                     "<i>(Служба перезапускается в фоне)</i>")
+                                     "<i>(Служба перезагружается в фоне)</i>")
                         t, kb = get_servers_screen(delays_map=new_delays, section=sec_name, page=0, delete_mode=False, selected_indices=[])
                         edit_msg(token, chat_id, msg_id, join_rich(msg_alert, t), kb)
-                        subprocess.Popen("sh -c 'sleep 2 && /etc/init.d/podkop restart' >/dev/null 2>&1 &", shell=True)
+                        subprocess.Popen("sh -c 'sleep 2 && /etc/init.d/podkop reload' >/dev/null 2>&1 &", shell=True)
 
                     elif data.startswith("srv_pg:"):
                         answer_callback(token, cb_id)

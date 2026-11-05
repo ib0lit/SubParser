@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Фоновый перезапуск Podkop после сохранения узлов из дашборда.
+"""Фоновая перезагрузка Podkop после сохранения узлов из дашборда.
 
 Запускается отсоединённым процессом из subparser.podkop. Сначала
-перезапускает Podkop, ждёт готовности Clash API, затем восстанавливает
-ручной выбор сервера по ссылке (теги `section-N-out` после удаления узлов
-сдвигаются). В конце пишет маркер готовности для опроса из LuCI.
+перезагружает Podkop (без перезапуска dnsmasq), ждёт готовности Clash API,
+затем восстанавливает ручной выбор сервера по ссылке (теги `section-N-out`
+после удаления узлов сдвигаются). В конце пишет маркер готовности для
+опроса из LuCI.
 """
 import json
 import os
@@ -41,9 +42,9 @@ def _read_plan(path):
     return str(data.get("token", "")), data.get("restore", []) or []
 
 
-def _restart():
+def _reload():
     try:
-        proc = subprocess.Popen([PODKOP_INIT, "restart"],
+        proc = subprocess.Popen([PODKOP_INIT, "reload"],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, start_new_session=True,
                                 close_fds=True)
@@ -67,7 +68,7 @@ def main():
         _write_ready(token, False)
         return
 
-    _restart()
+    _reload()
     api_ready = _wait_for_api(12)
 
     for item in plan:
