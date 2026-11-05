@@ -1204,10 +1204,12 @@ return view.extend({
             });
         };
 
-        var s_subs = m.section(form.GridSection, 'subscription', _('Источники подписок'));
-        // Источники подписок живут только в «Основных настройках»;
-        // отдельной вкладки «Подписки» больше нет.
-        s_subs.tab = 'general';
+        // Источники подписок встраиваем прямо в «Основные настройки».
+        // Отдельную секцию карты LuCI рендерила бы поверх всех вкладок:
+        // вкладки относятся только к опциям NamedSection.
+        var subsOpt = s.taboption('general', form.SectionValue, '_subs_sources',
+            form.GridSection, 'subscription', _('Источники подписок'));
+        var s_subs = subsOpt.subsection;
         s_subs.addremove = true;
         s_subs.anonymous = true;
 
