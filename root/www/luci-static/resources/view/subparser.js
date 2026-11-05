@@ -13,40 +13,60 @@ return view.extend({
     githubReleases: [],
     subscriptions: [],
 
+    // Запрос helper с жёстким таймаутом на стороне браузера. Необязательные
+    // данные (GitHub, подписки) не должны задерживать открытие страницы,
+    // если сеть или GitHub недоступны: показываем форму с запасными
+    // значениями, а не ждём curl.
+    execJson: function(action, fallback, timeout) {
+        var task = fs.exec('/usr/bin/subparser-helper.sh', [action]).then(function(res) {
+            try {
+                var parsed = JSON.parse((res.stdout || '').trim() || 'null');
+                return parsed === null ? fallback : parsed;
+            } catch(e) {
+                return fallback;
+            }
+        }).catch(function() {
+            return fallback;
+        });
+        if (!timeout) return task;
+        return new Promise(function(resolve) {
+            var settled = false;
+            var timer = setTimeout(function() {
+                if (settled) return;
+                settled = true;
+                resolve(fallback);
+            }, timeout);
+            task.then(function(value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(value);
+            });
+        });
+    },
+
     load: function() {
         var self = this;
-        return fs.exec('/usr/bin/subparser-helper.sh', ['get_dashboard']).then(function(res) {
-            var data = {};
-            try { data = JSON.parse(res.stdout.trim() || '{}'); } catch(e) {}
+        // Дашборд нужен для формы, а GitHub/подписки — только для значений
+        // списков. Запускаем всё параллельно и ограничиваем необязательные
+        // запросы, чтобы страница не висела на недоступной сети.
+        var dashboardTask = this.execJson('get_dashboard', {}).then(function(data) {
             if (data && Array.isArray(data.sections) && data.sections.length)
                 return data.sections;
             return self.loadLegacySections();
-        }).catch(function() {
-            return self.loadLegacySections();
-        }).then(function(sections) {
+        });
+        var branchesTask = this.execJson('get_github_branches', ['main'], 2500);
+        var releasesTask = this.execJson('get_github_releases', [], 2500);
+        var subsTask = this.execJson('get_subscriptions', [], 2500);
+
+        return Promise.all([dashboardTask, branchesTask, releasesTask, subsTask]).then(function(results) {
+            var sections = results[0] || [];
             self.dashboardSections = sections;
             self.availableSections = sections.map(function(sec) { return sec.name; });
             if (!self.availableSections.length) self.availableSections = ['main'];
-            return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_branches']).then(function(res) {
-                try { self.githubBranches = JSON.parse(res.stdout.trim() || '["main"]'); }
-                catch(e) { self.githubBranches = ['main']; }
-            }).catch(function() {
-                self.githubBranches = ['main'];
-            }).then(function() {
-                return fs.exec('/usr/bin/subparser-helper.sh', ['get_github_releases']).then(function(res) {
-                    try { self.githubReleases = JSON.parse(res.stdout.trim() || '[]'); }
-                    catch(e) { self.githubReleases = []; }
-                }).catch(function() {
-                    self.githubReleases = [];
-                });
-            }).then(function() {
-                return fs.exec('/usr/bin/subparser-helper.sh', ['get_subscriptions']).then(function(res) {
-                    try { self.subscriptions = JSON.parse(res.stdout.trim() || '[]'); }
-                    catch(e) { self.subscriptions = []; }
-                }).catch(function() {
-                    self.subscriptions = [];
-                });
-            });
+            self.githubBranches = Array.isArray(results[1]) && results[1].length ? results[1] : ['main'];
+            self.githubReleases = Array.isArray(results[2]) ? results[2] : [];
+            self.subscriptions = Array.isArray(results[3]) ? results[3] : [];
         });
     },
 
@@ -333,21 +353,26 @@ return view.extend({
         var attempts = 0;
         this._autoPingTimer = setInterval(function() {
             attempts++;
+            // Контейнер появляется в DOM сразу после render(). Если его так
+            // и нет (страница уже заменена), прекращаем опрос через минуту.
             if (!document.body.contains(container)) {
-                clearInterval(self._autoPingTimer);
-                self._autoPingTimer = null;
-                return;
-            }
-            // У скрытой вкладки offsetParent равен null.
-            if (container.offsetParent === null) {
-                if (attempts > 240) {
+                if (attempts > 150) {
                     clearInterval(self._autoPingTimer);
                     self._autoPingTimer = null;
                 }
                 return;
             }
+            // Скрытая вкладка: ждём, пока пользователь её откроет. Ждать
+            // можно сколько угодно — таймер один и ничего не запрашивает.
+            if (container.offsetParent === null) return;
             clearInterval(self._autoPingTimer);
             self._autoPingTimer = null;
+            // Тяжёлые карточки секций строим только когда вкладка «Дашборд»
+            // реально открыта. Раньше это происходило при загрузке страницы.
+            if (!self._dashboardRendered) {
+                self.renderDashboard(container);
+                self._dashboardRendered = true;
+            }
             self.autoRefreshPings(container);
             self.startActiveRefresh(container);
         }, 400);
@@ -366,15 +391,38 @@ return view.extend({
             else self.updatePingSummary(block, block.getAttribute('data-section'));
         });
 
-        // Секции проверяем по очереди, а не все одновременно: так роутер
-        // не захлёбывается, а результаты появляются по мере готовности.
-        var next = function() {
-            if (!queue.length) return;
-            var block = queue.shift();
+        // Секции проверяем по две за раз, а не все одновременно: group-delay
+        // внутри sing-box и так параллельный, но роутер не захлёбывается
+        // десятком python-процессов, и результаты появляются быстро.
+        var CONCURRENCY = 2;
+        var index = 0;
+        var runNext = function() {
+            if (index >= queue.length) return;
+            var block = queue[index++];
             var sec = block.getAttribute('data-section');
-            self.refreshPings(block, sec).then(next);
+            self.refreshPings(block, sec).then(runNext);
         };
-        next();
+        for (var i = 0; i < Math.min(CONCURRENCY, queue.length); i++) runNext();
+    },
+
+    // Кнопка «Обновить пинги всех секций»: сбрасываем кэш и идём тем же
+    // ограниченным путём, что и автообновление.
+    refreshAllPings: function(container) {
+        var self = this;
+        Array.prototype.forEach.call(container.querySelectorAll('.subparser-dashboard-section'), function(block) {
+            var sec = block.getAttribute('data-section');
+            var prefix = sec + '-';
+            Object.keys(self.pingCache).forEach(function(key) {
+                if (key.indexOf(prefix) === 0) delete self.pingCache[key];
+            });
+            Array.prototype.forEach.call(block.querySelectorAll('.node-delay-badge'), function(b) {
+                b.innerText = '...';
+                b.style.color = '#888';
+            });
+            var summary = block.querySelector('.subparser-ping-summary');
+            if (summary) summary.textContent = '';
+        });
+        self.autoRefreshPings(container);
     },
 
     applyActiveState: function(block, state) {
@@ -1176,13 +1224,9 @@ return view.extend({
         var applyPingUrl = function(value) {
             var url = self.setPingUrl(value);
             pingUrlInput.value = url || self.getPingUrl();
-            Array.prototype.forEach.call(
-                dashboardContainer.querySelectorAll('.node-delay-badge'),
-                function(b) { b.innerText = '…'; b.style.color = '#888'; });
-            var summaries = dashboardContainer.querySelectorAll('.subparser-ping-summary');
-            Array.prototype.forEach.call(summaries, function(sm) { sm.textContent = ''; });
-            if (dashboardContainer.offsetParent !== null)
-                self.autoRefreshPings(dashboardContainer);
+            // Старые задержки измерены по другому адресу — сбрасываем кэш.
+            if (self._dashboardRendered && dashboardContainer.offsetParent !== null)
+                self.refreshAllPings(dashboardContainer);
         };
 
         var pingUrlRow = E('div', {
@@ -1212,10 +1256,7 @@ return view.extend({
                 'class': 'btn cbi-button-action',
                 'click': function(ev) {
                     ev.preventDefault();
-                    var blocks = dashboardContainer.querySelectorAll('.subparser-dashboard-section');
-                    Array.prototype.forEach.call(blocks, function(block) {
-                        self.refreshPings(block, block.getAttribute('data-section'));
-                    });
+                    self.refreshAllPings(dashboardContainer);
                 }
             }, _('⚡ Обновить пинги всех секций')),
             E('button', {
@@ -1236,10 +1277,10 @@ return view.extend({
         var dummy = s.taboption('dashboard', form.DummyValue, '_dashboard');
         dummy.rawhtml = true;
         dummy.render = function() { return E('div', {}, [hintBox, pingUrlRow, toolbar, dashboardContainer]); };
-        self.renderDashboard(dashboardContainer);
-        // Замеры запускаем не при загрузке всей страницы, а когда вкладка
-        // «Дашборд» действительно открыта. Иначе каждый F5 запускал пинги
-        // всех секций и нагружал роутер ещё до отрисовки интерфейса.
+        // Карточки секций строятся лениво, при первом открытии вкладки
+        // «Дашборд» (см. scheduleAutoPings). Загрузка главной страницы
+        // больше не ждёт пингов и не рисует скрытый дашборд.
+        self._dashboardRendered = false;
         self.scheduleAutoPings(dashboardContainer);
 
         return m.render();
@@ -1263,6 +1304,7 @@ return view.extend({
             self.dashboardSections = data.sections;
             self.availableSections = data.sections.map(function(sec) { return sec.name; });
             self.renderDashboard(container);
+            self._dashboardRendered = true;
             if (Object.keys(unchecked).length) {
                 Array.prototype.forEach.call(
                     container.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]'),

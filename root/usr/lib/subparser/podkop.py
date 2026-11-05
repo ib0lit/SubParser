@@ -854,6 +854,38 @@ def delete_dead_plan(plan_details):
             "restarted": restarted, "error": "", "details": details}
 
 
+def _normalize_test_url(test_url):
+    target = str(test_url or "").strip() or TEST_URL_GLOBAL
+    if not target.startswith(("http://", "https://")):
+        target = TEST_URL_GLOBAL
+    return target
+
+
+def group_ping_nodes(section="main", test_url=None, delay_timeout=5000,
+                     request_timeout=9):
+    """Замеряет задержки всех узлов группы URLTest одним запросом.
+
+    Clash API `GET /group/<tag>/delay` сам запускает проверку всех прокси
+    группы параллельно внутри sing-box и возвращает готовую карту
+    `{tag: delay}`. Это то же, что делает дашборд Podkop, и заметно быстрее
+    отдельных запросов `/proxies/<tag>/delay` по каждому узлу.
+    """
+    encoded_url = urllib.parse.quote(_normalize_test_url(test_url), safe="")
+    tag = urllib.parse.quote(f"{section}-urltest-out", safe="")
+    status, data = _api_request(
+        f"/group/{tag}/delay?url={encoded_url}&timeout={int(delay_timeout)}",
+        timeout=request_timeout)
+    if status != 200 or not isinstance(data, dict):
+        return {}
+    result = {}
+    for key, value in data.items():
+        try:
+            result[str(key)] = int(value)
+        except (TypeError, ValueError):
+            result[str(key)] = -1
+    return result
+
+
 def batch_ping_nodes(links, section="main", force=False, max_workers=10,
                     request_timeout=2.5, delay_timeout=1800, retries=1,
                     test_url=None):
@@ -863,10 +895,7 @@ def batch_ping_nodes(links, section="main", force=False, max_workers=10,
 
     # Свой URL для проверки задержки: дашборд передаёт его аргументом,
     # по умолчанию используется общий generate_204.
-    target_url = str(test_url or "").strip() or TEST_URL_GLOBAL
-    if not target_url.startswith(("http://", "https://")):
-        target_url = TEST_URL_GLOBAL
-    test_url = urllib.parse.quote(target_url, safe="")
+    test_url = urllib.parse.quote(_normalize_test_url(test_url), safe="")
 
     # 1. История ядра, если не запрошен принудительный замер.
     if not force:

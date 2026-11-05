@@ -427,8 +427,10 @@ PYEOF
         ;;
 
     ping_section)
-        # Один вызов на всю секцию: Python сам опрашивает узлы параллельно,
-        # вместо десятков последовательных запусков curl из LuCI.
+        # Один запрос на всю секцию. Основной путь — групповая проверка
+        # Clash API: sing-box сам параллельно пингует все узлы URLTest-группы
+        # и возвращает готовую карту задержек (так делает дашборд Podkop).
+        # Отдельные /proxies/<tag>/delay — только резервный путь.
         # Третий аргумент — необязательный URL проверки из дашборда.
         SECTION="$SECTION" PING_URL="$3" python3 - <<'PYEOF'
 import json
@@ -438,14 +440,22 @@ import sys
 sys.path.insert(0, "/usr/lib")
 out = {}
 try:
-    from subparser.podkop import batch_ping_nodes, get_podkop_links
+    from subparser.podkop import (batch_ping_nodes, get_podkop_links,
+                                  group_ping_nodes)
     sec = os.environ.get("SECTION", "main")
+    test_url = os.environ.get("PING_URL", "")
     links = get_podkop_links(sec)
-    delays = batch_ping_nodes(links, section=sec, force=True,
-                              max_workers=12, request_timeout=3.5,
-                              delay_timeout=2500,
-                              test_url=os.environ.get("PING_URL", ""))
-    out = {f"{sec}-{i + 1}-out": d for i, d in delays.items()}
+
+    expected = {f"{sec}-{i + 1}-out" for i in range(len(links))}
+    delays = group_ping_nodes(sec, test_url=test_url, delay_timeout=5000,
+                              request_timeout=9)
+    out = {tag: value for tag, value in delays.items() if tag in expected}
+
+    if not out:
+        delays = batch_ping_nodes(links, section=sec, force=True,
+                                  max_workers=12, request_timeout=3.5,
+                                  delay_timeout=5000, test_url=test_url)
+        out = {f"{sec}-{i + 1}-out": d for i, d in delays.items()}
 except Exception:
     out = {}
 print(json.dumps(out))
