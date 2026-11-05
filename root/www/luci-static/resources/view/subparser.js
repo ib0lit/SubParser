@@ -677,22 +677,6 @@ return view.extend({
         o.default = '12';
         o.description = _('Сколько серверов проверять параллельно. По умолчанию 12. На слабых роутерах рекомендуется 6 — это снизит потребление оперативной памяти.');
 
-        o = s.taboption('general', form.ListValue, 'max_best_nodes', _('Лимит лучших узлов'));
-        o.value('0', _('Неограниченно'));
-        o.value('3', _('Топ-3'));
-        o.value('5', _('Топ-5'));
-        o.value('10', _('Топ-10'));
-        o.value('custom', _('Свой лимит'));
-        o.default = '0';
-        o.description = _('Сколько лучших узлов записывать. В режиме замены это общий размер списка, в режиме добавления — число новых узлов. При индивидуальной настройке секций значение можно переопределить для каждой секции отдельно.');
-
-        o = s.taboption('general', form.Value, 'max_best_custom', _('Свой лимит (число)'));
-        o.datatype = 'uinteger';
-        o.placeholder = '20';
-        o.default = '0';
-        o.depends('max_best_nodes', 'custom');
-        o.description = _('Используется, если выбран «Свой лимит». 0 — без ограничения.');
-
         o = s.taboption('general', form.Flag, 'filter_ru', _('Фильтровать RU / обход узлы'));
         o.default = '1';
 
@@ -785,25 +769,49 @@ return view.extend({
         per_sec.description = _('Позволяет задать персональный режим обновления для каждого профиля Podkop.');
         per_sec.default = '0';
 
+        var globHint = s.taboption('sections', form.DummyValue, '_section_globals_hint');
+        globHint.rawhtml = true;
+        globHint.render = function() {
+            return E('div', {
+                'class': 'alert-message info',
+                'style': 'margin-bottom: 12px; font-size: 13px; line-height: 1.5;'
+            }, _('Глобальные настройки секций. Значение «Как в глобальных настройках» у отдельной секции берётся отсюда.'));
+        };
+
+        var globLimit = s.taboption('sections', form.ListValue, 'max_best_nodes', _('Лимит лучших узлов (глобальный)'));
+        globLimit.value('0', _('Неограниченно'));
+        globLimit.value('3', _('Топ-3'));
+        globLimit.value('5', _('Топ-5'));
+        globLimit.value('10', _('Топ-10'));
+        globLimit.value('custom', _('Свой лимит'));
+        globLimit.default = '0';
+        globLimit.description = _('Сколько лучших узлов записывать. В режиме замены это общий размер списка, в режиме добавления — число новых узлов. Используется секциями, у которых выбрано «Как в глобальных настройках».');
+
+        var globLimitCustom = s.taboption('sections', form.Value, 'max_best_custom', _('Свой лимит (число)'));
+        globLimitCustom.datatype = 'uinteger';
+        globLimitCustom.placeholder = '20';
+        globLimitCustom.default = '0';
+        globLimitCustom.depends('max_best_nodes', 'custom');
+        globLimitCustom.description = _('Используется, если выбран «Свой лимит». 0 — без ограничения.');
+
         var glob_sec = s.taboption('sections', form.DynamicList, 'target_section', _('Целевые секции Podkop'));
-        glob_sec.description = _('Выберите секции для обновления.');
+        glob_sec.description = _('Выберите секции для обновления в глобальном режиме.');
         self.availableSections.forEach(function(sec) { glob_sec.value(sec, sec); });
         glob_sec.default = self.availableSections;
         glob_sec.depends('per_section_config', '0');
         glob_sec.retain = true;
 
-        var glob_mode = s.taboption('sections', form.ListValue, 'update_mode', _('Режим обновления'));
+        var glob_mode = s.taboption('sections', form.ListValue, 'update_mode', _('Режим обновления (глобальный)'));
         glob_mode.value('replace', _('Заменять все серверы'));
         glob_mode.value('append', _('Добавлять к существующим (без дубликатов)'));
         glob_mode.default = 'replace';
         glob_mode.depends('per_section_config', '0');
         glob_mode.retain = true;
 
-        var globPrune = s.taboption('sections', form.Flag, 'prune_dead_append', _('Удалять мёртвые узлы при добавлении'));
+        var globPrune = s.taboption('sections', form.Flag, 'prune_dead_append', _('Удалять мёртвые узлы при добавлении (глобально)'));
         globPrune.default = '0';
-        globPrune.depends('per_section_config', '0');
         globPrune.retain = true;
-        globPrune.description = _('В режиме добавления парсер дополнительно проверит уже установленные узлы секции и исключит те, что не отвечают. В режиме замены список и так перезаписывается.');
+        globPrune.description = _('В режиме добавления парсер дополнительно проверит уже установленные узлы секции и исключит те, что не отвечают. В режиме замены список и так перезаписывается. Используется секциями, у которых выбрано «Как в глобальных настройках».');
 
         self.availableSections.forEach(function(sec) {
             var sec_en = s.taboption('sections', form.Flag, 'sec_en_' + sec, _('Обновлять секцию') + ' [' + sec + ']');
@@ -828,6 +836,7 @@ return view.extend({
             secLimit.default = 'inherit';
             secLimit.depends('per_section_config', '1');
             secLimit.retain = true;
+            secLimit.description = _('«Как в глобальных настройках» — значение поля «Лимит лучших узлов (глобальный)» выше.');
 
             var secLimitCustom = s.taboption('sections', form.Value, 'sec_limit_custom_' + sec, _('Свой лимит (число)') + ' [' + sec + ']');
             secLimitCustom.datatype = 'uinteger';
@@ -845,6 +854,7 @@ return view.extend({
             secPrune.default = 'inherit';
             secPrune.depends('per_section_config', '1');
             secPrune.retain = true;
+            secPrune.description = _('«Как в глобальных настройках» — переключатель «Удалять мёртвые узлы при добавлении (глобально)» выше.');
 
             if (self.subscriptions.length) {
                 var secSubs = s.taboption('sections', form.MultiValue, 'sec_subs_' + sec,
