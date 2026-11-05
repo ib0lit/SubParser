@@ -45,25 +45,79 @@ return view.extend({
         });
     },
 
+    readListCache: function(key) {
+        try {
+            var raw = window.localStorage.getItem(key);
+            if (!raw) return null;
+            var data = JSON.parse(raw);
+            return Array.isArray(data) ? data : null;
+        } catch(e) {
+            return null;
+        }
+    },
+
+    writeListCache: function(key, value) {
+        try {
+            window.localStorage.setItem(key, JSON.stringify(value));
+        } catch(e) {}
+    },
+
+    // Полные данные дашборда (ссылки, активные узлы, история задержек).
+    // Запрашиваются в фоне: главная страница не должна ждать Clash API.
+    fetchDashboardData: function() {
+        var self = this;
+        return this.execJson('get_dashboard', {}, 12000).then(function(data) {
+            if (data && Array.isArray(data.sections) && data.sections.length) {
+                self.dashboardSections = data.sections;
+                self.availableSections = data.sections.map(function(sec) { return sec.name; });
+                return data.sections;
+            }
+            return self.loadLegacySections().then(function(sections) {
+                if (sections && sections.length) {
+                    self.dashboardSections = sections;
+                    self.availableSections = sections.map(function(sec) { return sec.name; });
+                }
+                return sections || [];
+            });
+        }).catch(function() {
+            return [];
+        });
+    },
+
     load: function() {
         var self = this;
-        // Дашборд нужен для формы, а GitHub/подписки — только для значений
-        // списков. Запускаем всё параллельно и ограничиваем необязательные
-        // запросы, чтобы страница не висела на недоступной сети.
-        var dashboardTask = this.execJson('get_dashboard', {}).then(function(data) {
-            if (data && Array.isArray(data.sections) && data.sections.length)
-                return data.sections;
-            return self.loadLegacySections();
+        // Для формы достаточно лёгкого списка секций. Полный дашборд и
+        // сетевые данные GitHub грузим параллельно/в фоне, чтобы страница
+        // не висела на «Loading view...».
+        var sectionsTask = this.execJson('get_podkop_sections', ['main'], 2000).then(function(names) {
+            self.availableSections = Array.isArray(names) && names.length ? names : ['main'];
+            return self.availableSections;
         });
-        var branchesTask = this.execJson('get_github_branches', ['main'], 2500);
-        var releasesTask = this.execJson('get_github_releases', [], 2500);
-        var subsTask = this.execJson('get_subscriptions', [], 2500);
+        var subsTask = this.execJson('get_subscriptions', [], 1500);
 
-        return Promise.all([dashboardTask, branchesTask, releasesTask, subsTask]).then(function(results) {
-            var sections = results[0] || [];
-            self.dashboardSections = sections;
-            self.availableSections = sections.map(function(sec) { return sec.name; });
-            if (!self.availableSections.length) self.availableSections = ['main'];
+        var cachedBranches = this.readListCache('subparser_github_branches');
+        var cachedReleases = this.readListCache('subparser_github_releases');
+        var branchesTask = cachedBranches
+            ? Promise.resolve(cachedBranches)
+            : this.execJson('get_github_branches', ['main'], 1200);
+        var releasesTask = cachedReleases
+            ? Promise.resolve(cachedReleases)
+            : this.execJson('get_github_releases', [], 1200);
+
+        // Обновляем кэш для следующих открытий страницы, не задерживая форму.
+        this.execJson('get_github_branches', null, 8000).then(function(list) {
+            if (Array.isArray(list) && list.length)
+                self.writeListCache('subparser_github_branches', list);
+        });
+        this.execJson('get_github_releases', null, 8000).then(function(list) {
+            if (Array.isArray(list) && list.length)
+                self.writeListCache('subparser_github_releases', list);
+        });
+
+        self.dashboardSections = [];
+        self._dashboardPromise = this.fetchDashboardData();
+
+        return Promise.all([sectionsTask, branchesTask, releasesTask, subsTask]).then(function(results) {
             self.githubBranches = Array.isArray(results[1]) && results[1].length ? results[1] : ['main'];
             self.githubReleases = Array.isArray(results[2]) ? results[2] : [];
             self.subscriptions = Array.isArray(results[3]) ? results[3] : [];
@@ -213,6 +267,8 @@ return view.extend({
                 var tag = sec + '-' + (idx + 1) + '-out';
                 var selected = selector.now === tag;
                 var cachedDelay = self.pingCache[tag];
+                if (cachedDelay === undefined && secData.delays && typeof secData.delays[tag] === 'number')
+                    cachedDelay = secData.delays[tag];
                 var delayInfo = cachedDelay !== undefined ? self.delayInfo(cachedDelay) : { text: '…', color: '#888' };
                 grid.appendChild(E('div', {
                     'id': 'card_' + tag,
@@ -368,10 +424,11 @@ return view.extend({
             clearInterval(self._autoPingTimer);
             self._autoPingTimer = null;
             // Тяжёлые карточки секций строим только когда вкладка «Дашборд»
-            // реально открыта. Раньше это происходило при загрузке страницы.
+            // реально открыта. Данные к этому моменту обычно уже загружены
+            // в фоне; если нет — показываем заглушку и ждём их.
             if (!self._dashboardRendered) {
-                self.renderDashboard(container);
                 self._dashboardRendered = true;
+                self.renderDashboardWhenReady(container);
             }
             self.autoRefreshPings(container);
             self.startActiveRefresh(container);
@@ -509,6 +566,36 @@ return view.extend({
             if (container.offsetParent === null) return;
             self.refreshActiveState(container);
         }, 15000);
+    },
+
+    // Ждёт фоновую загрузку дашборда и только затем строит карточки и
+    // запускает пинги. Если фоновая загрузка не удалась — пробует ещё раз.
+    renderDashboardWhenReady: function(container) {
+        var self = this;
+        container.innerHTML = '';
+        container.appendChild(E('div', { 'style': 'padding: 15px; color: #888;' },
+            _('Загрузка секций Podkop...')));
+        var initial = this._dashboardPromise || Promise.resolve(this.dashboardSections || []);
+        return initial.then(function(sections) {
+            if (sections && sections.length) return sections;
+            return self.fetchDashboardData();
+        }).then(function(sections) {
+            if (!document.body.contains(container)) return;
+            container.innerHTML = '';
+            if (!sections || !sections.length) {
+                container.appendChild(E('div', { 'style': 'padding: 15px; color: #888;' },
+                    _('Не удалось получить список секций Podkop.')));
+                return;
+            }
+            self.renderDashboard(container);
+            self.autoRefreshPings(container);
+            self.startActiveRefresh(container);
+        }).catch(function() {
+            if (!document.body.contains(container)) return;
+            container.innerHTML = '';
+            container.appendChild(E('div', { 'style': 'padding: 15px; color: #888;' },
+                _('Не удалось получить список секций Podkop.')));
+        });
     },
 
     renderDashboard: function(container) {
@@ -1336,7 +1423,15 @@ return view.extend({
         var s = sec || 'main';
         var pingUrl = self.getPingUrl();
         var badges = Array.from(container.querySelectorAll('.node-delay-badge'));
-        badges.forEach(function(b) { b.innerText = '...'; b.style.color = '#888'; });
+        // Уже известные задержки (из кэша или истории sing-box) не гасим:
+        // пользователь видит их сразу, а свежий замер обновит значения.
+        badges.forEach(function(b) {
+            if (self.pingCache[b.getAttribute('data-tag')] === undefined &&
+                (b.innerText || '').trim() === '…') {
+                b.innerText = '...';
+                b.style.color = '#888';
+            }
+        });
         var summary = container.querySelector('.subparser-ping-summary');
         if (summary) summary.textContent = _('Измерение задержек...');
 

@@ -389,12 +389,16 @@ def _find_group_in(section, proxies):
     return None, None
 
 
-def get_sections_active_state(sections=None):
+def get_sections_active_state(sections=None, include_delays=False):
     """Активное состояние селектора и URLTest по всем секциям.
 
     Один запрос к Clash API на все секции. Возвращает список словарей
     с полями name/api/selector/urltest. Ссылки узлов сюда не входят:
     для периодического обновления дашборда они не нужны.
+
+    При ``include_delays=True`` добавляет ``delays`` — последние известные
+    задержки узлов из истории sing-box. Дашборд показывает их сразу, пока
+    идёт свежий групповой замер.
     """
     proxies, status = fetch_proxies()
     api_ok = status in (200, 204)
@@ -414,7 +418,7 @@ def get_sections_active_state(sections=None):
             mode = "auto"
         else:
             mode = "manual"
-        result.append({
+        entry = {
             "name": section,
             "api": api_ok,
             "selector": {
@@ -427,7 +431,24 @@ def get_sections_active_state(sections=None):
                 "tag": group_tag or "",
                 "now": group.get("now", "") if isinstance(group, dict) else "",
             },
-        })
+        }
+        if include_delays:
+            delays = {}
+            prefix = f"{section}-"
+            suffix = "-out"
+            for tag, proxy in proxies.items():
+                if not (tag.startswith(prefix) and tag.endswith(suffix)):
+                    continue
+                if not tag[len(prefix):-len(suffix)].isdigit():
+                    continue
+                history = proxy.get("history") if isinstance(proxy, dict) else None
+                if history and isinstance(history, list):
+                    last = history[-1] if isinstance(history[-1], dict) else {}
+                    delay = last.get("delay")
+                    if isinstance(delay, int) and delay > 0:
+                        delays[tag] = delay
+            entry["delays"] = delays
+        result.append(entry)
     return result
 
 

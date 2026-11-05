@@ -229,7 +229,7 @@ try:
                                   get_podkop_links,
                                   get_sections_active_state)
     sections = get_all_podkop_sections()
-    states = get_sections_active_state(sections)
+    states = get_sections_active_state(sections, include_delays=True)
     for sec in sections:
         links_map[sec] = get_podkop_links(sec)
 except Exception:

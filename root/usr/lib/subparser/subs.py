@@ -14,28 +14,71 @@ def get_uci_opt(sec, opt, default=""):
     return val if val else default
 
 
+def _parse_uci_export(raw):
+    """Разбирает `uci export` в словарь секций без запуска `uci` на каждую опцию.
+
+    Один вызов `uci export` заметно быстрее десятков `uci get`, которые
+    выполнялись для каждой подписки при открытии страницы LuCI.
+    """
+    import shlex
+    sections = {}
+    order = []
+    current = None
+    anon_count = {}
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(line, comments=False)
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        if parts[0] == "config" and len(parts) >= 2:
+            stype = parts[1]
+            if len(parts) >= 3:
+                name = parts[2]
+            else:
+                # LuCI-секции подписок анонимные: `uci export` печатает
+                # `config subscription` без имени. Сохраняем совместимое
+                # обращение `@subscription[N]`, как у `uci show`.
+                idx = anon_count.get(stype, 0)
+                anon_count[stype] = idx + 1
+                name = f"@{stype}[{idx}]"
+            if name not in sections:
+                sections[name] = {"type": stype, "options": {}, "lists": {}}
+                order.append(name)
+            current = sections[name]
+        elif parts[0] == "option" and len(parts) >= 3 and current is not None:
+            current["options"][parts[1]] = parts[2]
+        elif parts[0] == "list" and len(parts) >= 3 and current is not None:
+            current["lists"].setdefault(parts[1], []).append(parts[2])
+    return sections, order
+
+
 def get_subscriptions():
     subs = []
     try:
-        res = subprocess.run(["uci", "-q", "show", CONFIG_NAME],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        sec_names = []
-        for line in res.stdout.splitlines():
-            if "=subscription" in line:
-                s_name = line.split(".")[1].split("=")[0]
-                if s_name not in sec_names:
-                    sec_names.append(s_name)
-
-        for idx, s_name in enumerate(sec_names):
-            url = get_uci_opt(s_name, "url", "")
-            name = get_uci_opt(s_name, "name", f"Подписка #{idx+1}")
-            en = get_uci_opt(s_name, "enabled", "1")
-            ua = get_uci_opt(s_name, "user_agent", "v2rayN")
-            custom_ua = get_uci_opt(s_name, "custom_ua", "")
-            device_id = get_uci_opt(s_name, "device_id", "")
-            device_model = get_uci_opt(s_name, "device_model", "")
+        raw = subprocess.run(["uci", "-q", "export", CONFIG_NAME],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True).stdout
+        sections, order = _parse_uci_export(raw)
+        idx = 0
+        for s_name in order:
+            sec = sections.get(s_name) or {}
+            if sec.get("type") != "subscription":
+                continue
+            opts = sec.get("options") or {}
+            url = opts.get("url", "")
+            name = opts.get("name") or f"Подписка #{idx + 1}"
+            en = opts.get("enabled", "1")
+            ua = opts.get("user_agent", "v2rayN")
+            custom_ua = opts.get("custom_ua", "")
+            device_id = opts.get("device_id", "")
+            device_model = opts.get("device_model", "")
             # Исторически в UI/парсере использовались разные имена одной и той же опции.
-            os_ver = get_uci_opt(s_name, "os_version", "") or get_uci_opt(s_name, "device_os", "")
+            os_ver = opts.get("os_version", "") or opts.get("device_os", "")
             subs.append({
                 "idx": idx,
                 "sec_name": s_name,
@@ -49,6 +92,7 @@ def get_subscriptions():
                 "name": name,
                 "url": url,
             })
+            idx += 1
     except Exception:
         pass
     return subs
