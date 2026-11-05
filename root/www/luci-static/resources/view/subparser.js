@@ -1286,15 +1286,29 @@ return view.extend({
         return m.render();
     },
 
-    reloadDashboard: function(container) {
+    reloadDashboard: function(container, appliedSections) {
         var self = this;
         // Переключение активного узла не должно сбрасывать галочки, которые
-        // пользователь уже расставил для применения списка.
+        // пользователь уже расставил для применения списка. Но после
+        // сохранения секции её состояние берётся из конфигурации: иначе
+        // снятая галочка удалённого узла могла «прилипнуть» к другому узлу
+        // с такой же ссылкой (в том числе из другой секции).
+        var applied = {};
+        (appliedSections || []).forEach(function(sec) { applied[sec] = true; });
         var unchecked = {};
+        var boxKey = function(cb) {
+            var block = cb.closest('.subparser-dashboard-section');
+            var sec = block ? block.getAttribute('data-section') : '';
+            return sec + '\n' + (cb.getAttribute('data-link') || '');
+        };
         Array.prototype.forEach.call(
             container.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]'),
             function(cb) {
-                if (!cb.checked) unchecked[cb.getAttribute('data-link')] = true;
+                if (cb.checked) return;
+                var block = cb.closest('.subparser-dashboard-section');
+                var sec = block ? block.getAttribute('data-section') : '';
+                if (applied[sec]) return;
+                unchecked[boxKey(cb)] = true;
             });
         return fs.exec('/usr/bin/subparser-helper.sh', ['get_dashboard']).then(function(res) {
             var data = {};
@@ -1309,7 +1323,7 @@ return view.extend({
                 Array.prototype.forEach.call(
                     container.querySelectorAll('.subparser-node-grid input[type="checkbox"][data-link]'),
                     function(cb) {
-                        if (unchecked[cb.getAttribute('data-link')]) cb.checked = false;
+                        if (unchecked[boxKey(cb)]) cb.checked = false;
                     });
             }
             self.autoRefreshPings(container);
@@ -1560,7 +1574,10 @@ return view.extend({
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Секция ') + s + _(': сохранено узлов — ') + selectedLinks.length), 'info');
             self.clearPingCache(s);
-            return self.reloadDashboard(self.dashboardRoot(block));
+            // Для сохранённой секции галочки берутся из конфигурации, а не
+            // переносятся из старого DOM: удалённые узлы не должны влиять
+            // на оставшиеся.
+            return self.reloadDashboard(self.dashboardRoot(block), [s]);
         }).catch(function(err) {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + (err.message || err)), 'danger');
@@ -1624,7 +1641,8 @@ return view.extend({
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Серверы сохранены в Podkop. Секций: ') + jobs.length), 'info');
             jobs.forEach(function(job) { self.clearPingCache(job.sec); });
-            return self.reloadDashboard(root);
+            // Все сохранённые секции перерисовываем строго по конфигурации.
+            return self.reloadDashboard(root, jobs.map(function(job) { return job.sec; }));
         }).catch(function(err) {
             ui.hideModal();
             ui.addNotification(null, E('p', {}, _('Ошибка сохранения: ') + (err.message || err)), 'danger');
